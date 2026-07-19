@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>tasks.sh</title>
+  <meta name="description" content="Terminal-styled task manager with a routines timeline synced to IST." />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0B0D10" />
+  <meta name="background-color" content="#0B0D10" />
+
+  <!-- iOS home-screen support -->
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="tasks.sh" />
+
+  <!-- favicons -->
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
+  <link rel="shortcut icon" href="favicon.ico" />
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #0B0D10; height: 100%; }
+    #root { height: 100%; }
+    /* prevents a flash of unstyled content before React mounts */
+    #boot-splash {
+      position: fixed; inset: 0; background: #0B0D10;
+      display: flex; align-items: center; justify-content: center;
+      font-family: monospace; color: #5EEAD4; font-size: 13px; letter-spacing: 0.05em;
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"><div id="boot-splash">tasks.sh --loading</div></div>
+
+  <!-- Self-contained bundle: React + ReactDOM + the app, all local, no CDN.
+       Nothing in this app depends on network access after first load. -->
+  <script src="bundle.js"></script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
