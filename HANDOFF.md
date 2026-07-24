@@ -1,5 +1,10 @@
 # tasks.sh — developer handoff
 
+**Current version: `tasksh-v13`** (service worker cache tag — see `sw.js`).
+Last updated 2026-07-24. If you're starting a new chat about this project,
+pasting/uploading this file plus `src/app.jsx` should be enough context —
+no need to re-explain the app from scratch.
+
 Terminal/system-monitor styled PWA: a task manager plus a "routines" tab that
 acts as a gamified recurring quest log, synced to IST (India Standard Time).
 
@@ -42,15 +47,21 @@ add other libraries, prefer bundling them too rather than `<script src="cdn...">
 ## File map
 
 ```
-src/app.jsx       - all source. Single file, ~2900 lines, organized as:
+src/app.jsx       - all source. Single file, ~5200 lines, organized as:
                     - date/time helpers (IST-aware)
                     - Tasks tab: TaskRow, Checkbox, useNow
-                    - Routines tab: RoutineRow, WeekDots, WeekChart, RoutinesView
+                    - Routines tab: RoutineRow, WeekDots, WeekChart,
+                      DayTimeline (lane-packed multi-row timeline),
+                      packTimelineLanes(), RoutinesView
                     - Vault tab: MonthGrid, VaultHabitCard, VaultHabitsSection,
                       ProjectTaskRow, ProjectCard, VaultProjectsSection, VaultView
                     - Quest tab: LifeAreaCard, GoodHabitCard, BadHabitCard,
                       RewardCard, QuestView, XP/level helpers
                     - TodoApp: root component, tab switching, in-app banner
+                    - <style> block is mobile-first; desktop/laptop overrides
+                      (min-width: 900px / 1240px) live in one block near the
+                      end of the tag rather than scattered inline — see
+                      "Desktop layout" below before adding more breakpoints
 index.html         - shell, PWA meta tags, loads bundle.js
 manifest.json       - PWA manifest (icons, standalone display, theme color)
 sw.js               - service worker, cache-first offline strategy
@@ -80,6 +91,31 @@ file exists yet):
 If you extract this into a proper theme file, keep these values — they're
 intentional, not arbitrary.
 
+## Desktop layout
+
+The app was originally mobile-first only — on a laptop it rendered as a
+narrow 640px phone-shaped card floating in a mostly-empty page. Fixed
+2026-07-23 by adding real desktop breakpoints rather than just raising the
+mobile max-width:
+
+- `@media (min-width: 900px)`: `.panel` widens to 1180px with a proper
+  window shadow + a subtle grid-texture background behind it; single-column
+  reading views (Tasks/Today/Routines — matched via
+  `.task-list:not(.vault-scroll)`) cap their line-length at 840px and
+  center, so text doesn't stretch edge-to-edge; card-grid views (Vault,
+  Quest — `.vault-scroll`) go to a 3-column grid instead.
+- `@media (min-width: 1240px)`: panel widens further to 1320px, Vault grid
+  goes to 4 columns.
+- Added `:hover` states (tab buttons, routine/vault/project/reward/quest
+  cards, checkboxes) gated behind `@media (hover: hover) and (pointer: fine)`
+  so touch devices never get a "stuck" hover state.
+- Phones (`max-width: 640px`) are untouched by any of this — verified
+  pixel-identical before/after at 390px width.
+
+If you add new views/sections, follow the same pattern: list-style content
+goes in the width-capped bucket, card-grid content goes in the full-width
+bucket. Don't add a new one-off max-width somewhere else in the file.
+
 ## Features implemented
 
 **Tasks tab**
@@ -91,12 +127,25 @@ intentional, not arbitrary.
   "current" / "next" detection
 - IST clock + date, live-updating
 - Swipe-left to delete (with axis-lock — see Known Issues)
-- Tap a row to edit label/time/duration inline
+- Tap a row to edit label/time/duration/alternatives inline
 - Daily streak tracking (`history: string[]` of IST date strings per routine)
 - 7-day dot strip per routine + aggregate 7-day bar chart
 - Quest stats: today's completion ring, best streak
 - In-app banner toast when a routine becomes "current" — fires app-wide,
   not just when the Routines tab is open
+- **Optional alternatives** (added 2026-07-24): a routine can have
+  `alternatives: string[]` — other acceptable activities for the same
+  slot (e.g. 3-4pm: "Study", alternatives `["Drawing"]`). Set via the "or"
+  button next to the composer, or edited later from the row's inline edit
+  form. Purely informational/display (`or: Drawing` shown under the
+  label) — doesn't currently split XP or streak credit between options.
+  If that's wanted later, it needs a real data-model decision (e.g. a
+  per-day `chosenAlternative` field) rather than a quick patch.
+- **No per-row "mark done" checkbox** (removed 2026-07-24, was `.quest-check`
+  in `RoutineRow`) — routines are marked done from the Today tab's
+  current-routine card instead. Was removed because it was reported as
+  redundant/confusing; if you want row-level marking back, it's a small
+  re-add (`onToggleToday` prop is still wired through, just unused).
 
 **Vault tab** ("Productivity Vault" — habit streaks + project manager)
 - Habit cards: weekly-goal frequency habits (e.g. "6x/week"), each with a
@@ -129,7 +178,51 @@ intentional, not arbitrary.
 
 ## Changelog
 
+**2026-07-24**
+- **Fixed: routines timeline was unusable with a dense schedule.** With
+  ~10+ routines in a day (reported via screenshot: School, Study, Karate,
+  Shower, etc. all packed into a few hours), every routine drew on the
+  *same* single row, so anything close together in time visually
+  collided — labels overlapping, colors bleeding into each other. Fixed
+  with proper interval-partitioning lane-packing
+  (`packTimelineLanes()`, near `DayTimeline`): routines sorted by start
+  time get greedily assigned to the first lane whose last item already
+  ended, which is optimal for minimum lane count (classic "minimum
+  lecture rooms" algorithm). `DayTimeline` now renders however many rows
+  are needed and the track grows to fit. Verified with a 30-routine dense
+  synthetic dataset: zero overlapping blocks in the same lane.
+- **Fixed: hour axis labels (12a/3a/6a...) were invisible.** They used
+  `top: -16px` inside `.timeline-track`, which has `overflow: hidden` —
+  so they were being silently clipped the entire time, on every device.
+  Moved them into their own `.timeline-hours` row above the (still
+  clipped) track instead of relying on negative positioning inside it.
+- **Fixed: a routine spanning past midnight (e.g. seed data's "Sleep",
+  11pm + 7.5h) got its block cut off mid-label** ("Sl...") because its
+  computed width pushed past the track's right edge and got clipped by
+  `overflow: hidden`. Block width is now clamped to end exactly at the
+  track edge (`Math.min(rawWidthPct, 100 - leftPct)`). Note: this clamps
+  rather than wraps the overflow to a second segment at the start of the
+  day — acceptable tradeoff for now, full tooltip info is still in the
+  `title` attribute.
+- **Redesigned the timeline legend.** Was `flex-wrap` chips that became
+  an unreadable wall of fragments with many routines. Now a responsive
+  grid (2/3/4 columns by viewport width) with each entry showing time +
+  label, ellipsis-truncated, sorted by start time.
+- **Removed the per-row "mark done" checkbox from the Routines list** —
+  see Features section above for details and how to re-add it if wanted.
+- **Added optional routine alternatives** — see Features section above.
+- Bumped service worker cache to `tasksh-v13`.
+
 **2026-07-23**
+- **Fixed: app looked like a phone simulator on laptops/desktops** — a
+  narrow 640px card centered in an otherwise-empty page, no matter how
+  wide the window was. See the new "Desktop layout" section above for
+  what changed (widened panel, capped line-length for list views,
+  multi-column grids for card views, hover states, breakpoints at 900px
+  / 1240px). Phones are unaffected — verified pixel-identical at 390px.
+- Bumped service worker cache to `tasksh-v12`.
+
+**2026-07-23 (routines scroll fix)**
 - **Fixed: Routines tab barely scrollable / felt broken.** The hero clock
   card, quest stats, timeline, week chart, composer, and duration chips
   were all fixed (non-scrolling) siblings above `.task-list` — only the

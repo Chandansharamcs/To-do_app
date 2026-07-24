@@ -477,12 +477,48 @@ function CalendarHeatmap({ counts, weeksBack = 12, colorSteps }) {
 
 // horizontal 24h timeline strip -- draws each routine as a positioned,
 // width-proportional block instead of a plain list
+// Greedy interval-partitioning: assigns each routine to the first lane whose
+// last-placed item ends at or before this one's start. Sorted-by-start input
+// + "first free lane" is optimal for minimum lane count (classic interval
+// scheduling result), so overlapping/back-to-back routines stack into rows
+// instead of colliding on one strip.
+function packTimelineLanes(items) {
+  const laneEnds = [];
+  const placed = [];
+  for (const item of items) {
+    let lane = laneEnds.findIndex((end) => item.start >= end);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(item.end);
+    } else {
+      laneEnds[lane] = item.end;
+    }
+    placed.push({ ...item, lane });
+  }
+  return { placed, laneCount: Math.max(1, laneEnds.length) };
+}
+
 function DayTimeline({ routines, nowMinutes }) {
   const [mounted, setMounted] = useState(false);
+  const [trackWidth, setTrackWidth] = useState(0);
+  const trackRef = useRef(null);
+
   useEffect(() => {
     const t = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(t);
   }, []);
+
+  useEffect(() => {
+    if (!trackRef.current) return;
+    const el = trackRef.current;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setTrackWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    setTrackWidth(el.getBoundingClientRect().width);
+    return () => ro.disconnect();
+  }, []);
+
   const DAY = 24 * 60;
   const nowPct = (nowMinutes / DAY) * 100;
   const hourMarks = [0, 3, 6, 9, 12, 15, 18, 21, 24];
@@ -492,10 +528,29 @@ function DayTimeline({ routines, nowMinutes }) {
     if (hh === 12) return "12p";
     return hh > 12 ? `${hh - 12}p` : `${hh}a`;
   };
+  const todayStr = getISTDateString(0);
+
+  const items = routines.map((r) => {
+    const start = timeToMinutes(r.time);
+    return { r, start, end: start + Math.max(1, r.duration) };
+  });
+  const { placed, laneCount } = packTimelineLanes(items);
+
+  const LANE_H = 30;
+  const LANE_GAP = 4;
+  const TOP_PAD = 7;
+  const trackHeight = TOP_PAD * 2 + laneCount * LANE_H + (laneCount - 1) * LANE_GAP;
 
   return (
     <div className="timeline-wrap">
-      <div className="timeline-track">
+      <div className="timeline-hours">
+        {hourMarks.map((h) => (
+          <div key={h} className="timeline-hour" style={{ left: `${(h / 24) * 100}%` }}>
+            <span>{hourLabel(h)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="timeline-track" ref={trackRef} style={{ height: trackHeight }}>
         {/* night/day shading: dim overnight hours (10pm-6am) */}
         <div className="timeline-night" style={{ left: "0%", width: `${(6 / 24) * 100}%` }} />
         <div className="timeline-night" style={{ left: `${(22 / 24) * 100}%`, width: `${(2 / 24) * 100}%` }} />
@@ -503,30 +558,30 @@ function DayTimeline({ routines, nowMinutes }) {
         {hourMarks.map((h) => (
           <div key={h} className="timeline-gridline" style={{ left: `${(h / 24) * 100}%` }} />
         ))}
-        {hourMarks.map((h) => (
-          <div key={h} className="timeline-hour" style={{ left: `${(h / 24) * 100}%` }}>
-            <span>{hourLabel(h)}</span>
-          </div>
-        ))}
 
         {/* elapsed-today shading, up to now */}
         <div className="timeline-elapsed" style={{ width: mounted ? `${nowPct}%` : "0%" }} />
 
-        {routines.map((r, i) => {
-          const start = timeToMinutes(r.time);
+        {placed.map(({ r, start, lane }, i) => {
           const leftPct = (start / DAY) * 100;
-          const widthPct = Math.max(0.8, (r.duration / DAY) * 100);
-          const doneToday = (r.history || []).includes(getISTDateString(0));
+          const rawWidthPct = (Math.max(1, r.duration) / DAY) * 100;
+          // clamp so a late/long routine's block ends at the track edge
+          // instead of overflowing past it and getting clipped mid-label
+          const widthPct = Math.max(0.8, Math.min(rawWidthPct, 100 - leftPct));
+          const doneToday = (r.history || []).includes(todayStr);
           const color = colorForId(r.id);
-          const showLabel = (widthPct / 100) * 340 > 46; // rough px width heuristic
+          const blockPx = (widthPct / 100) * trackWidth;
+          const showLabel = blockPx > 44;
           return (
             <div
               key={r.id}
               className={`timeline-block ${doneToday ? "done" : ""}`}
               style={{
                 left: `${leftPct}%`,
+                top: TOP_PAD + lane * (LANE_H + LANE_GAP),
                 width: mounted ? `${widthPct}%` : "0%",
-                transitionDelay: `${i * 25}ms`,
+                height: LANE_H,
+                transitionDelay: `${i * 20}ms`,
                 background: doneToday
                   ? "linear-gradient(180deg, #3A4048, #2A2F36)"
                   : `linear-gradient(180deg, ${color}, ${color}CC)`,
@@ -538,7 +593,7 @@ function DayTimeline({ routines, nowMinutes }) {
             </div>
           );
         })}
-        <div className="timeline-now" style={{ left: `${nowPct}%` }}>
+        <div className="timeline-now" style={{ left: `${nowPct}%`, top: -3, bottom: -3 }}>
           <span className="timeline-now-tag">{minutesToLabel(nowMinutes)}</span>
         </div>
       </div>
@@ -546,11 +601,12 @@ function DayTimeline({ routines, nowMinutes }) {
       {routines.length > 0 && (
         <div className="timeline-legend">
           {routines.map((r) => {
-            const doneToday = (r.history || []).includes(getISTDateString(0));
+            const doneToday = (r.history || []).includes(todayStr);
             return (
               <span key={r.id} className={`timeline-legend-chip ${doneToday ? "done" : ""}`}>
                 <span className="timeline-legend-dot" style={{ background: doneToday ? "#3A4048" : colorForId(r.id) }} />
-                {r.label}
+                <span className="timeline-legend-time">{minutesToLabel(timeToMinutes(r.time))}</span>
+                <span className="timeline-legend-label">{r.label}</span>
               </span>
             );
           })}
@@ -636,11 +692,13 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
   const [eLabel, setELabel] = useState(routine.label);
   const [eTime, setETime] = useState(routine.time);
   const [eDuration, setEDuration] = useState(routine.duration);
+  const [eAlts, setEAlts] = useState(routine.alternatives || []);
 
   const openEdit = () => {
     setELabel(routine.label);
     setETime(routine.time);
     setEDuration(routine.duration);
+    setEAlts(routine.alternatives || []);
     setEditing(true);
   };
 
@@ -651,6 +709,7 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
       label: text,
       time: eTime || routine.time,
       duration: Math.max(5, +eDuration || routine.duration),
+      alternatives: eAlts.map((a) => a.trim()).filter(Boolean),
     });
     setEditing(false);
   };
@@ -750,6 +809,35 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
               />
               <span className="edit-unit">min</span>
             </div>
+            <div className="alt-composer">
+              <span className="alt-composer-hint">optional: other things you could do instead</span>
+              {eAlts.map((a, i) => (
+                <div className="alt-composer-row" key={i}>
+                  <input
+                    type="text"
+                    placeholder={`alternative ${i + 1}`}
+                    value={a}
+                    onChange={(e) => {
+                      const next = [...eAlts];
+                      next[i] = e.target.value;
+                      setEAlts(next);
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+                  />
+                  <button
+                    type="button"
+                    className="alt-remove-btn"
+                    onClick={() => setEAlts(eAlts.filter((_, j) => j !== i))}
+                    aria-label="Remove alternative"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <button type="button" className="alt-add-btn" onClick={() => setEAlts([...eAlts, ""])}>
+                + another option
+              </button>
+            </div>
             <div className="edit-actions">
               <button className="edit-cancel" onClick={() => setEditing(false)}>cancel</button>
               <button className="edit-save" onClick={saveEdit}>save</button>
@@ -768,6 +856,9 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
               )}
             </div>
             <span className="routine-label">{routine.label}</span>
+            {routine.alternatives && routine.alternatives.length > 0 && (
+              <span className="routine-alts">or: {routine.alternatives.join(" · ")}</span>
+            )}
             <span className="routine-span">
               {minutesToLabel(startMin)} – {minutesToLabel(endMin)} · {formatDuration(routine.duration)}
             </span>
@@ -775,33 +866,6 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
           </div>
         )}
 
-        {!editing && (
-          <button
-            className={`quest-check ${doneToday ? "done" : ""}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleToday(routine.id);
-            }}
-            onPointerDown={(e) => e.stopPropagation()}
-            aria-label="Mark done today"
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14">
-              <polyline
-                points="4,13 9,18 20,6"
-                fill="none"
-                stroke="#0B0D10"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={{
-                  strokeDasharray: 24,
-                  strokeDashoffset: doneToday ? 0 : 24,
-                  transition: "stroke-dashoffset 220ms ease",
-                }}
-              />
-            </svg>
-          </button>
-        )}
       </div>
     </div>
   );
@@ -844,6 +908,8 @@ function RoutinesView({ routines, setRoutines }) {
   const [time, setTime] = useState(() => minutesToInputValue(nowMinutes));
   const [duration, setDuration] = useState(30);
   const [flash, setFlash] = useState(false);
+  const [alts, setAlts] = useState([]);
+  const [showAlts, setShowAlts] = useState(false);
 
   const addRoutine = () => {
     const text = label.trim();
@@ -854,13 +920,16 @@ function RoutinesView({ routines, setRoutines }) {
       return;
     }
     const finalTime = time || minutesToInputValue(nowMinutes);
+    const alternatives = alts.map((a) => a.trim()).filter(Boolean);
     setRoutines((prev) => [
       ...prev,
-      { id: makeId(), time: finalTime, label: text, duration: Math.max(5, +duration || 30), history: [] },
+      { id: makeId(), time: finalTime, label: text, duration: Math.max(5, +duration || 30), history: [], alternatives },
     ]);
     setLabel("");
     setTime(minutesToInputValue(nowMinutes));
     setDuration(30);
+    setAlts([]);
+    setShowAlts(false);
     sound.click();
   };
 
@@ -960,12 +1029,53 @@ function RoutinesView({ routines, setRoutines }) {
           value={time}
           onChange={(e) => setTime(e.target.value)}
         />
+        <button
+          type="button"
+          className={`alt-toggle-btn ${showAlts ? "active" : ""}`}
+          onClick={() => setShowAlts((v) => !v)}
+          aria-label="Add optional alternatives for this slot"
+          title="Add optional alternatives for this slot"
+        >
+          or
+        </button>
         <button className="add-btn" onClick={addRoutine} aria-label="Add routine">
           <svg viewBox="0 0 24 24" width="16" height="16">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
           </svg>
         </button>
       </div>
+
+      {showAlts && (
+        <div className="alt-composer">
+          <span className="alt-composer-hint">optional: other things you could do in this slot instead</span>
+          {alts.map((a, i) => (
+            <div className="alt-composer-row" key={i}>
+              <input
+                type="text"
+                placeholder={`alternative ${i + 1}, e.g. "Drawing"`}
+                value={a}
+                onChange={(e) => {
+                  const next = [...alts];
+                  next[i] = e.target.value;
+                  setAlts(next);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && addRoutine()}
+              />
+              <button
+                type="button"
+                className="alt-remove-btn"
+                onClick={() => setAlts(alts.filter((_, j) => j !== i))}
+                aria-label="Remove alternative"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button type="button" className="alt-add-btn" onClick={() => setAlts([...alts, ""])}>
+            + another option
+          </button>
+        </div>
+      )}
 
       <div className="duration-chips">
         {DURATION_PRESETS.map((d) => (
@@ -3090,6 +3200,14 @@ function TodoApp() {
         .routine-row.idle .routine-label,
         .routine-row.idle .routine-time { color: #4B5563; }
 
+        .routine-alts {
+          display: block;
+          font-size: 11px;
+          color: #6B7280;
+          font-style: italic;
+          margin-top: 2px;
+        }
+
         .routine-span {
           display: block;
           font-family: 'JetBrains Mono', monospace;
@@ -3525,10 +3643,11 @@ function TodoApp() {
 
         .timeline-track {
           position: relative;
-          height: 46px;
+          min-height: 46px;
           background: #191D23;
           border-radius: 8px;
           overflow: hidden;
+          transition: height 220ms ease;
         }
 
         .timeline-night {
@@ -3556,21 +3675,29 @@ function TodoApp() {
           pointer-events: none;
         }
 
+        .timeline-hours {
+          position: relative;
+          height: 14px;
+          margin-bottom: 4px;
+        }
+
         .timeline-hour {
           position: absolute;
-          top: -16px;
+          top: 0;
           transform: translateX(-50%);
           font-family: 'JetBrains Mono', monospace;
           font-size: 8.5px;
           color: #4B5563;
+          white-space: nowrap;
         }
+
+        .timeline-hour:first-child { transform: translateX(0); }
+        .timeline-hour:last-child { transform: translateX(-100%); }
 
         .timeline-block {
           position: absolute;
-          top: 7px;
-          height: 32px;
           border-radius: 5px;
-          transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
+          transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1), top 220ms ease;
           min-width: 3px;
           display: flex;
           align-items: center;
@@ -3612,20 +3739,28 @@ function TodoApp() {
         }
 
         .timeline-legend {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px 10px;
+          display: grid;
+          grid-template-columns: repeat(2, 1fr);
+          gap: 6px 14px;
           margin-top: 14px;
           padding-top: 10px;
           border-top: 1px solid #1E2228;
         }
 
+        @media (min-width: 900px) {
+          .timeline-legend { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (min-width: 1240px) {
+          .timeline-legend { grid-template-columns: repeat(4, 1fr); }
+        }
+
         .timeline-legend-chip {
           display: flex;
           align-items: center;
-          gap: 5px;
+          gap: 6px;
+          min-width: 0;
           font-family: 'JetBrains Mono', monospace;
-          font-size: 9.5px;
+          font-size: 10px;
           color: #9CA3AF;
         }
 
@@ -3636,6 +3771,21 @@ function TodoApp() {
           height: 7px;
           border-radius: 50%;
           flex-shrink: 0;
+        }
+
+        .timeline-legend-time {
+          flex-shrink: 0;
+          color: #6B7280;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .timeline-legend-chip.done .timeline-legend-time { color: #4B5563; }
+
+        .timeline-legend-label {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         /* ---- shared micro-interactions ---- */
@@ -3820,6 +3970,85 @@ function TodoApp() {
           border-radius: 8px;
           padding: 3px;
         }
+
+        .alt-toggle-btn {
+          flex-shrink: 0;
+          background: #0F1215;
+          border: 1px solid #23272E;
+          border-radius: 8px;
+          padding: 0 12px;
+          color: #6B7280;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          cursor: pointer;
+          transition: all 150ms ease;
+        }
+
+        .alt-toggle-btn:hover { color: #9CA3AF; border-color: #2C3138; }
+        .alt-toggle-btn.active { color: #5EEAD4; border-color: #5EEAD4; background: rgba(94,234,212,0.08); }
+
+        .alt-composer {
+          margin: 0 18px 14px;
+          padding: 10px 12px;
+          background: #0F1215;
+          border: 1px dashed #23272E;
+          border-radius: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+        }
+
+        .alt-composer-hint {
+          font-size: 10.5px;
+          color: #565D68;
+        }
+
+        .alt-composer-row {
+          display: flex;
+          gap: 6px;
+        }
+
+        .alt-composer-row input[type="text"] {
+          flex: 1;
+          background: #14171C;
+          border: 1px solid #23272E;
+          border-radius: 6px;
+          padding: 8px 10px;
+          color: #E7EAEE;
+          font-family: 'Inter', sans-serif;
+          font-size: 12.5px;
+          outline: none;
+        }
+
+        .alt-composer-row input[type="text"]:focus { border-color: #5EEAD4; }
+
+        .alt-remove-btn {
+          flex-shrink: 0;
+          width: 30px;
+          background: transparent;
+          border: 1px solid #23272E;
+          border-radius: 6px;
+          color: #6B7280;
+          font-size: 15px;
+          cursor: pointer;
+        }
+
+        .alt-remove-btn:hover { color: #F0576B; border-color: #F0576B; }
+
+        .alt-add-btn {
+          align-self: flex-start;
+          background: transparent;
+          border: none;
+          color: #5EEAD4;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          cursor: pointer;
+          padding: 2px 0;
+        }
+
+        .alt-add-btn:hover { text-decoration: underline; }
+
+        .routine-edit .alt-composer { margin-left: 0; margin-right: 0; }
 
         .prio-select button {
           border: none;
