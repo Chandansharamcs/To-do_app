@@ -11,7 +11,7 @@ crons = ["* * * * *"]
 # Then paste the id it prints below.
 [[kv_namespaces]]
 binding = "TASKSH_KV"
-id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+id = "dfcdeba05c884f529c6d4b579630eba0"
 
 [vars]
 VAPID_CONTACT = "mailto:youremail@example.com"
