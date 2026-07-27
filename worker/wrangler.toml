@@ -1,0 +1,19 @@
+name = "tasksh-notify"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Runs once a minute, checking whether any routine is starting right now.
+[triggers]
+crons = ["* * * * *"]
+
+# Created by: wrangler kv namespace create TASKSH_KV
+# Then paste the id it prints below.
+[[kv_namespaces]]
+binding = "TASKSH_KV"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+[vars]
+VAPID_CONTACT = "mailto:youremail@example.com"
+# VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are set as secrets, not here —
+# see README.md. Never commit the private key to git.
