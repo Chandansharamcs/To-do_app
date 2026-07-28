@@ -2351,6 +2351,91 @@ const STORAGE_KEY_PROJECTS = "tasksh.projects.v1";
 const STORAGE_KEY_GOOD_HABITS = "tasksh.goodhabits.v1";
 const STORAGE_KEY_BAD_HABITS = "tasksh.badhabits.v1";
 const STORAGE_KEY_REWARDS = "tasksh.rewards.v1";
+const STORAGE_KEY_DEVICE_ID = "tasksh.deviceid.v1";
+const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
+
+// ---- push notifications config ----
+// 1. Deploy the Cloudflare Worker (see /worker/ in the handoff) and paste its
+//    URL here, e.g. "https://tasksh-notify.yourname.workers.dev"
+// 2. This public key must exactly match the VAPID_PUBLIC_KEY the worker was
+//    generated with (they're a matched keypair — the private half lives only
+//    in the worker's secrets, never in this client bundle).
+const NOTIFY_WORKER_URL = "https://tasksh-notify.techcraftor.workers.dev";
+const VAPID_PUBLIC_KEY = "BO0VGBlyG--zbIASY0_ws98Y9V25Sh9QjS1OwR8eMV9hhgGo50N38rAXuJ-umahm5ORhmQcpG_ibLEFOOVRI4_Y";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
+function getDeviceId() {
+  let id = localStorage.getItem(STORAGE_KEY_DEVICE_ID);
+  if (!id) {
+    id = "dev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem(STORAGE_KEY_DEVICE_ID, id);
+  }
+  return id;
+}
+
+async function subscribeToPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    throw new Error("Push notifications aren't supported in this browser.");
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error("Notification permission was not granted.");
+  }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+  }
+  const deviceId = getDeviceId();
+  const res = await fetch(`${NOTIFY_WORKER_URL}/subscribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId, subscription: sub.toJSON() }),
+  });
+  if (!res.ok) throw new Error("Worker rejected the subscription (check NOTIFY_WORKER_URL).");
+  return true;
+}
+
+async function unsubscribeFromPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch {}
+  const deviceId = getDeviceId();
+  try {
+    await fetch(`${NOTIFY_WORKER_URL}/unsubscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId }),
+    });
+  } catch {}
+}
+
+async function syncRoutinesToWorker(routines) {
+  const deviceId = getDeviceId();
+  try {
+    await fetch(`${NOTIFY_WORKER_URL}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId,
+        routines: routines.map((r) => ({ id: r.id, time: r.time, label: r.label })),
+      }),
+    });
+  } catch {}
+}
 
 function loadStored(key, fallback) {
   try {
@@ -2572,6 +2657,37 @@ function TodoApp() {
   const importInputRef = useRef(null);
   const [dataMsg, setDataMsg] = useState(null);
   const now = useNow();
+  const [notifyEnabled, setNotifyEnabled] = useState(
+    () => localStorage.getItem(STORAGE_KEY_NOTIFY_ENABLED) === "1"
+  );
+  const [notifyBusy, setNotifyBusy] = useState(false);
+
+  useEffect(() => {
+    if (notifyEnabled) syncRoutinesToWorker(routines);
+  }, [routines, notifyEnabled]);
+
+  const toggleNotify = async () => {
+    if (notifyBusy) return;
+    setNotifyBusy(true);
+    try {
+      if (notifyEnabled) {
+        await unsubscribeFromPush();
+        localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "0");
+        setNotifyEnabled(false);
+        showDataMsg("success", "Notifications turned off");
+      } else {
+        await subscribeToPush();
+        await syncRoutinesToWorker(routines);
+        localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "1");
+        setNotifyEnabled(true);
+        showDataMsg("success", "Notifications on — you'll get pinged when a routine starts");
+      }
+    } catch (err) {
+      showDataMsg("error", err.message || "Couldn't set up notifications");
+    } finally {
+      setNotifyBusy(false);
+    }
+  };
 
   const showDataMsg = (type, text) => {
     setDataMsg({ type, text });
@@ -2883,6 +2999,8 @@ function TodoApp() {
         }
 
         .titlebar-icon-btn:hover { color: #5EEAD4; border-color: #5EEAD4; }
+        .titlebar-icon-btn.notify-on { color: #5EEAD4; border-color: #5EEAD4; background: rgba(94,234,212,0.08); }
+        .titlebar-icon-btn:disabled { opacity: 0.5; cursor: default; }
 
         .data-toast {
           margin: 10px 18px 0;
@@ -5002,6 +5120,26 @@ function TodoApp() {
               onChange={handleImportFile}
               style={{ display: "none" }}
             />
+            <button
+              className={`titlebar-icon-btn ${notifyEnabled ? "notify-on" : ""}`}
+              onClick={toggleNotify}
+              disabled={notifyBusy}
+              aria-label={notifyEnabled ? "Turn off notifications" : "Turn on notifications"}
+              title={notifyEnabled ? "Notifications on — tap to turn off" : "Turn on routine notifications"}
+            >
+              {notifyEnabled ? (
+                <svg viewBox="0 0 24 24" width="14" height="14">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="14" height="14">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M3 3l18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              )}
+            </button>
             <button
               className="titlebar-icon-btn"
               onClick={toggleSound}
