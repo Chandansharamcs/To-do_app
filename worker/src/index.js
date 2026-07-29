@@ -71,7 +71,10 @@ async function runCheck(env) {
   );
 
   const { hhmm, dateStr } = istNowParts();
+  console.log(`[check] IST now = ${hhmm} on ${dateStr}`);
+
   const subList = await env.TASKSH_KV.list({ prefix: "sub:" });
+  console.log(`[check] found ${subList.keys.length} subscribed device(s)`);
 
   for (const key of subList.keys) {
     const deviceId = key.name.slice("sub:".length);
@@ -79,17 +82,26 @@ async function runCheck(env) {
       env.TASKSH_KV.get(`sub:${deviceId}`),
       env.TASKSH_KV.get(`routines:${deviceId}`),
     ]);
-    if (!subRaw || !routinesRaw) continue;
+    if (!subRaw || !routinesRaw) {
+      console.log(`[check] device ${deviceId}: missing sub or routines, skipping`);
+      continue;
+    }
 
     const subscription = JSON.parse(subRaw);
     const routines = JSON.parse(routinesRaw);
+    console.log(`[check] device ${deviceId}: ${routines.length} routine(s) synced -> ${JSON.stringify(routines.map((r) => r.time))}`);
+
     const due = routines.filter((r) => r.time === hhmm);
     if (due.length === 0) continue;
+    console.log(`[check] device ${deviceId}: ${due.length} routine(s) due right now: ${JSON.stringify(due.map((r) => r.label))}`);
 
     for (const routine of due) {
       const firedKey = `fired:${deviceId}:${routine.id}:${dateStr}`;
       const alreadyFired = await env.TASKSH_KV.get(firedKey);
-      if (alreadyFired) continue;
+      if (alreadyFired) {
+        console.log(`[check] device ${deviceId}: "${routine.label}" already fired today, skipping`);
+        continue;
+      }
 
       const payload = JSON.stringify({
         title: "tasks.sh",
@@ -100,8 +112,9 @@ async function runCheck(env) {
 
       try {
         await webpush.sendNotification(subscription, payload);
+        console.log(`[check] device ${deviceId}: SENT push for "${routine.label}"`);
       } catch (err) {
-        // 404/410 = subscription is dead (uninstalled, permission revoked, etc.)
+        console.log(`[check] device ${deviceId}: SEND FAILED for "${routine.label}" - ${err.statusCode || ""} ${err.message || err}`);
         if (err.statusCode === 404 || err.statusCode === 410) {
           await env.TASKSH_KV.delete(`sub:${deviceId}`);
           await env.TASKSH_KV.delete(`routines:${deviceId}`);
