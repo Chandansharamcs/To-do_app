@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v19`** | 2026-07-31 | Fix AI 404 — dynamic model resolution |
 | **`v18`** | 2026-07-31 | In-app AI key entry |
 | **`v17`** | 2026-07-31 | AI assistant tab, Doze priority fix |
 | **`v16`** | 2026-07-31 | New terminal-window icon set, docs overhaul |
@@ -45,6 +46,44 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-07-31 — `tasksh-v19`**
+- **Fixed: every AI request returned 404.** The worker had
+  `gemini-2.5-flash-lite` hardcoded, and Google retired that ID. This was
+  always going to happen — Google runs a rolling retirement schedule
+  (2.0-flash died June 2026, 2.5-flash is slated for October) so *any*
+  hardcoded model ID has an expiry date.
+  - **Fix: the model is now discovered, not assumed.** The worker calls
+    `ListModels` with your key, filters to ones supporting
+    `generateContent`, and picks the best by preference order
+    (`gemini-flash-lite-latest` → `flash-latest` → `3.5-flash` →
+    `3-flash` → the 2.5 pair). If none match it falls back to any
+    non-preview flash model, so an unrecognised future generation still
+    works untouched.
+  - Result cached in KV for 24h, keyed on the last 8 chars of the API
+    key, so this costs one extra call per key per day.
+  - A 404 mid-flight busts the cache, re-resolves once and retries, so a
+    model retired *between* requests self-heals rather than erroring.
+- **Fixed: verifying a key burned generation quota.** `/ai-verify` used
+  to send a real prompt, so every paste — including retries after a typo
+  — ate a request from the daily allowance. It now uses `ListModels`,
+  which is free metadata, and additionally reports which model was
+  selected.
+- **Added: a 3-second cooldown between AI requests.** Repeatedly tapping
+  ask on a failing request is the fastest way to exhaust a free-tier day.
+  Rapid taps now show a countdown instead of firing. Verified: 5 rapid
+  clicks produce 0 requests.
+- **Improved: quota errors read like English.** A 429 now says "Daily AI
+  limit reached. It resets at 12:30 PM IST" (Google's quota resets at
+  midnight Pacific) rather than a raw status code, and no longer risks
+  being mistaken for a key problem.
+- **Added: `GET /ai-models?key=…`** — lists exactly what a key can call
+  and which model was chosen. For diagnosing this class of failure with
+  evidence instead of guesswork.
+- **Verified:** 9 model-resolution tests covering the current retirement,
+  older keys, unrecognised future models, cache behaviour, and invalid
+  keys; plus browser tests for the quota message and spam guard.
+- Bumped service worker cache to `tasksh-v19`.
 
 **2026-07-31 — `tasksh-v18`**
 - **Changed: the AI key is now entered in the app, not deployed as a

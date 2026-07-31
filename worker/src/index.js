@@ -149,9 +149,71 @@ async function runCheck(env) {
 // endpoint -- it does not store the snapshot, and no data touches KV.
 // ---------------------------------------------------------------------------
 
-const AI_MODEL = "gemini-2.5-flash-lite";
-const AI_ENDPOINT = (key) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${key}`;
+const AI_ENDPOINT = (model, key) =>
+  `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${key}`;
+const AI_LIST_ENDPOINT = (key) =>
+  `https://generativelanguage.googleapis.com/v1beta/models?key=${key}&pageSize=200`;
+
+// Google retires model IDs on a rolling basis (2.0-flash died June 2026,
+// 2.5-flash-lite was slated for mid/late 2026...), so hardcoding one ID
+// guarantees a 404 eventually. Instead we ask the key which models it can
+// actually call and pick the best match by preference order. Cheap "-latest"
+// aliases first, then concrete generations newest-first.
+const MODEL_PREFERENCES = [
+  "gemini-flash-lite-latest",
+  "gemini-flash-latest",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+];
+
+async function listUsableModels(key) {
+  const res = await fetch(AI_LIST_ENDPOINT(key));
+  if (!res.ok) {
+    const detail = await res.text();
+    const err = new Error(detail.slice(0, 300));
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+  }
+  const data = await res.json();
+  // keep only models that can actually do generateContent
+  return (data.models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
+    .map((m) => m.name); // e.g. "models/gemini-flash-latest"
+}
+
+// Picks the best available model for this key. Cached in KV for a day so we
+// don't pay a ListModels round-trip on every single request.
+async function resolveModel(key, env) {
+  const cacheKey = `aimodel:${key.slice(-8)}`;
+  try {
+    const cached = await env.TASKSH_KV.get(cacheKey);
+    if (cached) return cached;
+  } catch {}
+
+  const available = await listUsableModels(key);
+  const bare = (n) => n.replace(/^models\//, "");
+
+  let chosen = null;
+  for (const want of MODEL_PREFERENCES) {
+    const hit = available.find((n) => bare(n) === want);
+    if (hit) { chosen = hit; break; }
+  }
+  // nothing from the preference list -- fall back to any non-preview flash,
+  // then literally anything that can generate
+  if (!chosen) {
+    chosen = available.find((n) => /flash/.test(n) && !/preview|exp|thinking|image|tts/.test(n))
+          || available.find((n) => !/preview|exp|embedding|image|tts|aqa/.test(n))
+          || available[0];
+  }
+  if (!chosen) throw new Error("This key has no usable text models.");
+
+  console.log(`[ai] resolved model: ${chosen} (from ${available.length} available)`);
+  try { await env.TASKSH_KV.put(cacheKey, chosen, { expirationTtl: 86400 }); } catch {}
+  return chosen;
+}
 
 const VALID_AREAS = ["work", "fitness", "health", "self"];
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -343,13 +405,38 @@ async function handleAI(request, env) {
     },
   };
 
-  let res;
+  let model;
   try {
-    res = await fetch(AI_ENDPOINT(apiKey), {
+    model = await resolveModel(apiKey, env);
+  } catch (err) {
+    if (err.status === 400 && String(err.detail || "").includes("API_KEY_INVALID")) {
+      return json({ error: "bad_key", message: "That API key was rejected by Google." }, 401);
+    }
+    if (err.status === 403) {
+      return json({ error: "bad_key", message: "That API key isn't authorised for the Gemini API." }, 401);
+    }
+    console.log(`[ai] model resolution failed: ${err.message || err}`);
+    return json({ error: "Couldn't work out which AI model to use." }, 502);
+  }
+
+  const call = (m) =>
+    fetch(AI_ENDPOINT(m, apiKey), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+
+  let res;
+  try {
+    res = await call(model);
+    // A cached model ID can go stale when Google retires it mid-cycle. Clear
+    // the cache, re-resolve once, and retry before surfacing an error.
+    if (res.status === 404) {
+      console.log(`[ai] ${model} returned 404 — re-resolving`);
+      try { await env.TASKSH_KV.delete(`aimodel:${apiKey.slice(-8)}`); } catch {}
+      model = await resolveModel(apiKey, env);
+      res = await call(model);
+    }
   } catch (err) {
     console.log(`[ai] network error: ${err.message || err}`);
     return json({ error: "Couldn't reach the AI service." }, 502);
@@ -357,7 +444,7 @@ async function handleAI(request, env) {
 
   if (!res.ok) {
     const detail = await res.text();
-    console.log(`[ai] upstream ${res.status}: ${detail.slice(0, 300)}`);
+    console.log(`[ai] upstream ${res.status} on ${model}: ${detail.slice(0, 300)}`);
     // 400 with API_KEY_INVALID, or 403, means the key itself is the problem --
     // surface that distinctly so the app can re-prompt instead of just retrying
     if (res.status === 400 && detail.includes("API_KEY_INVALID")) {
@@ -367,7 +454,10 @@ async function handleAI(request, env) {
       return json({ error: "bad_key", message: "That API key isn't authorised for the Gemini API." }, 401);
     }
     if (res.status === 429) {
-      return json({ error: "AI rate limit reached — try again in a minute." }, 429);
+      return json({ error: "quota", message: "Daily AI limit reached. It resets at 12:30 PM IST." }, 429);
+    }
+    if (res.status === 404) {
+      return json({ error: `No usable model found for this key (tried ${model}).` }, 502);
     }
     return json({ error: `AI service error (${res.status}).` }, 502);
   }
@@ -400,40 +490,50 @@ async function handleAI(request, env) {
 
 // Cheap round-trip used when the user first pastes a key, so we can say
 // "that key works" immediately instead of failing on their first real request.
+// Verifies a key WITHOUT spending generation quota. ListModels is a free
+// metadata call, so pasting a key (or retrying after a typo) can never eat
+// into the daily request allowance.
 async function handleAIVerify(request, env) {
   const { apiKey } = await request.json();
   const key = typeof apiKey === "string" ? apiKey.trim() : "";
   if (!key) return json({ ok: false, message: "No key provided." }, 400);
 
-  let res;
   try {
-    res = await fetch(AI_ENDPOINT(key), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: "reply with the single word: ok" }] }],
-        generationConfig: { maxOutputTokens: 8 },
-      }),
-    });
-  } catch {
+    const available = await listUsableModels(key);
+    if (!available.length) {
+      return json({ ok: false, message: "That key has no usable text models." }, 401);
+    }
+    const model = await resolveModel(key, env);
+    return json({ ok: true, model: model.replace(/^models\//, "") });
+  } catch (err) {
+    const detail = String(err.detail || err.message || "");
+    if (err.status === 400 && detail.includes("API_KEY_INVALID")) {
+      return json({ ok: false, message: "That key was rejected — check you copied all of it." }, 401);
+    }
+    if (err.status === 403) {
+      return json({ ok: false, message: "That key isn't authorised for the Gemini API. Enable the Generative Language API for its project." }, 401);
+    }
+    if (err.status === 429) {
+      return json({ ok: true, warning: "Key accepted, but it's rate limited right now." });
+    }
+    console.log(`[ai-verify] failed: ${err.status || ""} ${detail.slice(0, 200)}`);
     return json({ ok: false, message: "Couldn't reach Google to check the key." }, 502);
   }
+}
 
-  if (res.ok) return json({ ok: true });
-
-  const detail = await res.text();
-  if (res.status === 400 && detail.includes("API_KEY_INVALID")) {
-    return json({ ok: false, message: "That key was rejected — check you copied all of it." }, 401);
+// Diagnostic: GET /ai-models?key=... -- lists what a key can actually call.
+// Handy when a 404 shows up and you need to see reality rather than guess.
+async function handleAIModels(request, env) {
+  const key = new URL(request.url).searchParams.get("key");
+  if (!key) return json({ error: "pass ?key=YOUR_API_KEY" }, 400);
+  try {
+    const available = await listUsableModels(key);
+    const chosen = await resolveModel(key, env);
+    return json({ chosen: chosen.replace(/^models\//, ""), count: available.length,
+                  available: available.map((n) => n.replace(/^models\//, "")) });
+  } catch (err) {
+    return json({ error: err.message, status: err.status || null }, 502);
   }
-  if (res.status === 403) {
-    return json({ ok: false, message: "That key isn't authorised for the Gemini API." }, 401);
-  }
-  if (res.status === 429) {
-    // the key is valid, it's just out of quota right now
-    return json({ ok: true, warning: "Key works, but it's currently rate limited." });
-  }
-  console.log(`[ai-verify] upstream ${res.status}: ${detail.slice(0, 200)}`);
-  return json({ ok: false, message: `Google returned ${res.status}.` }, 502);
 }
 
 export default {
@@ -447,6 +547,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/sync") return await handleSync(request, env);
       if (request.method === "POST" && url.pathname === "/ai") return await handleAI(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
+      if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
       // manual trigger for testing: GET /run-check-now
       if (request.method === "GET" && url.pathname === "/run-check-now") {
         await runCheck(env);

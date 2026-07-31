@@ -2496,7 +2496,10 @@ async function requestAIActions(prompt, data, apiKey) {
     if (code === "no_key" || code === "bad_key") {
       throw new AIKeyError((payload && payload.message) || "Your API key was rejected.");
     }
-    throw new Error((payload && payload.error) || `AI request failed (${res.status}).`);
+    if (code === "quota") {
+      throw new Error((payload && payload.message) || "Daily AI limit reached.");
+    }
+    throw new Error((payload && payload.message) || (payload && payload.error) || `AI request failed (${res.status}).`);
   }
   return { reply: payload.reply || "", actions: payload.actions || [] };
 }
@@ -2730,10 +2733,20 @@ function AIView({ state, setters, showDataMsg }) {
   const [result, setResult] = useState(null);      // { reply, actions }
   const [skipped, setSkipped] = useState(() => new Set());
   const taRef = useRef(null);
+  const lastSentRef = useRef(0);
 
   const send = async (text) => {
     const q = (text ?? prompt).trim();
     if (!q || busy) return;
+    // Guard against impatient repeat-taps: the free tier is ~15 requests a
+    // minute, and hammering a failing request is the fastest way to burn a
+    // day's quota. Failures are usually not transient, so make the user wait.
+    const since = Date.now() - lastSentRef.current;
+    if (since < 3000) {
+      setError(`Hold on a moment — wait ${Math.ceil((3000 - since) / 1000)}s before asking again.`);
+      return;
+    }
+    lastSentRef.current = Date.now();
     setBusy(true); setError(null); setResult(null); setSkipped(new Set());
     sound.click();
     try {

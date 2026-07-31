@@ -130,6 +130,22 @@ Anything positioned with a negative offset inside it is invisible. The hour
 labels were clipped this way on every device, for weeks, silently. They now
 live in a separate `.timeline-hours` row. Don't move them back.
 
+### ⚠ Never hardcode a Gemini model ID
+
+Google retires model IDs on a rolling schedule — `gemini-2.0-flash` died in
+June 2026, `gemini-2.5-flash-lite` shortly after, `gemini-2.5-flash` is slated
+for October. A hardcoded ID *will* 404, it's only a question of when. The
+worker resolves the model from `ListModels` at runtime and caches it for a
+day. If you need to change preference order, edit `MODEL_PREFERENCES` — don't
+reintroduce a constant.
+
+To see what a key can actually call: `GET /ai-models?key=YOUR_KEY`.
+
+### ⚠ Verify keys with ListModels, never a real prompt
+
+`ListModels` is free metadata. A test generation costs a request from a
+~250-1000/day allowance, which a few typo retries can meaningfully dent.
+
 ### ⚠ Stale service worker during testing
 
 Cache-first means your change may simply not be running. To force a phone to
