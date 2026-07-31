@@ -36,7 +36,7 @@ That's usually enough context to work without re-reading `app.jsx` end to end.
 
 ---
 
-## 1 · The ten rules
+## 1 · The rules
 
 **`R1` · Never hand-edit `bundle.js`.**
 It is build output. Edit `app.jsx`, then rebuild. The *only* historical
@@ -81,7 +81,26 @@ across app and worker.
 claims on every render. There is deliberately no `currentXP` field. Do not
 add one "for performance" — it's the thing that can't desync.
 
-**`R10` · No modals. No new libraries. No CSS framework.**
+**`R10` · The AI model is untrusted input. Always.**
+Anything it returns goes through `sanitiseActions()` in the worker before it
+reaches the client, and through the diff preview before it reaches
+`localStorage`. Never add a path that applies model output directly, and never
+loosen the id checks — they're what stop it mutating records that don't exist.
+When adding a new action type: add it to the system prompt, add a validator
+branch, add a `describeAIAction` case, and add an `applyAIActions` case. All
+four, or it silently no-ops.
+
+**`R11` · The AI key never leaves the device except to Google.**
+It lives in `tasksh.aikey.v1`. Do not add it to the export payload, do not
+sync it to KV, do not log it. If you add a new "backup everything" feature,
+explicitly exclude it — backups get shared between devices and people.
+
+**`R12` · Edits must preserve history.**
+`applyAIActions` spreads over the existing object (`{...r, ...changes}`) rather
+than rebuilding it. Streak `history`, `claimed` and `icon` fields must survive
+any edit. There's a regression test for this; keep it passing.
+
+**`R13` · No modals. No new libraries. No CSS framework.**
 Editing happens inline, in place, on the row or card itself. The app has zero
 runtime dependencies beyond React. Keep it that way unless there's a real
 reason and the user agrees.

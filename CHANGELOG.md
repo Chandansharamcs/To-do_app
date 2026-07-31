@@ -24,6 +24,9 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v18`** | 2026-07-31 | In-app AI key entry |
+| **`v17`** | 2026-07-31 | AI assistant tab, Doze priority fix |
+| **`v16`** | 2026-07-31 | New terminal-window icon set, docs overhaul |
 | **`v15`** | 2026-07-29 | Notification icon URL resolution fix |
 | **`v14`** | 2026-07-27 | Real push notifications — Cloudflare Worker, VAPID, cron |
 | **`v13`** | 2026-07-24 | Timeline lane-packing, optional routines, checkbox removal |
@@ -42,6 +45,84 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-07-31 — `tasksh-v18`**
+- **Changed: the AI key is now entered in the app, not deployed as a
+  worker secret.** Opening the `ai` tab with no key saved shows a short
+  setup screen (link to Google AI Studio, three steps, one input). The
+  key is verified against Google via a new `POST /ai-verify` endpoint
+  *before* being saved, so a typo is caught immediately instead of
+  surfacing as a confusing failure on the first real request.
+  - Stored per-device in `localStorage` (`tasksh.aikey.v1`) and sent
+    with each `/ai` call.
+  - **Deliberately excluded from export/import.** Backups get shared and
+    copied between devices; a credential doesn't belong in one.
+  - **Never persisted server-side.** The worker forwards the key to
+    Google and forgets it — `/ai` still touches no KV.
+  - If Google later rejects the key (revoked, deleted, edited), the
+    worker returns a distinct `bad_key` code, the app clears the stored
+    key and returns to the setup screen with the reason shown, rather
+    than repeatedly failing.
+  - A `key` button in the tab header allows changing it later.
+  - `GEMINI_API_KEY` as a worker secret still works as a **fallback** —
+    a client-supplied key takes priority, so one deployed worker can
+    serve several people each on their own free quota.
+- **Verified:** 18 browser tests covering the whole key lifecycle —
+  gate blocks the composer until a key exists, invalid keys are rejected
+  and not saved, valid keys unlock and persist across reload, the key is
+  forwarded to `/ai`, and a mid-session revocation cleanly bounces back
+  to the setup screen with storage cleared. No JS errors.
+- Bumped service worker cache to `tasksh-v18`.
+
+**2026-07-31 — `tasksh-v17`**
+- **Added: AI assistant (new `ai` tab).** Natural-language control over
+  routines, vault habits, quest habits and rewards, plus read-only
+  analysis ("what am I neglecting?").
+  - **Architecture:** the app posts a trimmed snapshot of its own data
+    plus the user's request to a new `POST /ai` endpoint on the existing
+    notification worker. The worker calls Gemini `2.5-flash-lite` asking
+    for a JSON **action list** — never prose the client has to parse
+    loosely — then re-validates every action against a strict schema
+    before returning it.
+  - **Nothing is applied automatically.** The app renders the actions as
+    a colour-coded diff (`+` add / `~` edit / `−` remove) with resolved
+    entity names, e.g. `Anime / wind down: 9:30 PM → 10:00 PM`. Any row
+    can be tapped to skip it, and nothing touches `localStorage` until
+    Apply is pressed. This is deliberate: an LLM with direct write access
+    would eventually destroy a long streak by misreading a request.
+  - **The model is treated as untrusted input.** `sanitiseActions()` in
+    the worker drops anything malformed — bad `HH:MM`, out-of-range
+    durations or weekly goals, unknown ops, and critically any
+    edit/delete referencing an id that isn't in the snapshot, so the
+    model cannot invent ids and mutate arbitrary records. Labels are
+    length-capped and the batch is capped at 25 actions.
+  - **`applyAIActions()` preserves history.** Edits spread over the
+    existing object rather than replacing it, so streak history,
+    completion records and icons survive. Verified with an explicit
+    regression test — a 3-day streak is byte-identical after a time edit.
+    Untouched surfaces are never written, so unrelated `localStorage`
+    keys can't be clobbered.
+  - **Privacy:** streak history arrays are reduced to counts before
+    leaving the device. Tasks and projects are never sent. The worker
+    stores nothing — `/ai` does not touch KV.
+  - **Cost:** free. Gemini Flash-Lite's free tier is ~1,000 requests/day
+    against realistic usage of a handful. Until `GEMINI_API_KEY` is set
+    as a worker secret, the tab shows a clear "not configured" message
+    rather than failing obscurely.
+- **Fixed: notifications delayed by Android Doze.** Pushes were sent at
+  the `web-push` default priority, so Android batched them into
+  maintenance windows with the screen off — reminders arrived minutes
+  late or not at all until the phone was woken. Now sent with
+  `{ urgency: "high", TTL: 300 }`; the TTL means a stale reminder is
+  dropped rather than delivered long after it was useful. Worker-side
+  only — no bundle change was needed for this part.
+- **Verified:** 19 worker-validator unit tests, 15 apply-logic tests
+  (including history preservation and id-collision safety), end-to-end
+  apply + reload persistence, all 6 tabs rendering with no console
+  errors, scroll regions intact, offline boot, and all four AI error
+  paths (unconfigured / rate-limited / network failure / question with
+  no actions) degrading gracefully.
+- Bumped service worker cache to `tasksh-v17`.
 
 **2026-07-29 — `tasksh-v15`**
 - **Fixed: push arrived, but Chrome showed its generic fallback banner

@@ -197,6 +197,69 @@ bump the `sw.js` cache tag, and push.
 
 ---
 
+## Setup · 7 · The AI assistant
+
+**No worker setup needed.** The app asks for the key itself.
+
+Open the **`ai`** tab and it shows a short setup screen: get a free key at
+<https://aistudio.google.com/apikey>, paste it in, done. The key is verified
+against Google immediately, saved to that device's `localStorage`, and sent
+with each request. You can change it later via the **key** button in the tab
+header.
+
+Nothing to deploy, nothing to configure — as long as the worker itself is
+running, the `ai` tab works.
+
+### Where the key lives
+
+- **On your device only** (`tasksh.aikey.v1` in `localStorage`).
+- **Never in backups.** Export/import deliberately covers only the seven data
+  arrays — a key is a credential, not data, and backup files get shared around.
+- **Never stored server-side.** The worker forwards it to Google and forgets
+  it. `/ai` touches no KV.
+- If Google rejects it (revoked, deleted, mistyped), the app clears it and
+  returns to the setup screen with an explanation rather than failing quietly.
+
+### Optional: a server-side fallback key
+
+If you'd rather not enter a key per device, set one as a secret and it'll be
+used whenever the client doesn't send its own:
+
+```bash
+npx wrangler secret put GEMINI_API_KEY
+npx wrangler deploy
+```
+
+A client-supplied key always takes priority, so a shared worker can serve
+several people each using their own quota.
+
+### Model and cost
+
+`gemini-2.5-flash-lite`. Free tier is roughly 1,000 requests/day and 15/minute
+— far beyond single-user use. Flash-Lite was chosen because Pro models left
+the free tier in April 2026, and because this job is structured-JSON
+extraction, which Flash does reliably.
+
+### What is sent to Google
+
+A trimmed snapshot: routine/habit/quest **labels, times and counts**. Streak
+history arrays are reduced to a single number before leaving the device.
+Tasks and projects are never sent.
+
+### Safety model
+
+The model returns *proposed actions*, never direct writes. The worker
+re-validates every action against a strict schema and drops anything
+malformed or referencing an id that doesn't exist. The app then shows a diff
+and applies nothing until you tap Apply.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/ai` | `{prompt, data, apiKey}` → `{reply, actions}` |
+| `POST` | `/ai-verify` | `{apiKey}` → `{ok}` — used by the setup screen |
+
 ## Testing
 
 Fire a check immediately instead of waiting:

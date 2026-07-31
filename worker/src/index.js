@@ -111,7 +111,15 @@ async function runCheck(env) {
       });
 
       try {
-        await webpush.sendNotification(subscription, payload);
+        // urgency:high asks the push service to bypass Android's Doze
+        // batching, which otherwise defers delivery until the next
+        // maintenance window (i.e. reminders arrive minutes late, or not
+        // until you wake the phone). TTL caps how long the push service
+        // will retry -- a routine reminder is worthless 5 minutes later.
+        await webpush.sendNotification(subscription, payload, {
+          urgency: "high",
+          TTL: 300,
+        });
         console.log(`[check] device ${deviceId}: SENT push for "${routine.label}"`);
       } catch (err) {
         console.log(`[check] device ${deviceId}: SEND FAILED for "${routine.label}" - ${err.statusCode || ""} ${err.message || err}`);
@@ -128,6 +136,306 @@ async function runCheck(env) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AI assistant
+//
+// The app posts a snapshot of its own data plus a natural-language request.
+// We ask Gemini for a list of ACTIONS (never free-form text that the app then
+// has to parse loosely), validate every one of them against a strict schema
+// here, and return only the survivors. The app then previews them as a diff
+// and the user explicitly applies them.
+//
+// Nothing is ever written server-side. The worker is stateless for this
+// endpoint -- it does not store the snapshot, and no data touches KV.
+// ---------------------------------------------------------------------------
+
+const AI_MODEL = "gemini-2.5-flash-lite";
+const AI_ENDPOINT = (key) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${key}`;
+
+const VALID_AREAS = ["work", "fitness", "health", "self"];
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+const SYSTEM_PROMPT = `You are the assistant inside "tasks.sh", a personal productivity PWA.
+You help the user manage four things: ROUTINES (daily recurring time blocks),
+VAULT HABITS (weekly-goal habits), QUEST HABITS (good/bad habits worth XP), and
+REWARDS (things bought with XP).
+
+You reply with ONLY a JSON object, no markdown fences, no commentary:
+{
+  "reply": "one or two short sentences, lowercase, terse, terminal-flavoured",
+  "actions": [ ...zero or more action objects... ]
+}
+
+Allowed actions -- use EXACTLY these shapes:
+
+{"op":"add_routine","time":"HH:MM","label":"string","duration":minutes,"alternatives":["optional"]}
+{"op":"edit_routine","id":number,"time":"HH:MM","label":"string","duration":minutes}
+{"op":"delete_routine","id":number}
+{"op":"add_vault_habit","label":"string","weeklyGoal":1-7,"icon":"single glyph or emoji"}
+{"op":"edit_vault_habit","id":number,"label":"string","weeklyGoal":1-7}
+{"op":"delete_vault_habit","id":number}
+{"op":"add_good_habit","label":"string","area":"work|fitness|health|self","xp":number}
+{"op":"add_bad_habit","label":"string","area":"work|fitness|health|self","xp":number}
+{"op":"delete_good_habit","id":number}
+{"op":"delete_bad_habit","id":number}
+{"op":"add_reward","label":"string","cost":number}
+{"op":"delete_reward","id":number}
+
+RULES:
+- Times are 24-hour "HH:MM". The user is in IST. Interpret "morning" as 06:00-09:00,
+  "evening" as 18:00-21:00 unless they say otherwise.
+- On edit/delete you MUST use an id that exists in the snapshot. Never invent ids.
+- Only include the fields you are actually changing on an edit.
+- XP guide: trivial habit 5-10, normal 10-25, demanding 30-50. Rewards 50-300.
+- If the user only asks a question ("what am I neglecting?", "how am I doing?"),
+  return an EMPTY actions array and put the whole answer in "reply".
+- Never delete something unless the user clearly asked to remove it. When in
+  doubt, propose an edit instead of a delete.
+- Prefer fewer, higher-quality actions over many trivial ones.
+- Keep "reply" under 240 characters.`;
+
+function buildSnapshot(data) {
+  // Trimmed to only what the model needs to reason -- history arrays can be
+  // hundreds of date strings and would blow up the token count for no gain.
+  const summarise = (h) => (Array.isArray(h) ? h.length : 0);
+  return {
+    routines: (data.routines || []).map((r) => ({
+      id: r.id, time: r.time, label: r.label, duration: r.duration,
+      alternatives: r.alternatives || [], daysCompleted: summarise(r.history),
+    })),
+    vaultHabits: (data.vaultHabits || []).map((h) => ({
+      id: h.id, label: h.label, weeklyGoal: h.weeklyGoal, icon: h.icon,
+      daysCompleted: summarise(h.history),
+    })),
+    goodHabits: (data.goodHabits || []).map((h) => ({
+      id: h.id, label: h.label, area: h.area, xp: h.xp, timesLogged: summarise(h.history),
+    })),
+    badHabits: (data.badHabits || []).map((h) => ({
+      id: h.id, label: h.label, area: h.area, xp: h.xp, timesLogged: summarise(h.history),
+    })),
+    rewards: (data.rewards || []).map((r) => ({
+      id: r.id, label: r.label, cost: r.cost, timesClaimed: summarise(r.claimed),
+    })),
+    totalXP: data.totalXP ?? null,
+  };
+}
+
+// Every action the model emits is re-validated here. Anything malformed, or
+// referencing an id that isn't in the snapshot, is dropped silently rather
+// than trusted -- the model is treated as untrusted input, always.
+function sanitiseActions(raw, snap) {
+  if (!Array.isArray(raw)) return [];
+  const ids = {
+    routine: new Set(snap.routines.map((r) => r.id)),
+    vault: new Set(snap.vaultHabits.map((h) => h.id)),
+    good: new Set(snap.goodHabits.map((h) => h.id)),
+    bad: new Set(snap.badHabits.map((h) => h.id)),
+    reward: new Set(snap.rewards.map((r) => r.id)),
+  };
+
+  const str = (v, max = 80) =>
+    typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null;
+  const int = (v, lo, hi) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= lo && n <= hi ? n : null;
+  };
+
+  const out = [];
+  for (const a of raw.slice(0, 25)) {
+    if (!a || typeof a.op !== "string") continue;
+    const op = a.op;
+
+    if (op === "add_routine") {
+      const label = str(a.label, 60);
+      if (!label || !HHMM.test(a.time || "")) continue;
+      const duration = int(a.duration, 5, 1440) ?? 60;
+      const alts = Array.isArray(a.alternatives)
+        ? a.alternatives.map((x) => str(x, 60)).filter(Boolean).slice(0, 4)
+        : [];
+      out.push({ op, time: a.time, label, duration, alternatives: alts });
+
+    } else if (op === "edit_routine") {
+      if (!ids.routine.has(a.id)) continue;
+      const patch = { op, id: a.id };
+      if (a.time !== undefined) { if (!HHMM.test(a.time)) continue; patch.time = a.time; }
+      if (a.label !== undefined) { const l = str(a.label, 60); if (!l) continue; patch.label = l; }
+      if (a.duration !== undefined) { const d = int(a.duration, 5, 1440); if (d === null) continue; patch.duration = d; }
+      if (Object.keys(patch).length <= 2) continue;   // nothing actually changed
+      out.push(patch);
+
+    } else if (op === "delete_routine") {
+      if (ids.routine.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_vault_habit") {
+      const label = str(a.label, 60);
+      const goal = int(a.weeklyGoal, 1, 7);
+      if (!label || goal === null) continue;
+      out.push({ op, label, weeklyGoal: goal, icon: str(a.icon, 4) || "◆" });
+
+    } else if (op === "edit_vault_habit") {
+      if (!ids.vault.has(a.id)) continue;
+      const patch = { op, id: a.id };
+      if (a.label !== undefined) { const l = str(a.label, 60); if (!l) continue; patch.label = l; }
+      if (a.weeklyGoal !== undefined) { const g = int(a.weeklyGoal, 1, 7); if (g === null) continue; patch.weeklyGoal = g; }
+      if (Object.keys(patch).length <= 2) continue;
+      out.push(patch);
+
+    } else if (op === "delete_vault_habit") {
+      if (ids.vault.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_good_habit" || op === "add_bad_habit") {
+      const label = str(a.label, 60);
+      const xp = int(a.xp, 1, 200);
+      if (!label || xp === null) continue;
+      const area = VALID_AREAS.includes(a.area) ? a.area : "self";
+      out.push({ op, label, area, xp });
+
+    } else if (op === "delete_good_habit") {
+      if (ids.good.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "delete_bad_habit") {
+      if (ids.bad.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_reward") {
+      const label = str(a.label, 60);
+      const cost = int(a.cost, 1, 100000);
+      if (!label || cost === null) continue;
+      out.push({ op, label, cost });
+
+    } else if (op === "delete_reward") {
+      if (ids.reward.has(a.id)) out.push({ op, id: a.id });
+    }
+  }
+  return out;
+}
+
+async function handleAI(request, env) {
+  const body = await request.json();
+
+  // The key can come from the client (entered in the app's AI tab and kept in
+  // that device's localStorage) or from a worker secret. Client wins, so a
+  // single deployed worker can serve several people using their own quota
+  // without the operator holding anyone's key.
+  const apiKey =
+    (typeof body.apiKey === "string" && body.apiKey.trim()) || env.GEMINI_API_KEY || "";
+  if (!apiKey) {
+    return json({ error: "no_key", message: "No API key. Add one in the AI tab." }, 401);
+  }
+
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 1000) : "";
+  if (!prompt) return json({ error: "empty prompt" }, 400);
+
+  const snap = buildSnapshot(body.data || {});
+
+  const payload = {
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{
+      role: "user",
+      parts: [{
+        text: `Current data:\n${JSON.stringify(snap)}\n\nUser request: ${prompt}`,
+      }],
+    }],
+    generationConfig: {
+      temperature: 0.4,
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json",
+    },
+  };
+
+  let res;
+  try {
+    res = await fetch(AI_ENDPOINT(apiKey), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.log(`[ai] network error: ${err.message || err}`);
+    return json({ error: "Couldn't reach the AI service." }, 502);
+  }
+
+  if (!res.ok) {
+    const detail = await res.text();
+    console.log(`[ai] upstream ${res.status}: ${detail.slice(0, 300)}`);
+    // 400 with API_KEY_INVALID, or 403, means the key itself is the problem --
+    // surface that distinctly so the app can re-prompt instead of just retrying
+    if (res.status === 400 && detail.includes("API_KEY_INVALID")) {
+      return json({ error: "bad_key", message: "That API key was rejected by Google." }, 401);
+    }
+    if (res.status === 403) {
+      return json({ error: "bad_key", message: "That API key isn't authorised for the Gemini API." }, 401);
+    }
+    if (res.status === 429) {
+      return json({ error: "AI rate limit reached — try again in a minute." }, 429);
+    }
+    return json({ error: `AI service error (${res.status}).` }, 502);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // very occasionally the model wraps JSON in prose or a fence
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) {
+      console.log(`[ai] unparseable response: ${text.slice(0, 200)}`);
+      return json({ error: "The AI returned something unreadable. Try rephrasing." }, 502);
+    }
+    try { parsed = JSON.parse(m[0]); }
+    catch { return json({ error: "The AI returned something unreadable. Try rephrasing." }, 502); }
+  }
+
+  const actions = sanitiseActions(parsed.actions, snap);
+  const reply = typeof parsed.reply === "string"
+    ? parsed.reply.trim().slice(0, 400)
+    : (actions.length ? "here's what i'd change:" : "done.");
+
+  console.log(`[ai] prompt="${prompt.slice(0, 60)}" -> ${actions.length} action(s)`);
+  return json({ reply, actions });
+}
+
+// Cheap round-trip used when the user first pastes a key, so we can say
+// "that key works" immediately instead of failing on their first real request.
+async function handleAIVerify(request, env) {
+  const { apiKey } = await request.json();
+  const key = typeof apiKey === "string" ? apiKey.trim() : "";
+  if (!key) return json({ ok: false, message: "No key provided." }, 400);
+
+  let res;
+  try {
+    res = await fetch(AI_ENDPOINT(key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "reply with the single word: ok" }] }],
+        generationConfig: { maxOutputTokens: 8 },
+      }),
+    });
+  } catch {
+    return json({ ok: false, message: "Couldn't reach Google to check the key." }, 502);
+  }
+
+  if (res.ok) return json({ ok: true });
+
+  const detail = await res.text();
+  if (res.status === 400 && detail.includes("API_KEY_INVALID")) {
+    return json({ ok: false, message: "That key was rejected — check you copied all of it." }, 401);
+  }
+  if (res.status === 403) {
+    return json({ ok: false, message: "That key isn't authorised for the Gemini API." }, 401);
+  }
+  if (res.status === 429) {
+    // the key is valid, it's just out of quota right now
+    return json({ ok: true, warning: "Key works, but it's currently rate limited." });
+  }
+  console.log(`[ai-verify] upstream ${res.status}: ${detail.slice(0, 200)}`);
+  return json({ ok: false, message: `Google returned ${res.status}.` }, 502);
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
@@ -137,6 +445,8 @@ export default {
       if (request.method === "POST" && url.pathname === "/subscribe") return await handleSubscribe(request, env);
       if (request.method === "POST" && url.pathname === "/unsubscribe") return await handleUnsubscribe(request, env);
       if (request.method === "POST" && url.pathname === "/sync") return await handleSync(request, env);
+      if (request.method === "POST" && url.pathname === "/ai") return await handleAI(request, env);
+      if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       // manual trigger for testing: GET /run-check-now
       if (request.method === "GET" && url.pathname === "/run-check-now") {
         await runCheck(env);

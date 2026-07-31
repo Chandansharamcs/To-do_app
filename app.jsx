@@ -2353,6 +2353,10 @@ const STORAGE_KEY_BAD_HABITS = "tasksh.badhabits.v1";
 const STORAGE_KEY_REWARDS = "tasksh.rewards.v1";
 const STORAGE_KEY_DEVICE_ID = "tasksh.deviceid.v1";
 const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
+// Gemini API key, entered by the user in the AI tab. Stays on this device --
+// it is never included in export/import backups (those get shared around and
+// a key is a credential, not data), and never synced to the worker's KV.
+const STORAGE_KEY_AI_KEY = "tasksh.aikey.v1";
 
 // ---- push notifications config ----
 // 1. Deploy the Cloudflare Worker (see /worker/ in the handoff) and paste its
@@ -2435,6 +2439,495 @@ async function syncRoutinesToWorker(routines) {
       }),
     });
   } catch {}
+}
+
+// ---- AI assistant -------------------------------------------------------
+// The worker never stores any of this; it forwards a trimmed snapshot to the
+// model and returns a validated ACTION LIST. Nothing is applied until the
+// user taps Apply on the diff preview -- see AIView / applyAIActions.
+
+function getAIKey() {
+  try { return localStorage.getItem(STORAGE_KEY_AI_KEY) || ""; } catch { return ""; }
+}
+function setAIKey(key) {
+  try {
+    if (key) localStorage.setItem(STORAGE_KEY_AI_KEY, key);
+    else localStorage.removeItem(STORAGE_KEY_AI_KEY);
+  } catch {}
+}
+// "AIza...abcd" -> "AIza••••••••abcd", so the settings screen can confirm
+// which key is saved without putting the whole secret back on screen
+function maskAIKey(key) {
+  if (!key) return "";
+  if (key.length <= 10) return "•".repeat(key.length);
+  return `${key.slice(0, 4)}${"•".repeat(8)}${key.slice(-4)}`;
+}
+
+// Thrown when the worker says the key is missing/rejected, so the UI can
+// bounce back to the key screen instead of showing a generic error.
+class AIKeyError extends Error {
+  constructor(message) { super(message); this.name = "AIKeyError"; }
+}
+
+async function verifyAIKey(apiKey) {
+  const res = await fetch(`${NOTIFY_WORKER_URL}/ai-verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch {}
+  if (!payload || !payload.ok) {
+    throw new Error((payload && payload.message) || `Couldn't verify that key (${res.status}).`);
+  }
+  return payload.warning || null;
+}
+
+async function requestAIActions(prompt, data, apiKey) {
+  const res = await fetch(`${NOTIFY_WORKER_URL}/ai`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, data, apiKey }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch {}
+  if (!res.ok) {
+    const code = payload && payload.error;
+    if (code === "no_key" || code === "bad_key") {
+      throw new AIKeyError((payload && payload.message) || "Your API key was rejected.");
+    }
+    throw new Error((payload && payload.error) || `AI request failed (${res.status}).`);
+  }
+  return { reply: payload.reply || "", actions: payload.actions || [] };
+}
+
+// Human-readable description of one action, used by the diff preview.
+// Returns { kind: "add"|"edit"|"remove", surface, text }
+function describeAIAction(a, state) {
+  const find = (arr, id) => (arr || []).find((x) => x.id === id);
+  switch (a.op) {
+    case "add_routine":
+      return { kind: "add", surface: "routine",
+        text: `${minutesToLabel(timeToMinutes(a.time))} · ${a.label} (${formatDuration(a.duration)})` +
+              (a.alternatives?.length ? ` · or: ${a.alternatives.join(", ")}` : "") };
+    case "edit_routine": {
+      const r = find(state.routines, a.id);
+      const bits = [];
+      if (a.time !== undefined && a.time !== r?.time)
+        bits.push(`${minutesToLabel(timeToMinutes(r?.time || "00:00"))} → ${minutesToLabel(timeToMinutes(a.time))}`);
+      if (a.label !== undefined && a.label !== r?.label) bits.push(`"${r?.label}" → "${a.label}"`);
+      if (a.duration !== undefined && a.duration !== r?.duration)
+        bits.push(`${formatDuration(r?.duration || 0)} → ${formatDuration(a.duration)}`);
+      return { kind: "edit", surface: "routine", text: `${r?.label || "routine"}: ${bits.join(", ") || "no change"}` };
+    }
+    case "delete_routine":
+      return { kind: "remove", surface: "routine", text: find(state.routines, a.id)?.label || `#${a.id}` };
+    case "add_vault_habit":
+      return { kind: "add", surface: "vault", text: `${a.icon} ${a.label} · ${a.weeklyGoal}x/week` };
+    case "edit_vault_habit": {
+      const h = find(state.vaultHabits, a.id);
+      const bits = [];
+      if (a.label !== undefined && a.label !== h?.label) bits.push(`"${h?.label}" → "${a.label}"`);
+      if (a.weeklyGoal !== undefined && a.weeklyGoal !== h?.weeklyGoal)
+        bits.push(`${h?.weeklyGoal}x → ${a.weeklyGoal}x/week`);
+      return { kind: "edit", surface: "vault", text: `${h?.label || "habit"}: ${bits.join(", ") || "no change"}` };
+    }
+    case "delete_vault_habit":
+      return { kind: "remove", surface: "vault", text: find(state.vaultHabits, a.id)?.label || `#${a.id}` };
+    case "add_good_habit":
+      return { kind: "add", surface: "quest", text: `+${a.xp} XP · ${a.label} (${a.area})` };
+    case "add_bad_habit":
+      return { kind: "add", surface: "quest", text: `−${a.xp} XP · ${a.label} (${a.area})` };
+    case "delete_good_habit":
+      return { kind: "remove", surface: "quest", text: find(state.goodHabits, a.id)?.label || `#${a.id}` };
+    case "delete_bad_habit":
+      return { kind: "remove", surface: "quest", text: find(state.badHabits, a.id)?.label || `#${a.id}` };
+    case "add_reward":
+      return { kind: "add", surface: "reward", text: `${a.label} · ${a.cost} XP` };
+    case "delete_reward":
+      return { kind: "remove", surface: "reward", text: find(state.rewards, a.id)?.label || `#${a.id}` };
+    default:
+      return { kind: "edit", surface: "?", text: a.op };
+  }
+}
+
+// Applies a batch of approved actions. Every setter is called at most once
+// with a single derived array, so React batches it into one render and one
+// localStorage write per surface.
+function applyAIActions(actions, state, setters) {
+  let { routines, vaultHabits, goodHabits, badHabits, rewards } = {
+    routines: [...state.routines],
+    vaultHabits: [...state.vaultHabits],
+    goodHabits: [...state.goodHabits],
+    badHabits: [...state.badHabits],
+    rewards: [...state.rewards],
+  };
+  const touched = new Set();
+
+  for (const a of actions) {
+    switch (a.op) {
+      case "add_routine":
+        routines = [...routines, {
+          id: makeId(), time: a.time, label: a.label,
+          duration: a.duration, history: [],
+          ...(a.alternatives?.length ? { alternatives: a.alternatives } : {}),
+        }];
+        touched.add("routines"); break;
+      case "edit_routine":
+        routines = routines.map((r) => r.id === a.id ? {
+          ...r,
+          ...(a.time !== undefined ? { time: a.time } : {}),
+          ...(a.label !== undefined ? { label: a.label } : {}),
+          ...(a.duration !== undefined ? { duration: a.duration } : {}),
+        } : r);
+        touched.add("routines"); break;
+      case "delete_routine":
+        routines = routines.filter((r) => r.id !== a.id);
+        touched.add("routines"); break;
+
+      case "add_vault_habit":
+        vaultHabits = [...vaultHabits, {
+          id: makeId(), icon: a.icon, label: a.label,
+          weeklyGoal: a.weeklyGoal, history: [],
+        }];
+        touched.add("vaultHabits"); break;
+      case "edit_vault_habit":
+        vaultHabits = vaultHabits.map((h) => h.id === a.id ? {
+          ...h,
+          ...(a.label !== undefined ? { label: a.label } : {}),
+          ...(a.weeklyGoal !== undefined ? { weeklyGoal: a.weeklyGoal } : {}),
+        } : h);
+        touched.add("vaultHabits"); break;
+      case "delete_vault_habit":
+        vaultHabits = vaultHabits.filter((h) => h.id !== a.id);
+        touched.add("vaultHabits"); break;
+
+      case "add_good_habit":
+        goodHabits = [...goodHabits, { id: makeId(), label: a.label, area: a.area, xp: a.xp, history: [] }];
+        touched.add("goodHabits"); break;
+      case "delete_good_habit":
+        goodHabits = goodHabits.filter((h) => h.id !== a.id);
+        touched.add("goodHabits"); break;
+
+      case "add_bad_habit":
+        badHabits = [...badHabits, { id: makeId(), label: a.label, area: a.area, xp: a.xp, history: [] }];
+        touched.add("badHabits"); break;
+      case "delete_bad_habit":
+        badHabits = badHabits.filter((h) => h.id !== a.id);
+        touched.add("badHabits"); break;
+
+      case "add_reward":
+        rewards = [...rewards, { id: makeId(), label: a.label, cost: a.cost, claimed: [] }];
+        touched.add("rewards"); break;
+      case "delete_reward":
+        rewards = rewards.filter((r) => r.id !== a.id);
+        touched.add("rewards"); break;
+      default: break;
+    }
+  }
+
+  if (touched.has("routines")) setters.setRoutines(routines);
+  if (touched.has("vaultHabits")) setters.setVaultHabits(vaultHabits);
+  if (touched.has("goodHabits")) setters.setGoodHabits(goodHabits);
+  if (touched.has("badHabits")) setters.setBadHabits(badHabits);
+  if (touched.has("rewards")) setters.setRewards(rewards);
+}
+
+const AI_SUGGESTIONS = [
+  "build me a study preset for exam month",
+  "my evenings are too packed — spread them out",
+  "add a gym routine at 6am for an hour",
+  "what am I neglecting?",
+];
+
+// Shown when no key is saved yet, or when the saved one gets rejected.
+function AIKeyGate({ onSaved, initialError, onCancel }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialError || null);
+  const inputRef = useRef(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const save = async () => {
+    const k = key.trim();
+    if (!k || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const warning = await verifyAIKey(k);
+      setAIKey(k);
+      sound.success();
+      onSaved(k, warning);
+    } catch (err) {
+      setError(err.message || "Couldn't verify that key.");
+      sound.error();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="task-list ai-scroll">
+      <div className="ai-gate">
+        <div className="ai-gate-icon">✦</div>
+        <div className="ai-gate-title">connect an AI key</div>
+        <div className="ai-gate-sub">
+          the assistant runs on Google&apos;s Gemini. it&apos;s free — you just need your
+          own key. takes about a minute.
+        </div>
+
+        <ol className="ai-gate-steps">
+          <li>
+            open{" "}
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">
+              aistudio.google.com/apikey
+            </a>
+          </li>
+          <li>sign in and hit “create API key”</li>
+          <li>copy it and paste it below</li>
+        </ol>
+
+        <input
+          ref={inputRef}
+          className="ai-key-input"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="AIza…"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          disabled={busy}
+        />
+
+        {error && <div className="ai-error ai-gate-error">{error}</div>}
+
+        <div className="ai-gate-actions">
+          <button className="ai-apply" onClick={save} disabled={busy || !key.trim()}>
+            {busy ? "checking…" : "save key"}
+          </button>
+          {onCancel && (
+            <button className="ai-discard" onClick={onCancel}>cancel</button>
+          )}
+        </div>
+
+        <div className="ai-gate-note">
+          stored only on this device. it isn&apos;t included in your backup exports,
+          and the server never keeps it.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AIView({ state, setters, showDataMsg }) {
+  const [apiKey, setApiKeyState] = useState(() => getAIKey());
+  const [showSettings, setShowSettings] = useState(false);
+  const [keyError, setKeyError] = useState(null);
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);      // { reply, actions }
+  const [skipped, setSkipped] = useState(() => new Set());
+  const taRef = useRef(null);
+
+  const send = async (text) => {
+    const q = (text ?? prompt).trim();
+    if (!q || busy) return;
+    setBusy(true); setError(null); setResult(null); setSkipped(new Set());
+    sound.click();
+    try {
+      const res = await requestAIActions(q, {
+        routines: state.routines,
+        vaultHabits: state.vaultHabits,
+        goodHabits: state.goodHabits,
+        badHabits: state.badHabits,
+        rewards: state.rewards,
+        totalXP: state.totalXP,
+      }, apiKey);
+      setResult(res);
+      if (res.actions.length) sound.success();
+    } catch (err) {
+      if (err instanceof AIKeyError) {
+        // key went bad (revoked, deleted, mistyped) -- drop it and re-prompt
+        setAIKey("");
+        setApiKeyState("");
+        setKeyError(err.message);
+      } else {
+        setError(err.message || "Something went wrong.");
+      }
+      sound.error();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleSkip = (i) => {
+    setSkipped((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+
+  const accepted = result ? result.actions.filter((_, i) => !skipped.has(i)) : [];
+
+  const apply = () => {
+    if (!accepted.length) return;
+    applyAIActions(accepted, state, setters);
+    sound.success();
+    showDataMsg("success", `Applied ${accepted.length} change${accepted.length === 1 ? "" : "s"}`);
+    setResult(null); setPrompt(""); setSkipped(new Set());
+  };
+
+  const discard = () => {
+    sound.whoosh();
+    setResult(null); setSkipped(new Set());
+  };
+
+  const counts = accepted.reduce((acc, a) => {
+    const k = describeAIAction(a, state).kind;
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+
+  if (!apiKey) {
+    return (
+      <AIKeyGate
+        initialError={keyError}
+        onSaved={(k, warning) => {
+          setApiKeyState(k);
+          setKeyError(null);
+          showDataMsg("success", warning || "AI key saved");
+        }}
+      />
+    );
+  }
+
+  if (showSettings) {
+    return (
+      <AIKeyGate
+        onCancel={() => setShowSettings(false)}
+        onSaved={(k, warning) => {
+          setApiKeyState(k);
+          setShowSettings(false);
+          showDataMsg("success", warning || "AI key updated");
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="task-list ai-scroll">
+      <div className="ai-intro">
+        <div className="ai-intro-row">
+          <div className="ai-intro-title">ask anything</div>
+          <button
+            className="ai-key-btn"
+            onClick={() => setShowSettings(true)}
+            title={`Key ${maskAIKey(apiKey)} — tap to change`}
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="M10.85 12.15L19 4M17 6l2 2M14 9l2 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <span>key</span>
+          </button>
+        </div>
+        <div className="ai-intro-sub">
+          it can add, edit or remove routines, vault habits, quests and rewards —
+          nothing changes until you approve it.
+        </div>
+      </div>
+
+      <div className="ai-composer">
+        <textarea
+          ref={taRef}
+          className="ai-input"
+          rows={3}
+          placeholder="e.g. add a 30 min reading routine before bed"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+          }}
+          disabled={busy}
+        />
+        <button className="ai-send" onClick={() => send()} disabled={busy || !prompt.trim()}>
+          {busy ? "thinking…" : "ask"}
+        </button>
+      </div>
+
+      {!result && !busy && (
+        <div className="ai-chips">
+          {AI_SUGGESTIONS.map((s) => (
+            <button key={s} className="ai-chip" onClick={() => { setPrompt(s); send(s); }}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {busy && (
+        <div className="ai-thinking">
+          <span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" />
+        </div>
+      )}
+
+      {error && <div className="ai-error">{error}</div>}
+
+      {result && (
+        <div className="ai-result">
+          {result.reply && <div className="ai-reply">{result.reply}</div>}
+
+          {result.actions.length === 0 ? (
+            <div className="ai-noop">no changes proposed</div>
+          ) : (
+            <>
+              <div className="ai-diff-head">
+                <span className="ai-diff-title">proposed changes</span>
+                <span className="ai-diff-counts">
+                  {counts.add ? <span className="c-add">+{counts.add}</span> : null}
+                  {counts.edit ? <span className="c-edit">~{counts.edit}</span> : null}
+                  {counts.remove ? <span className="c-remove">−{counts.remove}</span> : null}
+                </span>
+              </div>
+
+              <div className="ai-diff">
+                {result.actions.map((a, i) => {
+                  const d = describeAIAction(a, state);
+                  const off = skipped.has(i);
+                  return (
+                    <button
+                      key={i}
+                      className={`ai-diff-row ${d.kind} ${off ? "skipped" : ""}`}
+                      onClick={() => toggleSkip(i)}
+                      title={off ? "click to include" : "click to skip"}
+                    >
+                      <span className="ai-sign">
+                        {d.kind === "add" ? "+" : d.kind === "remove" ? "−" : "~"}
+                      </span>
+                      <span className="ai-surface">{d.surface}</span>
+                      <span className="ai-diff-text">{d.text}</span>
+                      <span className="ai-skip-mark">{off ? "skipped" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="ai-actions">
+                <button className="ai-apply" onClick={apply} disabled={!accepted.length}>
+                  apply {accepted.length || ""}
+                </button>
+                <button className="ai-discard" onClick={discard}>discard</button>
+              </div>
+              <div className="ai-hint">tap any row to skip it</div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function loadStored(key, fallback) {
@@ -5029,6 +5522,237 @@ function TodoApp() {
           }
         }
 
+        /* ---- AI tab ---- */
+        .ai-scroll { padding-top: 4px; }
+
+        .tabs button.tab-ai { color: #5EEAD4; position: relative; }
+        .tabs button.tab-ai::after {
+          content: "";
+          position: absolute; top: 7px; right: 6px;
+          width: 4px; height: 4px; border-radius: 50%;
+          background: #5EEAD4; box-shadow: 0 0 6px rgba(94,234,212,0.9);
+        }
+        .tabs button.tab-ai.active::after { display: none; }
+
+        .ai-intro { padding: 4px 16px 12px; }
+        .ai-intro-row {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 10px; margin-bottom: 5px;
+        }
+        .ai-intro-title {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 13px; font-weight: 600; color: #E7EAEE;
+          letter-spacing: 0.04em;
+        }
+        .ai-intro-sub { font-size: 11px; color: #6B7280; line-height: 1.5; }
+
+        .ai-key-btn {
+          display: inline-flex; align-items: center; gap: 5px;
+          background: transparent; border: 1px solid #23272E;
+          border-radius: 999px; color: #6B7280; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+          padding: 4px 10px; flex-shrink: 0;
+          transition: border-color 140ms ease, color 140ms ease;
+        }
+
+        /* ---- key gate ---- */
+        .ai-gate { padding: 14px 16px 20px; max-width: 460px; margin: 0 auto; }
+        .ai-gate-icon {
+          font-size: 20px; color: #5EEAD4; line-height: 1;
+          margin-bottom: 10px;
+          text-shadow: 0 0 14px rgba(94,234,212,0.5);
+        }
+        .ai-gate-title {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 14px; font-weight: 600; color: #E7EAEE;
+          letter-spacing: 0.04em; margin-bottom: 6px;
+        }
+        .ai-gate-sub {
+          font-size: 11.5px; color: #6B7280; line-height: 1.55;
+          margin-bottom: 16px;
+        }
+        .ai-gate-steps {
+          margin: 0 0 16px; padding: 0 0 0 18px;
+          display: flex; flex-direction: column; gap: 7px;
+        }
+        .ai-gate-steps li {
+          font-size: 11.5px; color: #9AA3AF; line-height: 1.5;
+        }
+        .ai-gate-steps li::marker {
+          color: #5EEAD4;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+        }
+        .ai-gate-steps a {
+          color: #5EEAD4; text-decoration: none;
+          border-bottom: 1px solid rgba(94,234,212,0.35);
+          word-break: break-all;
+        }
+        .ai-key-input {
+          width: 100%; box-sizing: border-box;
+          background: #0E1116; border: 1px solid #23272E; border-radius: 8px;
+          color: #E7EAEE; font-family: 'JetBrains Mono', monospace;
+          font-size: 12px; letter-spacing: 0.06em;
+          padding: 11px 12px; outline: none;
+          transition: border-color 140ms ease;
+        }
+        .ai-key-input::placeholder { color: #4B5563; letter-spacing: 0.04em; }
+        .ai-key-input:focus { border-color: #5EEAD4; }
+        .ai-key-input:disabled { opacity: 0.55; }
+        .ai-gate-error { margin: 10px 0 0; }
+        .ai-gate-actions { display: flex; gap: 8px; margin-top: 12px; }
+        .ai-gate-note {
+          font-size: 10.5px; color: #4B5563; line-height: 1.5;
+          margin-top: 14px; padding-top: 12px;
+          border-top: 1px solid #1B1F25;
+        }
+
+        .ai-composer { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 12px; }
+        .ai-input {
+          width: 100%; box-sizing: border-box; resize: vertical; min-height: 62px;
+          background: #0E1116; border: 1px solid #23272E; border-radius: 8px;
+          color: #E7EAEE; font-family: 'Inter', sans-serif;
+          font-size: 12.5px; line-height: 1.5; padding: 10px 12px;
+          outline: none; transition: border-color 140ms ease;
+        }
+        .ai-input::placeholder { color: #4B5563; }
+        .ai-input:focus { border-color: #5EEAD4; }
+        .ai-input:disabled { opacity: 0.55; }
+
+        .ai-send {
+          align-self: flex-end; background: #5EEAD4; color: #07100E;
+          border: none; border-radius: 7px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+          padding: 8px 20px; cursor: pointer;
+          transition: opacity 140ms ease, transform 140ms ease;
+        }
+        .ai-send:disabled { opacity: 0.35; cursor: default; }
+        .ai-send:not(:disabled):active { transform: scale(0.97); }
+
+        .ai-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 14px; }
+        .ai-chip {
+          background: #14171C; border: 1px solid #23272E; border-radius: 999px;
+          color: #9AA3AF; font-size: 10.5px; padding: 6px 12px;
+          cursor: pointer; text-align: left;
+          transition: border-color 140ms ease, color 140ms ease;
+        }
+
+        .ai-thinking { display: flex; gap: 5px; justify-content: center; padding: 18px 0 22px; }
+        .ai-dot {
+          width: 6px; height: 6px; border-radius: 50%;
+          background: #5EEAD4; opacity: 0.35;
+          animation: aiPulse 1.05s ease-in-out infinite;
+        }
+        .ai-dot:nth-child(2) { animation-delay: 0.16s; }
+        .ai-dot:nth-child(3) { animation-delay: 0.32s; }
+        @keyframes aiPulse {
+          0%, 100% { opacity: 0.25; transform: translateY(0); }
+          50%      { opacity: 1;    transform: translateY(-4px); }
+        }
+
+        .ai-error {
+          margin: 0 16px 12px; padding: 10px 12px;
+          background: rgba(240,87,107,0.08);
+          border: 1px solid rgba(240,87,107,0.35);
+          border-radius: 8px; color: #F0576B;
+          font-size: 11.5px; line-height: 1.45;
+        }
+
+        .ai-result { padding: 0 16px 16px; }
+        .ai-reply {
+          font-size: 12.5px; color: #C9D1D9; line-height: 1.55;
+          padding: 11px 13px; margin-bottom: 12px;
+          background: #14171C; border: 1px solid #23272E;
+          border-left: 3px solid #5EEAD4; border-radius: 8px;
+        }
+        .ai-noop { font-size: 11px; color: #6B7280; text-align: center; padding: 6px 0 4px; }
+
+        .ai-diff-head {
+          display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 7px;
+        }
+        .ai-diff-title {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9.5px; letter-spacing: 0.1em;
+          text-transform: uppercase; color: #6B7280;
+        }
+        .ai-diff-counts {
+          display: flex; gap: 8px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10.5px; font-weight: 600;
+        }
+        .ai-diff-counts .c-add { color: #7EE787; }
+        .ai-diff-counts .c-edit { color: #F5A623; }
+        .ai-diff-counts .c-remove { color: #F0576B; }
+
+        .ai-diff { display: flex; flex-direction: column; gap: 5px; }
+        .ai-diff-row {
+          display: grid; grid-template-columns: 14px 52px 1fr auto;
+          align-items: baseline; gap: 8px;
+          width: 100%; text-align: left;
+          background: #14171C; border: 1px solid #23272E;
+          border-left: 3px solid #23272E; border-radius: 7px;
+          padding: 9px 11px; cursor: pointer; font-family: inherit;
+          transition: opacity 140ms ease, border-color 140ms ease;
+        }
+        .ai-diff-row.add    { border-left-color: #7EE787; }
+        .ai-diff-row.edit   { border-left-color: #F5A623; }
+        .ai-diff-row.remove { border-left-color: #F0576B; }
+        .ai-diff-row.skipped { opacity: 0.38; }
+        .ai-diff-row.skipped .ai-diff-text { text-decoration: line-through; }
+
+        .ai-sign { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; line-height: 1; }
+        .ai-diff-row.add .ai-sign    { color: #7EE787; }
+        .ai-diff-row.edit .ai-sign   { color: #F5A623; }
+        .ai-diff-row.remove .ai-sign { color: #F0576B; }
+
+        .ai-surface {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9px; letter-spacing: 0.06em;
+          text-transform: uppercase; color: #6B7280;
+        }
+        .ai-diff-text { font-size: 12px; color: #E7EAEE; line-height: 1.4; word-break: break-word; }
+        .ai-skip-mark {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 8.5px; letter-spacing: 0.08em;
+          text-transform: uppercase; color: #6B7280;
+        }
+
+        .ai-actions { display: flex; gap: 8px; margin-top: 12px; }
+        .ai-apply {
+          flex: 1; background: #5EEAD4; color: #07100E; border: none;
+          border-radius: 7px; padding: 10px 0; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+          transition: opacity 140ms ease, transform 140ms ease;
+        }
+        .ai-apply:disabled { opacity: 0.35; cursor: default; }
+        .ai-apply:not(:disabled):active { transform: scale(0.98); }
+        .ai-discard {
+          background: transparent; color: #9AA3AF;
+          border: 1px solid #23272E; border-radius: 7px;
+          padding: 10px 18px; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; letter-spacing: 0.06em;
+          transition: border-color 140ms ease, color 140ms ease;
+        }
+        .ai-hint { font-size: 10px; color: #4B5563; text-align: center; margin-top: 8px; }
+
+        @media (hover: hover) and (pointer: fine) {
+          .ai-chip:hover { border-color: #5EEAD4; color: #C9D1D9; }
+          .ai-diff-row:hover { border-color: #39414D; }
+          .ai-send:not(:disabled):hover,
+          .ai-apply:not(:disabled):hover { opacity: 0.88; }
+          .ai-discard:hover { border-color: #39414D; color: #E7EAEE; }
+          .ai-key-btn:hover { border-color: #5EEAD4; color: #5EEAD4; }
+          .ai-gate-steps a:hover { border-bottom-color: #5EEAD4; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .ai-dot { animation: none; opacity: 0.6; }
+        }
+
         @media (min-width: 900px) {
           .app-root {
             padding: 5vh 5vw;
@@ -5194,6 +5918,9 @@ function TodoApp() {
           <button className={tab === "quest" ? "active" : ""} onClick={() => changeTab("quest")}>
             quest
           </button>
+          <button className={`tab-ai ${tab === "ai" ? "active" : ""}`} onClick={() => changeTab("ai")}>
+            ai
+          </button>
         </div>
 
         <div key={tab} className="tab-content">
@@ -5317,7 +6044,7 @@ function TodoApp() {
             projects={projects}
             setProjects={setProjects}
           />
-        ) : (
+        ) : tab === "quest" ? (
           <QuestView
             goodHabits={goodHabits}
             setGoodHabits={setGoodHabits}
@@ -5325,6 +6052,12 @@ function TodoApp() {
             setBadHabits={setBadHabits}
             rewards={rewards}
             setRewards={setRewards}
+          />
+        ) : (
+          <AIView
+            state={{ routines, vaultHabits, goodHabits, badHabits, rewards, totalXP }}
+            setters={{ setRoutines, setVaultHabits, setGoodHabits, setBadHabits, setRewards }}
+            showDataMsg={showDataMsg}
           />
         )}
         </div>

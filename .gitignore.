@@ -1,0 +1,36 @@
+# ─── dependencies ──────────────────────────────────────────────
+node_modules/
+worker/node_modules/
+
+# ─── build artifacts ───────────────────────────────────────────
+# NOTE: bundle.js is intentionally COMMITTED — GitHub Pages serves
+# it directly with no build step. Do not add it here.
+*.map
+dist/
+.esbuild/
+
+# ─── cloudflare / wrangler ─────────────────────────────────────
+.wrangler/
+worker/.wrangler/
+.dev.vars
+worker/.dev.vars
+
+# ─── secrets (belt & braces — these should never exist here) ───
+.env
+.env.*
+*.pem
+*vapid*private*
+
+# ─── editor / os ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# ─── logs & scratch ────────────────────────────────────────────
+*.log
+npm-debug.log*
+.cache/
+tmp/

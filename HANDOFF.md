@@ -13,8 +13,8 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v15   (service worker cache tag, see sw.js)
-  LAST UPDATED      2026-07-29
+  CURRENT VERSION   tasksh-v18   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
 ```
@@ -212,6 +212,22 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   show a toast, never crash. Requires the app to be **installed to the home
   screen** on Android — a plain browser tab cannot receive push
 
+**AI tab** (added v17)
+- Natural-language control over routines, vault habits, quest habits and
+  rewards, plus read-only analysis questions
+- Posts a trimmed snapshot + the request to `POST /ai` on the notification
+  worker, which calls Gemini and returns a **validated action list**
+- Renders a colour-coded diff (`+`/`~`/`−`) with resolved entity names; rows
+  can be tapped to skip; nothing is written until Apply
+- `applyAIActions()` spreads over existing objects so **streak history is
+  preserved** on edits, and only touched surfaces are written
+- **Key is entered in-app** (v18): the tab shows a setup screen if no key is
+  saved, verifies it against Google before storing, and keeps it in
+  `localStorage` (`tasksh.aikey.v1`) on that device only. It is deliberately
+  **excluded from export/import** and never stored server-side. A rejected
+  key clears itself and re-prompts. A `GEMINI_API_KEY` worker secret still
+  works as a fallback. See worker/README.md §7
+
 **Vault tab** ("Productivity Vault" — habit streaks + project manager)
 - Habit cards: weekly-goal frequency habits (e.g. "6x/week"), each with a
   monthly calendar grid (filled cell = completed that IST day), a 7-day
@@ -296,12 +312,9 @@ when it's fully closed. Added in v14; icon-resolution bug fixed in v15.
 - CORS is wide open (`*`). Fine for a single-user personal app.
 - Anyone who knew a `deviceId` could push to that device. No auth exists.
 
-> [!IMPORTANT]
-> **Outstanding:** pushes are still sent at default priority, so Android Doze
-> batches them and they arrive late. The fix is
-> `sendNotification(sub, payload, { urgency: "high", TTL: 300 })` in
-> `worker/src/index.js`, then `npx wrangler deploy`. Worker-side only — no
-> rebuild, no cache bump, no phone reinstall.
+**Doze fix (resolved v17):** pushes are sent with
+`{ urgency: "high", TTL: 300 }` so Android doesn't batch them into
+maintenance windows while the screen is off.
 
 ## Changelog
 
@@ -335,9 +348,6 @@ v6 onward is preserved there, unedited.
    [worker/README.md](worker/README.md).
 
    Two follow-ups remain open:
-   - **Doze delay (not yet fixed).** Pushes still go out at default
-     priority, so Android batches them when the screen is off. Needs
-     `{ urgency: "high", TTL: 300 }` on `sendNotification`.
    - **Android battery management** can block delivery entirely regardless
      of code. On Samsung/One UI: set both the installed `tasks.sh` WebAPK
      *and* Chrome to Unrestricted battery, and remove both from

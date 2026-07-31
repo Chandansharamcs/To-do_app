@@ -218,7 +218,7 @@ All state lives in ten `localStorage` keys:
 tasksh.tasks.v1          tasksh.routines.v1       tasksh.vaulthabits.v1
 tasksh.projects.v1       tasksh.goodhabits.v1     tasksh.badhabits.v1
 tasksh.rewards.v1        tasksh.deviceid.v1       tasksh.notifyenabled.v1
-tasksh.sound.v1
+tasksh.sound.v1          tasksh.aikey.v1 (excluded from backups)
 ```
 
 The titlebar has **export (⬇)** and **import (⬆)** buttons that round-trip all
