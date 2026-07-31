@@ -216,46 +216,33 @@ async function resolveModel(key, env) {
 }
 
 const VALID_AREAS = ["work", "fitness", "health", "self"];
+const VALID_SUBS = {
+  work: ["deep", "admin", "learning"],
+  fitness: ["training", "movement"],
+  health: ["nutrition", "sleep", "mind"],
+  self: ["creative", "social"],
+};
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-const SYSTEM_PROMPT = `You are the assistant inside "tasks.sh", a personal productivity PWA.
-You help the user manage four things: ROUTINES (daily recurring time blocks),
-VAULT HABITS (weekly-goal habits), QUEST HABITS (good/bad habits worth XP), and
-REWARDS (things bought with XP).
+const SYSTEM_PROMPT = `Assistant inside "tasks.sh", a productivity PWA managing ROUTINES (daily time blocks), VAULT HABITS (weekly goals), QUEST HABITS (good/bad, worth XP) and REWARDS (cost XP).
 
-You reply with ONLY a JSON object, no markdown fences, no commentary:
-{
-  "reply": "one or two short sentences, lowercase, terse, terminal-flavoured",
-  "actions": [ ...zero or more action objects... ]
-}
+Reply with ONLY JSON: {"reply":"1-2 short lowercase terse sentences","actions":[...]}
 
-Allowed actions -- use EXACTLY these shapes:
+Action shapes (use exactly):
+{"op":"add_routine","time":"HH:MM","label":str,"duration":mins,"alternatives":[str]}
+{"op":"edit_routine","id":num,"time":"HH:MM","label":str,"duration":mins}
+{"op":"delete_routine","id":num}
+{"op":"add_vault_habit","label":str,"weeklyGoal":1-7,"icon":"glyph"}
+{"op":"edit_vault_habit","id":num,"label":str,"weeklyGoal":1-7}
+{"op":"delete_vault_habit","id":num}
+{"op":"add_good_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
+{"op":"add_bad_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
+{"op":"delete_good_habit","id":num}
+{"op":"delete_bad_habit","id":num}
+{"op":"add_reward","label":str,"cost":num}
+{"op":"delete_reward","id":num}
 
-{"op":"add_routine","time":"HH:MM","label":"string","duration":minutes,"alternatives":["optional"]}
-{"op":"edit_routine","id":number,"time":"HH:MM","label":"string","duration":minutes}
-{"op":"delete_routine","id":number}
-{"op":"add_vault_habit","label":"string","weeklyGoal":1-7,"icon":"single glyph or emoji"}
-{"op":"edit_vault_habit","id":number,"label":"string","weeklyGoal":1-7}
-{"op":"delete_vault_habit","id":number}
-{"op":"add_good_habit","label":"string","area":"work|fitness|health|self","xp":number}
-{"op":"add_bad_habit","label":"string","area":"work|fitness|health|self","xp":number}
-{"op":"delete_good_habit","id":number}
-{"op":"delete_bad_habit","id":number}
-{"op":"add_reward","label":"string","cost":number}
-{"op":"delete_reward","id":number}
-
-RULES:
-- Times are 24-hour "HH:MM". The user is in IST. Interpret "morning" as 06:00-09:00,
-  "evening" as 18:00-21:00 unless they say otherwise.
-- On edit/delete you MUST use an id that exists in the snapshot. Never invent ids.
-- Only include the fields you are actually changing on an edit.
-- XP guide: trivial habit 5-10, normal 10-25, demanding 30-50. Rewards 50-300.
-- If the user only asks a question ("what am I neglecting?", "how am I doing?"),
-  return an EMPTY actions array and put the whole answer in "reply".
-- Never delete something unless the user clearly asked to remove it. When in
-  doubt, propose an edit instead of a delete.
-- Prefer fewer, higher-quality actions over many trivial ones.
-- Keep "reply" under 240 characters.`;
+Rules: 24h times, IST; morning=06:00-09:00, evening=18:00-21:00. Edit/delete MUST use ids from the snapshot — never invent them. On edits include only changed fields. XP: trivial 5-10, normal 10-25, hard 30-50; rewards 50-300. Optional "sub" must match the area: work=deep|admin|learning, fitness=training|movement, health=nutrition|sleep|mind, self=creative|social. Questions ("what am I neglecting?") = empty actions, answer in reply. Never delete unless clearly asked — prefer an edit. Few good actions over many trivial. Reply under 240 chars.`;
 
 function buildSnapshot(data) {
   // Trimmed to only what the model needs to reason -- history arrays can be
@@ -351,7 +338,10 @@ function sanitiseActions(raw, snap) {
       const xp = int(a.xp, 1, 200);
       if (!label || xp === null) continue;
       const area = VALID_AREAS.includes(a.area) ? a.area : "self";
-      out.push({ op, label, area, xp });
+      // sub is optional, but if present it must belong to the chosen area --
+      // a mismatched pair would silently mis-plot on the radar
+      const sub = (VALID_SUBS[area] || []).includes(a.sub) ? a.sub : undefined;
+      out.push(sub ? { op, label, area, sub, xp } : { op, label, area, xp });
 
     } else if (op === "delete_good_habit") {
       if (ids.good.has(a.id)) out.push({ op, id: a.id });
@@ -372,6 +362,43 @@ function sanitiseActions(raw, snap) {
   return out;
 }
 
+// Gemini 2.5+ models "think" before answering by default, which adds seconds
+// of latency. This job is structured extraction, not reasoning, so we turn it
+// off -- but the knob differs by generation and sending the wrong one (or
+// both) is a 400:
+//   2.5 series -> generationConfig.thinkingConfig.thinkingBudget = 0
+//   3.x series -> generationConfig.thinkingConfig.thinkingLevel = "minimal"
+// Anything unrecognised gets no thinking config at all, since guessing wrong
+// breaks the request outright.
+function thinkingConfigFor(model) {
+  const m = model.replace(/^models\//, "");
+  if (/^gemini-3/.test(m)) return { thinkingLevel: "minimal" };
+  if (/^gemini-2\.5/.test(m)) return { thinkingBudget: 0 };
+  // "-latest" aliases track the newest generation; budget:0 is valid on every
+  // flash/flash-lite line so far, and we retry without it if it 400s.
+  if (/flash/.test(m)) return { thinkingBudget: 0 };
+  return null;
+}
+
+function buildPayload(model, snap, prompt) {
+  const generationConfig = {
+    temperature: 0.4,
+    maxOutputTokens: 1600,
+    responseMimeType: "application/json",
+  };
+  const thinking = thinkingConfigFor(model);
+  if (thinking) generationConfig.thinkingConfig = thinking;
+
+  return {
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{
+      role: "user",
+      parts: [{ text: `Current data:\n${JSON.stringify(snap)}\n\nUser request: ${prompt}` }],
+    }],
+    generationConfig,
+  };
+}
+
 async function handleAI(request, env) {
   const body = await request.json();
 
@@ -390,21 +417,6 @@ async function handleAI(request, env) {
 
   const snap = buildSnapshot(body.data || {});
 
-  const payload = {
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: [{
-      role: "user",
-      parts: [{
-        text: `Current data:\n${JSON.stringify(snap)}\n\nUser request: ${prompt}`,
-      }],
-    }],
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 2048,
-      responseMimeType: "application/json",
-    },
-  };
-
   let model;
   try {
     model = await resolveModel(apiKey, env);
@@ -419,23 +431,37 @@ async function handleAI(request, env) {
     return json({ error: "Couldn't work out which AI model to use." }, 502);
   }
 
-  const call = (m) =>
+  const call = (m, body) =>
     fetch(AI_ENDPOINT(m, apiKey), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
 
+  const started = Date.now();
   let res;
   try {
-    res = await call(model);
+    res = await call(model, buildPayload(model, snap, prompt));
+
     // A cached model ID can go stale when Google retires it mid-cycle. Clear
     // the cache, re-resolve once, and retry before surfacing an error.
     if (res.status === 404) {
       console.log(`[ai] ${model} returned 404 — re-resolving`);
       try { await env.TASKSH_KV.delete(`aimodel:${apiKey.slice(-8)}`); } catch {}
       model = await resolveModel(apiKey, env);
-      res = await call(model);
+      res = await call(model, buildPayload(model, snap, prompt));
+    }
+
+    // If a model rejects our thinking knob (wrong generation, or it can't be
+    // disabled at all), retry once without it rather than failing the request.
+    if (res.status === 400) {
+      const peek = await res.clone().text();
+      if (/thinking/i.test(peek)) {
+        console.log(`[ai] ${model} rejected thinkingConfig — retrying without`);
+        const bare = buildPayload(model, snap, prompt);
+        delete bare.generationConfig.thinkingConfig;
+        res = await call(model, bare);
+      }
     }
   } catch (err) {
     console.log(`[ai] network error: ${err.message || err}`);
@@ -484,7 +510,9 @@ async function handleAI(request, env) {
     ? parsed.reply.trim().slice(0, 400)
     : (actions.length ? "here's what i'd change:" : "done.");
 
-  console.log(`[ai] prompt="${prompt.slice(0, 60)}" -> ${actions.length} action(s)`);
+  const ms = Date.now() - started;
+  const u = data.usageMetadata || {};
+  console.log(`[ai] ${model.replace(/^models\//, "")} ${ms}ms in=${u.promptTokenCount || "?"} out=${u.candidatesTokenCount || "?"} think=${u.thoughtsTokenCount || 0} -> ${actions.length} action(s)`);
   return json({ reply, actions });
 }
 

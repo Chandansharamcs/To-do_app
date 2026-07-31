@@ -24,6 +24,8 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v21`** | 2026-07-31 | Ambient bg, 10-axis radar, timeline rebuild |
+| **`v20`** | 2026-07-31 | AI latency: disable thinking, trim prompt |
 | **`v19`** | 2026-07-31 | Fix AI 404 — dynamic model resolution |
 | **`v18`** | 2026-07-31 | In-app AI key entry |
 | **`v17`** | 2026-07-31 | AI assistant tab, Doze priority fix |
@@ -46,6 +48,89 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-07-31 — `tasksh-v21`**
+- **Added: ambient animated background.** Two layers of oversized, very
+  low-opacity colour blooms (cyan / amber / blue, all existing palette
+  tokens) drifting on 96s and 138s cycles. The two cycle lengths are
+  deliberately coprime-ish so they never resync into an obvious loop.
+  Implemented as `::before`/`::after` on `.app-root` at `z-index: -1`, so
+  it cannot affect layout, text contrast or hit-testing. Peak opacity is
+  0.065 — the shift reads as ambient lighting, not animation.
+  `prefers-reduced-motion` freezes the drift while keeping the gradients.
+- **Changed: Life Areas radar now plots 10 sub-categories, not 4 areas.**
+  Habits keep their `area` (which still drives all XP maths and the
+  life-area cards) and gain an optional `sub`: Work → Deep Work / Admin /
+  Learning, Fitness → Training / Movement, Health → Nutrition / Sleep /
+  Mind, Self-Dev → Creative / Social. Editable via a new chip row in each
+  habit's edit form; changing the area resets the sub to a valid one.
+  - **No migration needed.** `subForHabit()` falls back to the area's
+    first sub for untagged habits, so existing data populates the chart
+    immediately and nothing has to be re-tagged.
+  - Radar label anchoring is now angle-aware (`start`/`middle`/`end`)
+    and the viewBox is padded horizontally, because centre-anchoring 10
+    labels clipped the left and right ones. Verified 0 clipped labels at
+    390px and 1366px.
+  - The AI assistant understands `sub` too, and the worker validates that
+    a supplied sub actually belongs to the chosen area.
+- **Removed from Routines:** the stats row (`N/M today`, `🔥 best
+  streak`, completion ring), the 7-day completion bar chart, and the
+  per-row 7-day dot strips. `WeekChart` and `WeekDots` are deleted along
+  with their CSS.
+- **Fixed: the timeline was unreadable on mobile.** Measured on a packed
+  14-routine day at 390px: the 24h span was compressed into ~312px, so
+  **13 of 14 blocks rendered 3–20px wide and only 1 could fit a label**.
+  It technically fit the viewport, which is why it never looked like an
+  overflow bug — it was a legibility one.
+  - The track now has a floor of 82px per hour (~1970px for a full day)
+    and lives in a horizontal scroller, so blocks are wide enough to
+    label. **11 of 14 now show labels, up from 1.**
+  - Auto-scrolls to centre "now" on first paint, with a `now` button to
+    return after browsing. Only scrolls once, so it never fights the user.
+  - **Sticky labels:** a block starting left of the visible window keeps
+    its label pinned at the edge, so the in-progress routine is never an
+    anonymous coloured bar.
+  - `overscroll-behavior-x: contain` stops a sideways swipe triggering
+    browser back-navigation.
+  - Redesigned the card: header with a done count, a thin completion bar,
+    hour ticks that switch from 3-hourly to hourly when zoomed, an
+    outlined "current" block, and a pulsing now-marker.
+- **Verified:** nothing outside the scroll container exceeds the
+  viewport, the page itself never scrolls horizontally, the scroller is
+  clipped to the card, every *visible* block is labelled, jump-to-now
+  works, all 6 tabs render clean, reduced-motion is respected, and the
+  app still boots fully offline.
+- Bumped service worker cache to `tasksh-v21`.
+
+**2026-07-31 — `tasksh-v20`**
+- **Fixed: AI responses were slow.** Root cause was Gemini's *thinking*
+  mode, which is on by default for 2.5+ models — the model reasons
+  internally before emitting a token, adding seconds of dead wait. This
+  task is structured JSON extraction, not reasoning, so that work was
+  pure latency.
+  - Thinking is now disabled per request. The knob differs by
+    generation and sending the wrong one is a hard 400, so
+    `thinkingConfigFor()` maps it: 2.5 → `thinkingBudget: 0`,
+    3.x → `thinkingLevel: "minimal"`, unknown non-flash → omitted
+    entirely. Never both keys in one payload.
+  - If a model rejects the config anyway, the request is retried once
+    without it rather than failing.
+- **Trimmed the system prompt ~33%** (504 → 340 tokens). It's re-sent on
+  every request, so this cuts both latency and token spend with no
+  change in behaviour.
+- **Lowered `maxOutputTokens`** 2048 → 1600. The action list is capped at
+  25 anyway, so the extra headroom only ever bought slower worst-case
+  responses.
+- **Added a live elapsed timer** to the thinking state ("thinking… 2.4s"),
+  with a "taking longer than usual" note past 12s. A silent wait reads
+  as broken; a counting one reads as progress.
+- **Added server-side timing logs** — `wrangler tail` now prints the
+  model used, wall-clock ms, and input/output/thinking token counts per
+  request, so future latency questions can be answered with data.
+- **Verified:** 14 tests on thinking-config selection across model
+  generations (including the never-both-keys invariant), browser test of
+  the live timer, plus full regression and offline boot.
+- Bumped service worker cache to `tasksh-v20`.
 
 **2026-07-31 — `tasksh-v19`**
 - **Fixed: every AI request returned 404.** The worker had

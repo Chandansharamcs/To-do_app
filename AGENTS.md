@@ -124,6 +124,12 @@ A clean clone cannot build. Either move the file or fix the script; do not
 "fix" it by creating a duplicate copy in `src/`, which is how the two drifted
 apart once already.
 
+### ⚠ Don't "fix" the timeline by making it fit the screen
+
+Compressing 24h into a phone's width is what made it unreadable in the first
+place (13/14 blocks at 3-20px, one label total). It scrolls horizontally by
+design, with a floor of 82px/hour. If it looks too wide, that's correct.
+
 ### ⚠ `overflow: hidden` on `.timeline-track`
 
 Anything positioned with a negative offset inside it is invisible. The hour
@@ -140,6 +146,14 @@ day. If you need to change preference order, edit `MODEL_PREFERENCES` — don't
 reintroduce a constant.
 
 To see what a key can actually call: `GET /ai-models?key=YOUR_KEY`.
+
+### ⚠ Gemini "thinking" is on by default and costs seconds
+
+2.5+ models reason internally before answering. For structured extraction
+that's wasted latency. `thinkingConfigFor()` disables it, but the parameter is
+generation-specific — 2.5 uses `thinkingBudget: 0`, 3.x uses
+`thinkingLevel: "minimal"`, and sending both returns a 400. If you add a model
+family to `MODEL_PREFERENCES`, check which knob it takes.
 
 ### ⚠ Verify keys with ListModels, never a real prompt
 

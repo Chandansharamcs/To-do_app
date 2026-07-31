@@ -274,7 +274,7 @@ function RadarChart({ axes, size = 220, maxValue }) {
   const n = axes.length;
   const cx = size / 2;
   const cy = size / 2;
-  const r = size / 2 - 34;
+  const r = size / 2 - (axes.length > 6 ? 46 : 34);
   const max = maxValue ?? Math.max(1, ...axes.map((a) => a.value));
   const angleFor = (i) => (Math.PI * 2 * i) / n - Math.PI / 2;
 
@@ -283,12 +283,23 @@ function RadarChart({ axes, size = 220, maxValue }) {
     return [cx + Math.cos(a) * r * frac, cy + Math.sin(a) * r * frac];
   };
 
+  // Side labels are anchored outward, so they extend past the nominal
+  // square. Widen the viewBox horizontally rather than shrinking the chart,
+  // so the polygon keeps its size and nothing gets clipped.
+  const padX = n > 6 ? 46 : 22;
+
   const rings = [0.25, 0.5, 0.75, 1];
   const dataPoints = axes.map((ax, i) => pointFor(i, mounted ? Math.max(0.04, ax.value / max) : 0.02));
   const dataPath = dataPoints.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + "Z";
 
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} width="100%" height={size} className="radar-chart">
+    <svg
+      viewBox={`${-padX} 0 ${size + padX * 2} ${size}`}
+      width="100%"
+      height={size}
+      className="radar-chart"
+      preserveAspectRatio="xMidYMid meet"
+    >
       {rings.map((frac, ri) => {
         const pts = axes.map((_, i) => pointFor(i, frac));
         const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + "Z";
@@ -304,18 +315,29 @@ function RadarChart({ axes, size = 220, maxValue }) {
         style={{ transition: "d 700ms cubic-bezier(0.22, 1, 0.36, 1)" }}
       />
       {axes.map((ax, i) => {
-        const labelPt = pointFor(i, 1.22);
+        const labelPt = pointFor(i, 1.19);
         const dotPt = pointFor(i, mounted ? Math.max(0.04, ax.value / max) : 0.02);
+        // With many axes, centre-anchoring every label makes the left and
+        // right sides collide with the chart. Anchor by which side of the
+        // circle the vertex sits on so labels grow outward instead.
+        const cosA = Math.cos(angleFor(i));
+        const anchor = cosA > 0.25 ? "start" : cosA < -0.25 ? "end" : "middle";
         return (
           <g key={ax.key || i}>
             <circle
               cx={dotPt[0]}
               cy={dotPt[1]}
-              r={3.5}
+              r={n > 6 ? 2.8 : 3.5}
               fill={ax.color || "#5EEAD4"}
               style={{ transition: "cx 700ms cubic-bezier(0.22,1,0.36,1), cy 700ms cubic-bezier(0.22,1,0.36,1)" }}
             />
-            <text x={labelPt[0]} y={labelPt[1]} textAnchor="middle" dominantBaseline="middle" className="radar-label">
+            <text
+              x={labelPt[0]}
+              y={labelPt[1]}
+              textAnchor={anchor}
+              dominantBaseline="middle"
+              className="radar-label"
+            >
               {ax.label}
             </text>
           </g>
@@ -498,36 +520,32 @@ function packTimelineLanes(items) {
   return { placed, laneCount: Math.max(1, laneEnds.length) };
 }
 
-function DayTimeline({ routines, nowMinutes }) {
+function DayTimeline({ routines, nowMinutes, doneToday = 0 }) {
   const [mounted, setMounted] = useState(false);
-  const [trackWidth, setTrackWidth] = useState(0);
-  const trackRef = useRef(null);
+  const [viewportW, setViewportW] = useState(0);
+  const [scrollX, setScrollX] = useState(0);
+  const scrollRef = useRef(null);
+  const didAutoScroll = useRef(false);
 
   useEffect(() => {
     const t = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(t);
   }, []);
 
+  // Measure the visible scroll window (NOT the track, which is now wider
+  // than the screen) so we can decide how much to zoom the day.
   useEffect(() => {
-    if (!trackRef.current) return;
-    const el = trackRef.current;
+    if (!scrollRef.current) return;
+    const el = scrollRef.current;
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setTrackWidth(entry.contentRect.width);
+      for (const entry of entries) setViewportW(entry.contentRect.width);
     });
     ro.observe(el);
-    setTrackWidth(el.getBoundingClientRect().width);
+    setViewportW(el.getBoundingClientRect().width);
     return () => ro.disconnect();
   }, []);
 
   const DAY = 24 * 60;
-  const nowPct = (nowMinutes / DAY) * 100;
-  const hourMarks = [0, 3, 6, 9, 12, 15, 18, 21, 24];
-  const hourLabel = (h) => {
-    const hh = h % 24;
-    if (hh === 0) return "12a";
-    if (hh === 12) return "12p";
-    return hh > 12 ? `${hh - 12}p` : `${hh}a`;
-  };
   const todayStr = getISTDateString(0);
 
   const items = routines.map((r) => {
@@ -536,87 +554,184 @@ function DayTimeline({ routines, nowMinutes }) {
   });
   const { placed, laneCount } = packTimelineLanes(items);
 
-  const LANE_H = 30;
-  const LANE_GAP = 4;
-  const TOP_PAD = 7;
+  // ---- horizontal scale -------------------------------------------------
+  // The old version squeezed 24h into ~310px, so a 30-minute routine got
+  // ~6px and no label could ever render. Instead we give the day a minimum
+  // pixels-per-hour and let the track overflow into a horizontal scroller.
+  // MIN_PX_PER_HOUR is chosen so a 30-min block is ~24px (visible) and a
+  // 1-hour block is ~48px (fits a short label).
+  const MIN_PX_PER_HOUR = 82;
+  const trackW = Math.max(viewportW, 24 * MIN_PX_PER_HOUR);
+  const pxPerMin = trackW / DAY;
+  const isScrollable = trackW > viewportW + 1;
+
+  const nowX = nowMinutes * pxPerMin;
+
+  // Centre "now" on first paint so the user lands on the relevant part of
+  // the day instead of at midnight. Only once -- re-centring on every tick
+  // would fight the user's own scrolling.
+  useEffect(() => {
+    if (!scrollRef.current || !viewportW || didAutoScroll.current) return;
+    if (!isScrollable) { didAutoScroll.current = true; return; }
+    const el = scrollRef.current;
+    const target = Math.max(0, Math.min(nowX - viewportW / 2, trackW - viewportW));
+    el.scrollTo({ left: target, behavior: "auto" });
+    didAutoScroll.current = true;
+  }, [viewportW, nowX, trackW, isScrollable]);
+
+  // Track horizontal scroll so a block that begins left of the visible
+  // window can still show its label, pinned at the edge, instead of the
+  // current routine appearing as an anonymous coloured bar.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { setScrollX(el.scrollLeft); raf = 0; });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    setScrollX(el.scrollLeft);
+    return () => { el.removeEventListener("scroll", onScroll); cancelAnimationFrame(raf); };
+  }, [viewportW]);
+
+  const scrollToNow = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      left: Math.max(0, Math.min(nowX - viewportW / 2, trackW - viewportW)),
+      behavior: "smooth",
+    });
+    sound.click();
+  };
+
+  const LANE_H = 38;
+  const LANE_GAP = 6;
+  const TOP_PAD = 8;
   const trackHeight = TOP_PAD * 2 + laneCount * LANE_H + (laneCount - 1) * LANE_GAP;
+
+  // Hour ticks: every hour when zoomed in, every 3 when the whole day fits.
+  const hourStep = pxPerMin * 60 >= 40 ? 1 : 3;
+  const hourMarks = [];
+  for (let h = 0; h <= 24; h += hourStep) hourMarks.push(h);
+  const hourLabel = (h) => {
+    const hh = h % 24;
+    if (hh === 0) return "12a";
+    if (hh === 12) return "12p";
+    return hh > 12 ? `${hh - 12}p` : `${hh}a`;
+  };
+
+  const total = routines.length;
+  const pct = total ? Math.round((doneToday / total) * 100) : 0;
 
   return (
     <div className="timeline-wrap">
-      <div className="timeline-hours">
-        {hourMarks.map((h) => (
-          <div key={h} className="timeline-hour" style={{ left: `${(h / 24) * 100}%` }}>
-            <span>{hourLabel(h)}</span>
-          </div>
-        ))}
-      </div>
-      <div className="timeline-track" ref={trackRef} style={{ height: trackHeight }}>
-        {/* night/day shading: dim overnight hours (10pm-6am) */}
-        <div className="timeline-night" style={{ left: "0%", width: `${(6 / 24) * 100}%` }} />
-        <div className="timeline-night" style={{ left: `${(22 / 24) * 100}%`, width: `${(2 / 24) * 100}%` }} />
-
-        {hourMarks.map((h) => (
-          <div key={h} className="timeline-gridline" style={{ left: `${(h / 24) * 100}%` }} />
-        ))}
-
-        {/* elapsed-today shading, up to now */}
-        <div className="timeline-elapsed" style={{ width: mounted ? `${nowPct}%` : "0%" }} />
-
-        {placed.map(({ r, start, lane }, i) => {
-          const leftPct = (start / DAY) * 100;
-          const rawWidthPct = (Math.max(1, r.duration) / DAY) * 100;
-          // clamp so a late/long routine's block ends at the track edge
-          // instead of overflowing past it and getting clipped mid-label
-          const widthPct = Math.max(0.8, Math.min(rawWidthPct, 100 - leftPct));
-          const doneToday = (r.history || []).includes(todayStr);
-          const color = colorForId(r.id);
-          const blockPx = (widthPct / 100) * trackWidth;
-          const showLabel = blockPx > 44;
-          return (
-            <div
-              key={r.id}
-              className={`timeline-block ${doneToday ? "done" : ""}`}
-              style={{
-                left: `${leftPct}%`,
-                top: TOP_PAD + lane * (LANE_H + LANE_GAP),
-                width: mounted ? `${widthPct}%` : "0%",
-                height: LANE_H,
-                transitionDelay: `${i * 20}ms`,
-                background: doneToday
-                  ? "linear-gradient(180deg, #3A4048, #2A2F36)"
-                  : `linear-gradient(180deg, ${color}, ${color}CC)`,
-                boxShadow: doneToday ? "none" : `0 0 10px ${color}55`,
-              }}
-              title={`${r.label} · ${minutesToLabel(start)} · ${formatDuration(r.duration)}${doneToday ? " · done" : ""}`}
-            >
-              {showLabel && <span className="timeline-block-label">{r.label}</span>}
-            </div>
-          );
-        })}
-        <div className="timeline-now" style={{ left: `${nowPct}%`, top: -3, bottom: -3 }}>
-          <span className="timeline-now-tag">{minutesToLabel(nowMinutes)}</span>
+      <div className="timeline-head">
+        <div className="timeline-head-left">
+          <span className="timeline-title">today&apos;s schedule</span>
+          {total > 0 && (
+            <span className="timeline-count">{doneToday}/{total} done</span>
+          )}
         </div>
+        {isScrollable && (
+          <button className="timeline-jump" onClick={scrollToNow} title="Jump to now">
+            now
+          </button>
+        )}
       </div>
 
-      {routines.length > 0 && (
-        <div className="timeline-legend">
-          {routines.map((r) => {
-            const doneToday = (r.history || []).includes(todayStr);
-            return (
-              <span key={r.id} className={`timeline-legend-chip ${doneToday ? "done" : ""}`}>
-                <span className="timeline-legend-dot" style={{ background: doneToday ? "#3A4048" : colorForId(r.id) }} />
-                <span className="timeline-legend-time">{minutesToLabel(timeToMinutes(r.time))}</span>
-                <span className="timeline-legend-label">{r.label}</span>
-              </span>
-            );
-          })}
+      {total > 0 && (
+        <div className="timeline-progress">
+          <div
+            className="timeline-progress-fill"
+            style={{ width: mounted ? `${pct}%` : "0%" }}
+          />
         </div>
       )}
+
+      <div className="timeline-scroll" ref={scrollRef}>
+        <div className="timeline-inner" style={{ width: trackW }}>
+          <div className="timeline-hours">
+            {hourMarks.map((h) => (
+              <div key={h} className="timeline-hour" style={{ left: h * 60 * pxPerMin }}>
+                <span>{hourLabel(h)}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="timeline-track" style={{ height: trackHeight }}>
+            {/* dim the overnight stretch (10pm-6am) */}
+            <div className="timeline-night" style={{ left: 0, width: 6 * 60 * pxPerMin }} />
+            <div className="timeline-night" style={{ left: 22 * 60 * pxPerMin, width: 2 * 60 * pxPerMin }} />
+
+            {hourMarks.map((h) => (
+              <div
+                key={h}
+                className={`timeline-gridline ${h % 6 === 0 ? "major" : ""}`}
+                style={{ left: h * 60 * pxPerMin }}
+              />
+            ))}
+
+            <div
+              className="timeline-elapsed"
+              style={{ width: mounted ? nowX : 0 }}
+            />
+
+            {placed.map(({ r, start, lane }, i) => {
+              const left = start * pxPerMin;
+              const rawW = Math.max(1, r.duration) * pxPerMin;
+              // clamp so a routine running past midnight ends at the edge
+              const width = Math.max(4, Math.min(rawW, trackW - left));
+              const done = (r.history || []).includes(todayStr);
+              const color = colorForId(r.id);
+              // visible slice of this block within the scroll window
+              const visL = Math.max(left, scrollX);
+              const visR = Math.min(left + width, scrollX + viewportW);
+              const visW = Math.max(0, visR - visL);
+              const showLabel = visW > 38;
+              // nudge the label right when the block starts off-screen
+              const labelInset = Math.max(0, Math.min(scrollX - left, width - 46));
+              const isNow = nowMinutes >= start && nowMinutes < start + r.duration;
+              return (
+                <div
+                  key={r.id}
+                  className={`timeline-block ${done ? "done" : ""} ${isNow ? "active" : ""}`}
+                  style={{
+                    left,
+                    top: TOP_PAD + lane * (LANE_H + LANE_GAP),
+                    width: mounted ? width : 0,
+                    height: LANE_H,
+                    transitionDelay: `${Math.min(i * 18, 260)}ms`,
+                    background: done
+                      ? "linear-gradient(180deg, #2E343C, #23282F)"
+                      : `linear-gradient(180deg, ${color}, ${color}C4)`,
+                    boxShadow: done ? "none" : `0 2px 10px ${color}44`,
+                  }}
+                  title={`${r.label} · ${minutesToLabel(start)} · ${formatDuration(r.duration)}${done ? " · done" : ""}`}
+                >
+                  {showLabel && (
+                    <span
+                      className="timeline-block-label"
+                      style={labelInset > 0 ? { paddingLeft: labelInset + 8 } : undefined}
+                    >
+                      {done && <span className="timeline-block-tick">✓</span>}
+                      {r.label}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="timeline-now" style={{ left: nowX }} />
+          </div>
+        </div>
+      </div>
+
+      {isScrollable && <div className="timeline-hint">scroll sideways to see the full day</div>}
     </div>
   );
 }
 
-// ---- permanent routines (quest log) ----
 const seedRoutines = [
   { id: 1, time: "06:30", label: "Wake + hydrate", duration: 30, history: [getISTDateString(-1), getISTDateString(-2), getISTDateString(-3)] },
   { id: 2, time: "07:00", label: "Workout", duration: 60, history: [getISTDateString(-1), getISTDateString(-2)] },
@@ -662,17 +777,6 @@ function useRoutineStatus(routines, nowMinutes) {
 }
 
 // compact 7-day dot strip, oldest -> newest (today last)
-function WeekDots({ history }) {
-  const set = new Set(history || []);
-  const days = [-6, -5, -4, -3, -2, -1, 0].map((o) => getISTDateString(o));
-  return (
-    <span className="week-dots">
-      {days.map((d, i) => (
-        <span key={i} className={`week-dot ${set.has(d) ? "filled" : ""}`} />
-      ))}
-    </span>
-  );
-}
 
 function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave }) {
   const startMin = timeToMinutes(routine.time);
@@ -862,7 +966,6 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
             <span className="routine-span">
               {minutesToLabel(startMin)} – {minutesToLabel(endMin)} · {formatDuration(routine.duration)}
             </span>
-            <WeekDots history={routine.history} />
           </div>
         )}
 
@@ -872,30 +975,6 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
 }
 
 // aggregate completion % across all routines, last 7 IST days
-function WeekChart({ routines }) {
-  const days = [-6, -5, -4, -3, -2, -1, 0];
-  const total = routines.length || 1;
-  const bars = days.map((offset) => {
-    const dateStr = getISTDateString(offset);
-    const done = routines.filter((r) => (r.history || []).includes(dateStr)).length;
-    return { offset, pct: Math.round((done / total) * 100), label: getISTWeekdayShort(offset) };
-  });
-  return (
-    <div className="week-chart">
-      {bars.map((b, i) => (
-        <div className="week-bar-col" key={i}>
-          <div className="week-bar-track">
-            <div
-              className={`week-bar-fill ${b.offset === 0 ? "today" : ""}`}
-              style={{ height: `${Math.max(4, b.pct)}%` }}
-            />
-          </div>
-          <span className="week-bar-label">{b.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function RoutinesView({ routines, setRoutines }) {
   const ist = useISTClock();
@@ -960,8 +1039,6 @@ function RoutinesView({ routines, setRoutines }) {
 
   const todayStr = getISTDateString(0);
   const doneToday = sorted.filter((r) => (r.history || []).includes(todayStr)).length;
-  const bestStreak = sorted.reduce((m, r) => Math.max(m, computeStreak(r.history)), 0);
-  const questPct = sorted.length ? Math.round((doneToday / sorted.length) * 100) : 0;
 
   return (
     <div className="task-list routine-list">
@@ -995,25 +1072,7 @@ function RoutinesView({ routines, setRoutines }) {
         )}
       </div>
 
-      <div className="quest-stats">
-        <div className="quest-stat-item">
-          <span className="quest-stat-value">
-            <AnimatedNumber value={doneToday} />
-            <span className="quest-stat-of">/{sorted.length}</span>
-          </span>
-          <span className="quest-stat-label">today</span>
-        </div>
-        <div className="quest-stat-item">
-          <span className="quest-stat-value amber">🔥<AnimatedNumber value={bestStreak} /></span>
-          <span className="quest-stat-label">best streak</span>
-        </div>
-        <div className="quest-stat-item quest-stat-ring">
-          <RadialProgress pct={questPct} size={44} stroke={3.5} label={`${questPct}%`} />
-        </div>
-      </div>
-
-      <div className="section-header"><span>TODAY'S SCHEDULE</span></div>
-      <DayTimeline routines={sorted} nowMinutes={nowMinutes} />
+      <DayTimeline routines={sorted} nowMinutes={nowMinutes} doneToday={doneToday} />
 
       <div className={`composer ${flash ? "shake" : ""}`}>
         <input
@@ -1112,8 +1171,6 @@ function RoutinesView({ routines, setRoutines }) {
         ))
       )}
 
-      <div className="section-header"><span>7-DAY COMPLETION</span></div>
-      <WeekChart routines={sorted} />
     </div>
   );
 }
@@ -1653,6 +1710,55 @@ const AREAS = [
   { key: "self", label: "Self-Dev", color: "#8B9CF7" },
 ];
 
+// Optional finer grain under each area. A habit keeps its `area` (which still
+// drives all XP maths and the life-area cards) and may additionally carry a
+// `sub` key from this list. The radar plots subs rather than the 4 areas, so
+// it reads as a detailed shape instead of a sparse quadrilateral.
+//
+// `sub` is optional by design: existing saved habits have no such field, and
+// anything untagged falls back to the area's first sub (see subForHabit), so
+// nobody has to re-tag anything for the chart to work.
+const SUB_AREAS = [
+  { key: "deep",     area: "work",    label: "Deep Work" },
+  { key: "admin",    area: "work",    label: "Admin" },
+  { key: "learning", area: "work",    label: "Learning" },
+  { key: "training", area: "fitness", label: "Training" },
+  { key: "movement", area: "fitness", label: "Movement" },
+  { key: "nutrition", area: "health", label: "Nutrition" },
+  { key: "sleep",    area: "health",  label: "Sleep" },
+  { key: "mind",     area: "health",  label: "Mind" },
+  { key: "creative", area: "self",    label: "Creative" },
+  { key: "social",   area: "self",    label: "Social" },
+];
+
+const SUBS_BY_AREA = AREAS.reduce((acc, a) => {
+  acc[a.key] = SUB_AREAS.filter((s) => s.area === a.key);
+  return acc;
+}, {});
+
+function subMeta(key) {
+  return SUB_AREAS.find((s) => s.key === key) || null;
+}
+
+// Resolves which sub a habit counts toward. Untagged habits (everything that
+// existed before this feature) land on their area's first sub, so the radar
+// is populated from day one rather than starting empty.
+function subForHabit(h) {
+  if (h.sub && subMeta(h.sub) && subMeta(h.sub).area === h.area) return h.sub;
+  const list = SUBS_BY_AREA[h.area];
+  return list && list.length ? list[0].key : null;
+}
+
+function computeSubXP(subKey, goodHabits, badHabits) {
+  const earned = goodHabits
+    .filter((h) => subForHabit(h) === subKey)
+    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  const lost = badHabits
+    .filter((h) => subForHabit(h) === subKey)
+    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  return earned - lost;
+}
+
 // curated ANSI/terminal-inspired categorical palette, used to give each
 // routine/habit a stable, distinct color (hashed from its id) instead of
 // everything sharing one accent color
@@ -1763,18 +1869,20 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
   const [eArea, setEArea] = useState(habit.area);
+  const [eSub, setESub] = useState(() => subForHabit(habit));
   const [eXP, setEXP] = useState(habit.xp);
 
   const openEdit = () => {
     setELabel(habit.label);
     setEArea(habit.area);
+    setESub(subForHabit(habit));
     setEXP(habit.xp);
     setEditing(true);
   };
   const saveEdit = () => {
     const text = eLabel.trim();
     if (!text) return;
-    onSave(habit.id, { label: text, area: eArea, xp: Math.max(1, +eXP || habit.xp) });
+    onSave(habit.id, { label: text, area: eArea, sub: eSub, xp: Math.max(1, +eXP || habit.xp) });
     setEditing(false);
   };
 
@@ -1796,9 +1904,25 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
                 type="button"
                 className={`area-chip ${eArea === a.key ? "active" : ""}`}
                 style={{ "--ac": a.color }}
-                onClick={() => setEArea(a.key)}
+                onClick={() => {
+                  setEArea(a.key);
+                  const list = SUBS_BY_AREA[a.key] || [];
+                  setESub(list.length ? list[0].key : null);
+                }}
               >
                 {a.label}
+              </button>
+            ))}
+          </div>
+          <div className="edit-row edit-row-subs">
+            {(SUBS_BY_AREA[eArea] || []).map((sb) => (
+              <button
+                key={sb.key}
+                type="button"
+                className={`sub-chip ${eSub === sb.key ? "active" : ""}`}
+                onClick={() => setESub(sb.key)}
+              >
+                {sb.label}
               </button>
             ))}
           </div>
@@ -1863,18 +1987,20 @@ function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
   const [eArea, setEArea] = useState(habit.area);
+  const [eSub, setESub] = useState(() => subForHabit(habit));
   const [eXP, setEXP] = useState(habit.xp);
 
   const openEdit = () => {
     setELabel(habit.label);
     setEArea(habit.area);
+    setESub(subForHabit(habit));
     setEXP(habit.xp);
     setEditing(true);
   };
   const saveEdit = () => {
     const text = eLabel.trim();
     if (!text) return;
-    onSave(habit.id, { label: text, area: eArea, xp: Math.max(1, +eXP || habit.xp) });
+    onSave(habit.id, { label: text, area: eArea, sub: eSub, xp: Math.max(1, +eXP || habit.xp) });
     setEditing(false);
   };
 
@@ -1896,9 +2022,25 @@ function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
                 type="button"
                 className={`area-chip ${eArea === a.key ? "active" : ""}`}
                 style={{ "--ac": a.color }}
-                onClick={() => setEArea(a.key)}
+                onClick={() => {
+                  setEArea(a.key);
+                  const list = SUBS_BY_AREA[a.key] || [];
+                  setESub(list.length ? list[0].key : null);
+                }}
               >
                 {a.label}
+              </button>
+            ))}
+          </div>
+          <div className="edit-row edit-row-subs">
+            {(SUBS_BY_AREA[eArea] || []).map((sb) => (
+              <button
+                key={sb.key}
+                type="button"
+                className={`sub-chip ${eSub === sb.key ? "active" : ""}`}
+                onClick={() => setESub(sb.key)}
+              >
+                {sb.label}
               </button>
             ))}
           </div>
@@ -2088,11 +2230,15 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
     sound.click();
   };
 
-  const areaAxes = AREAS.map((a) => ({
-    key: a.key,
-    label: a.label,
-    color: a.color,
-    value: Math.max(0, computeAreaXP(a.key, goodHabits, badHabits)),
+  // Radar plots the finer sub-categories (10 vertices) rather than the 4
+  // broad areas, so the shape reads as detailed instead of a sparse diamond.
+  // Each vertex keeps its parent area's colour so the four groups stay
+  // visually legible around the ring.
+  const areaAxes = SUB_AREAS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    color: (AREAS.find((a) => a.key === s.area) || {}).color,
+    value: Math.max(0, computeSubXP(s.key, goodHabits, badHabits)),
   }));
   const earnedXP = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
   const lostXP = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
@@ -2122,7 +2268,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
 
       <div className="section-header"><span>LIFE-AREAS</span></div>
       <div className="radar-card">
-        <RadarChart axes={areaAxes} size={230} />
+        <RadarChart axes={areaAxes} size={252} />
       </div>
 
       {(earnedXP > 0 || lostXP > 0) && (
@@ -2606,14 +2752,14 @@ function applyAIActions(actions, state, setters) {
         touched.add("vaultHabits"); break;
 
       case "add_good_habit":
-        goodHabits = [...goodHabits, { id: makeId(), label: a.label, area: a.area, xp: a.xp, history: [] }];
+        goodHabits = [...goodHabits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, history: [] }];
         touched.add("goodHabits"); break;
       case "delete_good_habit":
         goodHabits = goodHabits.filter((h) => h.id !== a.id);
         touched.add("goodHabits"); break;
 
       case "add_bad_habit":
-        badHabits = [...badHabits, { id: makeId(), label: a.label, area: a.area, xp: a.xp, history: [] }];
+        badHabits = [...badHabits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, history: [] }];
         touched.add("badHabits"); break;
       case "delete_bad_habit":
         badHabits = badHabits.filter((h) => h.id !== a.id);
@@ -2734,6 +2880,16 @@ function AIView({ state, setters, showDataMsg }) {
   const [skipped, setSkipped] = useState(() => new Set());
   const taRef = useRef(null);
   const lastSentRef = useRef(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  // live counter while waiting -- a silent 5s wait feels broken, a counting
+  // one feels like progress
+  useEffect(() => {
+    if (!busy) { setElapsed(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed((Date.now() - t0) / 1000), 100);
+    return () => clearInterval(id);
+  }, [busy]);
 
   const send = async (text) => {
     const q = (text ?? prompt).trim();
@@ -2883,7 +3039,13 @@ function AIView({ state, setters, showDataMsg }) {
 
       {busy && (
         <div className="ai-thinking">
-          <span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" />
+          <div className="ai-dots">
+            <span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" />
+          </div>
+          <div className="ai-elapsed">
+            {elapsed < 1 ? "thinking…" : `thinking… ${elapsed.toFixed(1)}s`}
+            {elapsed > 12 && <span className="ai-slow"> · taking longer than usual</span>}
+          </div>
         </div>
       )}
 
@@ -3403,10 +3565,7 @@ function TodoApp() {
           height: 100vh;
           height: 100dvh;
           width: 100vw;
-          background:
-            radial-gradient(circle at 15% 0%, rgba(94,234,212,0.06), transparent 45%),
-            radial-gradient(circle at 85% 100%, rgba(245,166,35,0.05), transparent 45%),
-            #0B0D10;
+          background: #0B0D10;
           font-family: 'Inter', sans-serif;
           color: #E7EAEE;
           display: flex;
@@ -3414,6 +3573,55 @@ function TodoApp() {
           justify-content: center;
           padding: 4vh 4vw;
           overflow: hidden;
+          position: relative;
+          isolation: isolate;
+        }
+
+        /* Ambient background: three oversized, very low-opacity colour blooms
+           drifting on long offset cycles. Sits behind everything via a
+           pseudo-element with negative z-index so it can never affect the
+           legibility or hit-testing of the panel on top. Opacity is kept
+           under 0.07 -- at these values the shift reads as "the room's
+           lighting changed", not as an animation demanding attention. */
+        .app-root::before {
+          content: "";
+          position: absolute;
+          inset: -25%;
+          z-index: -1;
+          pointer-events: none;
+          background:
+            radial-gradient(38% 42% at 18% 12%, rgba(94,234,212,0.065), transparent 70%),
+            radial-gradient(42% 38% at 82% 88%, rgba(245,166,35,0.055), transparent 70%),
+            radial-gradient(35% 40% at 62% 28%, rgba(121,192,255,0.045), transparent 70%);
+          animation: ambientDrift 96s ease-in-out infinite alternate;
+          will-change: transform;
+        }
+
+        /* Second, slower layer on a different cycle length so the two never
+           line up -- keeps the motion from feeling like a loop. */
+        .app-root::after {
+          content: "";
+          position: absolute;
+          inset: -25%;
+          z-index: -1;
+          pointer-events: none;
+          background:
+            radial-gradient(46% 40% at 78% 18%, rgba(139,156,247,0.042), transparent 72%),
+            radial-gradient(40% 44% at 22% 82%, rgba(94,234,212,0.038), transparent 72%);
+          animation: ambientDriftAlt 138s ease-in-out infinite alternate;
+          will-change: transform, opacity;
+        }
+
+        @keyframes ambientDrift {
+          0%   { transform: translate3d(0, 0, 0) scale(1); }
+          50%  { transform: translate3d(2.5%, -2%, 0) scale(1.06); }
+          100% { transform: translate3d(-2%, 2.5%, 0) scale(1.02); }
+        }
+
+        @keyframes ambientDriftAlt {
+          0%   { transform: translate3d(0, 0, 0) scale(1.04); opacity: 0.75; }
+          50%  { transform: translate3d(-3%, 2%, 0) scale(1); opacity: 1; }
+          100% { transform: translate3d(2%, -2.5%, 0) scale(1.05); opacity: 0.8; }
         }
 
         .panel {
@@ -3840,21 +4048,6 @@ function TodoApp() {
           margin-top: 3px;
         }
 
-        .week-dots {
-          display: flex;
-          gap: 3px;
-          margin-top: 6px;
-        }
-
-        .week-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 2px;
-          background: #1E2228;
-        }
-
-        .week-dot.filled { background: #F5A623; }
-
         .quest-check {
           width: 22px;
           height: 22px;
@@ -4016,54 +4209,6 @@ function TodoApp() {
           color: #5EEAD4;
         }
 
-        .week-chart {
-          display: flex;
-          align-items: flex-end;
-          gap: 6px;
-          margin: 0 18px 16px;
-          padding: 12px 14px 8px;
-          background: #14171C;
-          border: 1px solid #23272E;
-          border-radius: 12px;
-          height: 84px;
-        }
-
-        .week-bar-col {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          height: 100%;
-          gap: 5px;
-        }
-
-        .week-bar-track {
-          flex: 1;
-          width: 100%;
-          display: flex;
-          align-items: flex-end;
-          background: #1E2228;
-          border-radius: 3px;
-          overflow: hidden;
-        }
-
-        .week-bar-fill {
-          width: 100%;
-          background: linear-gradient(180deg, #5EEAD4, #3FBFA8);
-          border-radius: 3px;
-          transition: height 400ms cubic-bezier(.65,0,.35,1);
-        }
-
-        .week-bar-fill.today {
-          background: linear-gradient(180deg, #F5A623, #D98A15);
-        }
-
-        .week-bar-label {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 9px;
-          color: #4B5563;
-        }
-
         /* ---- hero radial + xp split ---- */
         .hero-card-viz { gap: 0; }
 
@@ -4153,7 +4298,12 @@ function TodoApp() {
         .radar-label {
           fill: #9CA3AF;
           font-family: 'JetBrains Mono', monospace;
-          font-size: 9.5px;
+          font-size: 8px;
+          letter-spacing: -0.01em;
+        }
+
+        @media (min-width: 900px) {
+          .radar-label { font-size: 9px; }
         }
 
         /* ---- donut chart ---- */
@@ -4258,51 +4408,101 @@ function TodoApp() {
         /* ---- day timeline ---- */
         .timeline-wrap {
           margin: 0 18px 16px;
-          padding: 20px 10px 14px;
+          padding: 14px 0 12px;
           background: #14171C;
           border: 1px solid #23272E;
           border-radius: 12px;
           animation: rowIn 220ms ease backwards;
-        }
-
-        .timeline-track {
-          position: relative;
-          min-height: 46px;
-          background: #191D23;
-          border-radius: 8px;
           overflow: hidden;
-          transition: height 220ms ease;
         }
 
-        .timeline-night {
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          background: rgba(0,0,0,0.28);
+        .timeline-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 0 14px 10px;
         }
 
-        .timeline-gridline {
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          width: 1px;
-          background: rgba(255,255,255,0.05);
+        .timeline-head-left {
+          display: flex;
+          align-items: baseline;
+          gap: 9px;
+          min-width: 0;
         }
 
-        .timeline-elapsed {
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          left: 0;
-          background: rgba(94,234,212,0.05);
-          transition: width 900ms cubic-bezier(0.22, 1, 0.36, 1);
-          pointer-events: none;
+        .timeline-title {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: #8B94A0;
         }
+
+        .timeline-count {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          color: #5EEAD4;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .timeline-jump {
+          flex-shrink: 0;
+          background: transparent;
+          border: 1px solid #2C323A;
+          border-radius: 999px;
+          color: #F5A623;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          padding: 3px 10px;
+          cursor: pointer;
+          transition: border-color 150ms ease, background 150ms ease;
+        }
+
+        .timeline-progress {
+          height: 2px;
+          margin: 0 14px 12px;
+          background: #1E2228;
+          border-radius: 2px;
+          overflow: hidden;
+        }
+
+        .timeline-progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #5EEAD4, #79C0FF);
+          border-radius: 2px;
+          transition: width 800ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        /* The scroll window. The track inside is wider than this on phones,
+           which is what finally gives blocks enough room to be readable.
+           overscroll-behavior-x keeps a sideways swipe from triggering
+           browser back-navigation. */
+        .timeline-scroll {
+          overflow-x: auto;
+          overflow-y: hidden;
+          overscroll-behavior-x: contain;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: thin;
+          scrollbar-color: #2C323A transparent;
+          padding: 0 14px;
+        }
+
+        .timeline-scroll::-webkit-scrollbar { height: 4px; }
+        .timeline-scroll::-webkit-scrollbar-track { background: transparent; }
+        .timeline-scroll::-webkit-scrollbar-thumb {
+          background: #2C323A;
+          border-radius: 2px;
+        }
+
+        .timeline-inner { position: relative; }
 
         .timeline-hours {
           position: relative;
-          height: 14px;
-          margin-bottom: 4px;
+          height: 13px;
+          margin-bottom: 5px;
         }
 
         .timeline-hour {
@@ -4315,21 +4515,58 @@ function TodoApp() {
           white-space: nowrap;
         }
 
-        .timeline-hour:first-child { transform: translateX(0); }
-        .timeline-hour:last-child { transform: translateX(-100%); }
+        .timeline-track {
+          position: relative;
+          min-height: 54px;
+          background: #191D23;
+          border-radius: 8px;
+          overflow: hidden;
+          transition: height 220ms ease;
+        }
+
+        .timeline-night {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          background: rgba(0,0,0,0.30);
+        }
+
+        .timeline-gridline {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: rgba(255,255,255,0.04);
+        }
+
+        .timeline-gridline.major { background: rgba(255,255,255,0.08); }
+
+        .timeline-elapsed {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          background: rgba(94,234,212,0.045);
+          transition: width 900ms cubic-bezier(0.22, 1, 0.36, 1);
+          pointer-events: none;
+        }
 
         .timeline-block {
           position: absolute;
-          border-radius: 5px;
+          border-radius: 6px;
           transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1), top 220ms ease;
-          min-width: 3px;
           display: flex;
           align-items: center;
           overflow: hidden;
         }
 
+        .timeline-block.active {
+          outline: 1.5px solid rgba(255,255,255,0.55);
+          outline-offset: -1.5px;
+        }
+
         .timeline-block-label {
-          padding: 0 7px;
+          padding: 0 8px;
           font-family: 'JetBrains Mono', monospace;
           font-size: 9.5px;
           font-weight: 600;
@@ -4339,77 +4576,47 @@ function TodoApp() {
           text-overflow: ellipsis;
         }
 
-        .timeline-block.done .timeline-block-label { color: #9CA3AF; }
+        .timeline-block-tick { margin-right: 4px; opacity: 0.85; }
+        .timeline-block.done .timeline-block-label { color: #8B94A0; }
 
         .timeline-now {
           position: absolute;
-          top: -3px;
-          bottom: -3px;
+          top: -4px;
+          bottom: -4px;
           width: 2px;
           background: #F5A623;
-          box-shadow: 0 0 6px rgba(245,166,35,0.6);
+          box-shadow: 0 0 8px rgba(245,166,35,0.7);
           z-index: 2;
+          pointer-events: none;
         }
 
-        .timeline-now-tag {
+        .timeline-now::before {
+          content: "";
           position: absolute;
-          top: -15px;
+          top: -2px;
           left: 50%;
           transform: translateX(-50%);
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 8px;
-          color: #F5A623;
-          white-space: nowrap;
-        }
-
-        .timeline-legend {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 6px 14px;
-          margin-top: 14px;
-          padding-top: 10px;
-          border-top: 1px solid #1E2228;
-        }
-
-        @media (min-width: 900px) {
-          .timeline-legend { grid-template-columns: repeat(3, 1fr); }
-        }
-        @media (min-width: 1240px) {
-          .timeline-legend { grid-template-columns: repeat(4, 1fr); }
-        }
-
-        .timeline-legend-chip {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          min-width: 0;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 10px;
-          color: #9CA3AF;
-        }
-
-        .timeline-legend-chip.done { color: #565D68; }
-
-        .timeline-legend-dot {
-          width: 7px;
-          height: 7px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
-          flex-shrink: 0;
+          background: #F5A623;
+          box-shadow: 0 0 6px rgba(245,166,35,0.9);
         }
 
-        .timeline-legend-time {
-          flex-shrink: 0;
-          color: #6B7280;
-          font-variant-numeric: tabular-nums;
+        .timeline-hint {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 8.5px;
+          letter-spacing: 0.06em;
+          color: #4B5563;
+          text-align: center;
+          padding: 9px 14px 0;
         }
 
-        .timeline-legend-chip.done .timeline-legend-time { color: #4B5563; }
-
-        .timeline-legend-label {
-          min-width: 0;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+        @media (hover: hover) and (pointer: fine) {
+          .timeline-jump:hover {
+            border-color: #F5A623;
+            background: rgba(245,166,35,0.1);
+          }
         }
 
         /* ---- shared micro-interactions ---- */
@@ -4449,6 +4656,11 @@ function TodoApp() {
           .radial-progress-wrap circle, .donut-wrap circle {
             animation: none !important;
             transition: none !important;
+          }
+          /* freeze the ambient background -- the gradients stay, only the
+             drift stops, so the look is unchanged for these users */
+          .app-root::before, .app-root::after {
+            animation: none !important;
           }
         }
 
@@ -5489,6 +5701,27 @@ function TodoApp() {
           outline: none;
         }
 
+        .edit-row-subs { flex-wrap: wrap; gap: 5px; }
+
+        .sub-chip {
+          border: 1px solid #23272E;
+          background: #0F1215;
+          color: #6B7280;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 0.03em;
+          padding: 4px 9px;
+          border-radius: 999px;
+          cursor: pointer;
+          transition: all 150ms ease;
+        }
+
+        .sub-chip.active {
+          border-color: #5EEAD4;
+          color: #5EEAD4;
+          background: rgba(94,234,212,0.1);
+        }
+
         .area-chip {
           border: 1px solid #23272E;
           background: #0F1215;
@@ -5651,7 +5884,17 @@ function TodoApp() {
           transition: border-color 140ms ease, color 140ms ease;
         }
 
-        .ai-thinking { display: flex; gap: 5px; justify-content: center; padding: 18px 0 22px; }
+        .ai-thinking {
+          display: flex; flex-direction: column; align-items: center;
+          gap: 9px; padding: 18px 0 22px;
+        }
+        .ai-dots { display: flex; gap: 5px; }
+        .ai-elapsed {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; color: #6B7280; letter-spacing: 0.05em;
+          font-variant-numeric: tabular-nums;
+        }
+        .ai-slow { color: #F5A623; }
         .ai-dot {
           width: 6px; height: 6px; border-radius: 50%;
           background: #5EEAD4; opacity: 0.35;

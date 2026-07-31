@@ -238,6 +238,25 @@ scrollable `.task-list`. That element must be a **direct flex child** of
 
 ---
 
+## 5b · Ambient background
+
+Two stacked pseudo-element layers on `.app-root`, both `z-index: -1`:
+
+```
+  ::before   3 blooms (cyan/amber/blue)   96s   opacity <= 0.065
+  ::after    2 blooms (violet/cyan)      138s   opacity <= 0.042
+```
+
+Rules if you touch this:
+
+- **Peak opacity stays under 0.07.** Above that it starts competing with
+  text and the panel stops feeling like the focus.
+- **Cycle lengths stay long and mismatched.** 96s vs 138s means the two
+  layers never resync into a visible loop. Don't make them equal.
+- **It must stay behind everything** (`z-index: -1`, `pointer-events: none`).
+  It can never affect layout or hit-testing.
+- It's frozen — not hidden — under `prefers-reduced-motion`.
+
 ## 6 · Motion
 
 | Animation | Duration | Curve | Trigger |
@@ -290,6 +309,13 @@ Border and icon take the entity's `colorForId()` color. Pencil enters inline
 edit. Same edit pattern as rows — consistency here is deliberate.
 
 ### 7.3 DayTimeline (the hard one)
+
+**Scale first:** the day is laid out at a minimum of **82px per hour**
+(~1970px total), inside a horizontal scroller — *not* squeezed to fit the
+screen. Fitting 24h into a 312px phone made every block 3-20px wide and
+unlabellable, which is a legibility failure even though it technically fit.
+Blocks wider than 38px get a label; a block starting left of the visible
+window keeps its label pinned to the edge.
 
 ```
    12a    3a    6a    9a   12p    3p    6p    9p   12a    ← .timeline-hours

@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v19   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v21   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
