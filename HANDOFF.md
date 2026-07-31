@@ -1,12 +1,46 @@
-# tasks.sh — developer handoff
+```
+██╗  ██╗ █████╗ ███╗   ██╗██████╗  ██████╗ ███████╗███████╗
+██║  ██║██╔══██╗████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝
+███████║███████║██╔██╗ ██║██║  ██║██║   ██║█████╗  █████╗
+██╔══██║██╔══██║██║╚██╗██║██║  ██║██║   ██║██╔══╝  ██╔══╝
+██║  ██║██║  ██║██║ ╚████║██████╔╝╚██████╔╝██║     ██║
+╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝  ╚═════╝ ╚═╝     ╚═╝
 
-**Current version: `tasksh-v13`** (service worker cache tag — see `sw.js`).
-Last updated 2026-07-24. If you're starting a new chat about this project,
-pasting/uploading this file plus `src/app.jsx` should be enough context —
-no need to re-explain the app from scratch.
+   ╭──────────────────────────────────────────────────────╮
+   │  developer handoff · architecture & feature map      │
+   │  the single source of truth for how tasks.sh works   │
+   ╰──────────────────────────────────────────────────────╯
+```
+
+```
+  CURRENT VERSION   tasksh-v15   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-07-29
+  LIVE              chandansharamcs.github.io/To-do_app
+  WORKER            tasksh-notify.techcraftor.workers.dev
+```
+
+> **Starting a fresh chat about this project?** Upload this file plus
+> `app.jsx` and that's enough context — no need to re-explain the app.
+> For conventions and traps, read [AGENTS.md](AGENTS.md).
+> For the visual system, read [DESIGN.md](DESIGN.md).
+> For version history, read [CHANGELOG.md](CHANGELOG.md).
 
 Terminal/system-monitor styled PWA: a task manager plus a "routines" tab that
 acts as a gamified recurring quest log, synced to IST (India Standard Time).
+
+---
+
+## Document Map
+
+| File | What's in it |
+|---|---|
+| **README.md** | Overview, quick start, repo map, deploy basics |
+| **HANDOFF.md** | ◀ you are here — architecture, features, known issues |
+| **DESIGN.md** | Colors, type, spacing, breakpoints, component anatomy |
+| **AGENTS.md** | Rules, traps, workflow, verification expectations |
+| **CHANGELOG.md** | Full version history v6 → v15, with root causes |
+| **worker/README.md** | One-time Cloudflare push setup walkthrough |
+
 
 ## Stack
 
@@ -62,12 +96,27 @@ src/app.jsx       - all source. Single file, ~5200 lines, organized as:
                       (min-width: 900px / 1240px) live in one block near the
                       end of the tag rather than scattered inline — see
                       "Desktop layout" below before adding more breakpoints
-index.html         - shell, PWA meta tags, loads bundle.js
+index.html         - shell, PWA meta tags, boot splash, loads bundle.js
 manifest.json       - PWA manifest (icons, standalone display, theme color)
-sw.js               - service worker, cache-first offline strategy
+sw.js               - service worker: cache-first offline + push handlers
 icon-*.png, apple-touch-icon.png, favicon* - app icons
 bundle.js           - BUILD OUTPUT, do not hand-edit. Run `npm run build`.
+
+worker/            - Cloudflare Worker, deploys SEPARATELY from Pages
+  src/index.js     - subscribe/unsubscribe/sync endpoints + every-minute cron
+  wrangler.toml    - KV binding, cron trigger, VAPID public key
+  README.md        - one-time setup walkthrough
+
+README.md          - overview + quick start
+DESIGN.md          - design system spec
+AGENTS.md          - conventions, traps, workflow for agents/contributors
+CHANGELOG.md       - version history (moved out of this file at v15)
 ```
+
+**Layout note:** the repo is currently *flat* — `app.jsx` sits at the root,
+not in `src/`. The `build` script in `package.json` still points at
+`src/app.jsx`, so a clean clone cannot build until one or the other is
+reconciled. See AGENTS.md [Known traps](AGENTS.md#2--known-traps).
 
 ## Design system
 
@@ -88,8 +137,13 @@ file exists yet):
 | Font (mono) | JetBrains Mono | numbers, timestamps, labels |
 | Font (sans) | Inter | body text |
 
-If you extract this into a proper theme file, keep these values — they're
-intentional, not arbitrary.
+Also in play: an 8-color categorical palette (`CATEGORY_PALETTE`) assigned by
+`colorForId()` so each routine/habit keeps a stable identity color everywhere
+it appears, and a violet `#8B9CF7` used only for quest life-areas.
+
+**Full spec — spacing, radii, motion curves, breakpoints, component anatomy,
+voice — lives in [DESIGN.md](DESIGN.md).** If you extract a theme file, keep
+these values; they're intentional, not arbitrary.
 
 ## Desktop layout
 
@@ -147,6 +201,17 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   redundant/confusing; if you want row-level marking back, it's a small
   re-add (`onToggleToday` prop is still wired through, just unused).
 
+**Titlebar (global)**
+- Live IST clock + date, forced to 12-hour format regardless of device locale
+- **Export (⬇) / import (⬆)** — round-trips all 10 `localStorage` keys as one
+  timestamped JSON file. Import validates shape, applies recognized keys, and
+  pushes the id seed above the highest imported id so new items can't collide
+- **Sound toggle** — synthesized WebAudio tones (no audio files), persisted
+- **Bell (🔔)** — push notification subscribe/unsubscribe. Requests
+  permission, registers with the push service, POSTs to the worker. Failures
+  show a toast, never crash. Requires the app to be **installed to the home
+  screen** on Android — a plain browser tab cannot receive push
+
 **Vault tab** ("Productivity Vault" — habit streaks + project manager)
 - Habit cards: weekly-goal frequency habits (e.g. "6x/week"), each with a
   monthly calendar grid (filled cell = completed that IST day), a 7-day
@@ -176,211 +241,73 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   counts on every render. There's no separate "current XP" field to get
   out of sync.
 
+
+## Push notifications architecture
+
+Real notifications that fire outside the app, with sound and vibration, even
+when it's fully closed. Added in v14; icon-resolution bug fixed in v15.
+
+```
+   ┌──────────── PHONE ────────────┐      ┌─── CLOUDFLARE ────┐
+   │                               │      │                   │
+   │  bell tap                     │      │  cron: * * * * *  │
+   │    ├─ Notification.request…   │      │        │          │
+   │    ├─ pushManager.subscribe() │      │        ▼          │
+   │    ├─ POST /subscribe ────────┼─────▶│   runCheck(env)   │
+   │    └─ POST /sync (routines) ──┼─────▶│    ├ IST now?     │
+   │                               │      │    ├ match HH:MM  │
+   │  sw.js "push" handler         │◀─────┼────┤ dedupe fired │
+   │    └─ showNotification()      │ FCM  │    └ sendNotif()  │
+   │                               │      │                   │
+   └───────────────────────────────┘      └───────────────────┘
+                                             KV: sub:{id}
+                                                 routines:{id}
+                                                 fired:{id}:{rid}:{date}
+```
+
+**Client (`app.jsx` ~2347-2440):**
+- `STORAGE_KEY_DEVICE_ID` — a random per-install id, generated once. Not a
+  credential; it's just a KV partition key.
+- `VAPID_PUBLIC_KEY` — public half of the keypair, safe to ship in the bundle.
+- `NOTIFY_WORKER_URL` — the deployed worker origin. **Must match the deployed
+  worker exactly** or the bell fails with a toast.
+- Subscribing POSTs `/subscribe` then `/sync`. Routine times are re-synced
+  whenever routines change, so the worker always has current schedule data.
+
+**Service worker (`sw.js`):**
+- `push` → parses the JSON payload, shows a notification. The icon is resolved
+  **absolutely** via `new URL("icon-192.png", self.registration.scope).href` —
+  a relative path fails when the SW runs with no open page, which makes Chrome
+  fall back to its generic "tap to copy the URL" banner (see CHANGELOG v15).
+- `notificationclick` → focuses an existing window, else opens one.
+- `silent` is deliberately unset so the OS provides sound + vibration.
+
+**Worker (`worker/src/index.js`):**
+- IST is computed by adding 5h30m to UTC — no DST, safe to hardcode.
+- Dedupe marker `fired:{deviceId}:{routineId}:{YYYY-MM-DD}` with a 2-day TTL
+  prevents double-sends within the same minute-window and can't grow unbounded.
+- A 404/410 from the push service means the subscription is dead; both its KV
+  entries are deleted automatically.
+- `GET /run-check-now` runs the same logic on demand for testing.
+
+**Known limitations:**
+- Only "starts at HH:MM daily." No weekday-only routines, no snooze, no
+  skip-if-already-marked-done.
+- CORS is wide open (`*`). Fine for a single-user personal app.
+- Anyone who knew a `deviceId` could push to that device. No auth exists.
+
+> [!IMPORTANT]
+> **Outstanding:** pushes are still sent at default priority, so Android Doze
+> batches them and they arrive late. The fix is
+> `sendNotification(sub, payload, { urgency: "high", TTL: 300 })` in
+> `worker/src/index.js`, then `npx wrangler deploy`. Worker-side only — no
+> rebuild, no cache bump, no phone reinstall.
+
 ## Changelog
 
-**2026-07-24**
-- **Fixed: routines timeline was unusable with a dense schedule.** With
-  ~10+ routines in a day (reported via screenshot: School, Study, Karate,
-  Shower, etc. all packed into a few hours), every routine drew on the
-  *same* single row, so anything close together in time visually
-  collided — labels overlapping, colors bleeding into each other. Fixed
-  with proper interval-partitioning lane-packing
-  (`packTimelineLanes()`, near `DayTimeline`): routines sorted by start
-  time get greedily assigned to the first lane whose last item already
-  ended, which is optimal for minimum lane count (classic "minimum
-  lecture rooms" algorithm). `DayTimeline` now renders however many rows
-  are needed and the track grows to fit. Verified with a 30-routine dense
-  synthetic dataset: zero overlapping blocks in the same lane.
-- **Fixed: hour axis labels (12a/3a/6a...) were invisible.** They used
-  `top: -16px` inside `.timeline-track`, which has `overflow: hidden` —
-  so they were being silently clipped the entire time, on every device.
-  Moved them into their own `.timeline-hours` row above the (still
-  clipped) track instead of relying on negative positioning inside it.
-- **Fixed: a routine spanning past midnight (e.g. seed data's "Sleep",
-  11pm + 7.5h) got its block cut off mid-label** ("Sl...") because its
-  computed width pushed past the track's right edge and got clipped by
-  `overflow: hidden`. Block width is now clamped to end exactly at the
-  track edge (`Math.min(rawWidthPct, 100 - leftPct)`). Note: this clamps
-  rather than wraps the overflow to a second segment at the start of the
-  day — acceptable tradeoff for now, full tooltip info is still in the
-  `title` attribute.
-- **Redesigned the timeline legend.** Was `flex-wrap` chips that became
-  an unreadable wall of fragments with many routines. Now a responsive
-  grid (2/3/4 columns by viewport width) with each entry showing time +
-  label, ellipsis-truncated, sorted by start time.
-- **Removed the per-row "mark done" checkbox from the Routines list** —
-  see Features section above for details and how to re-add it if wanted.
-- **Added optional routine alternatives** — see Features section above.
-- Bumped service worker cache to `tasksh-v13`.
-
-**2026-07-23**
-- **Fixed: app looked like a phone simulator on laptops/desktops** — a
-  narrow 640px card centered in an otherwise-empty page, no matter how
-  wide the window was. See the new "Desktop layout" section above for
-  what changed (widened panel, capped line-length for list views,
-  multi-column grids for card views, hover states, breakpoints at 900px
-  / 1240px). Phones are unaffected — verified pixel-identical at 390px.
-- Bumped service worker cache to `tasksh-v12`.
-
-**2026-07-23 (routines scroll fix)**
-- **Fixed: Routines tab barely scrollable / felt broken.** The hero clock
-  card, quest stats, timeline, week chart, composer, and duration chips
-  were all fixed (non-scrolling) siblings above `.task-list` — only the
-  routine rows themselves scrolled, in a strip that measured ~117px tall
-  out of an 852px screen. Every other tab (Today/Vault/Quest) wraps
-  *everything* in one scrollable `.task-list` container; Routines and
-  Tasks didn't. Restructured `RoutinesView` to match: the whole tab is now
-  one continuous scroll region, same pattern as the others. Verified the
-  visible scroll area went from 117px to 757px on a 852px-tall viewport,
-  and that `scrollTop` actually moves.
-- **Redesigned the Routines timeline.** Was a single flat cyan bar with
-  raw 24h numbers (0/4/8/12/16/20/24). Now: 12-hour labels (12a/3a/6a...),
-  visible hour gridlines, a dimmed overnight band (10pm-6am), a subtle
-  "elapsed today" shading up to the current time, each routine gets a
-  stable color from a new curated categorical palette (`colorForId()`,
-  near `AREAS`) instead of one uniform color, wide-enough blocks show
-  their label inline, and a color-key legend sits below the strip.
-- **Fixed: some times displayed in 24-hour format.** Titlebar clock now
-  forces `hour12: true` regardless of device locale (some Android phones
-  default to 24h). Timeline hour labels switched from raw `0-24` to
-  `12a/3a/.../12p/.../12a`. Everywhere else (`minutesToLabel`, the big
-  IST clock) was already 12h — only these two were missed. Native
-  `<input type="time">` pickers still follow the OS/browser's own locale
-  setting; that can't be overridden from the web page itself without
-  replacing them with a fully custom picker.
-- **Expanded level titles + harder leveling curve.** Titles: Novice →
-  Apprentice → Adept → Ranger → Knight → Vanguard → Wizard → Sage →
-  Champion → Sentinel → Archon → Warlord → Mystic → Overlord → Ascendant
-  → Legend → Mythic → Immortal → Transcendent → Eternal (20 total, up
-  from 8) — past that, it appends a roman numeral ("Eternal II", "Eternal
-  III"...) via `toRoman()`, so it never visually caps. XP curve changed
-  from flat 100 XP/level to a quadratic one (`cumulativeXPForLevel`):
-  each level now needs 100 more XP than the last to reach (100, 200, 300,
-  400 XP for levels 2/3/4/5...). Level 2 still unlocks at exactly 100 XP
-  as before, so no one gets retroactively demoted — only the climb from
-  here gets steeper. Verified the math lands exactly on level boundaries
-  for XP 0 through 10,000.
-- **Added more color throughout the app.** New `CATEGORY_PALETTE` (8
-  ANSI/terminal-inspired colors) + `colorForId()` hash function, used for:
-  timeline blocks, a matching colored left-border on each routine row
-  (same routine = same color in both places), vault habit cards (border +
-  icon + progress ring), and project cards.
-- Bumped service worker cache to `tasksh-v11`.
-
-**2026-07-22 (3)**
-- **Fixed: page wouldn't scroll on any tab, including desktop Chrome.**
-  The `.tab-content` wrapper added for the tab-switch transition (see
-  "2026-07-22" below) was a plain block element with no flex sizing.
-  Every tab's actual scroll region (`.task-list`, always styled
-  `flex: 1; min-height: 0; overflow-y: auto;`) depends on being a
-  **direct** flex child of `.panel` (`display: flex; flex-direction:
-  column`) to get a bounded height it can scroll within. Wrapping it one
-  level deeper in an unstyled div broke that chain — `.tab-content` grew
-  to fit all its content instead of being constrained, so everything
-  taller than the panel just got clipped by `.panel`'s `overflow: hidden`
-  with nothing to scroll. Fixed by making `.tab-content` itself
-  `display: flex; flex-direction: column; flex: 1; min-height: 0;` — a
-  transparent pass-through that restores the exact sizing chain that
-  existed before the wrapper was added. Verified by forcing a short
-  viewport and confirming `.task-list` scrolls (not just has
-  `overflow-y: auto` set) on every tab, plus a full functional +
-  offline regression pass.
-- Note: the Routines tab's list area is fairly cramped vertically now
-  (hero card + stats + timeline + week chart all stacked above it) —
-  it does scroll correctly, but if it feels too tight on a real phone,
-  a follow-up could collapse the week chart by default or shrink the
-  timeline strip.
-- Bumped service worker cache to `tasksh-v10`.
-
-**2026-07-22 (2)**
-- **Fixed: tab bar invisible on some real mobile browsers.** `.app-root`
-  and the mobile `.panel` rule both used `height: 100vh`. On real phone
-  browsers, `100vh` is sized as if the address-bar chrome were fully
-  collapsed — which is *taller* than what's actually visible whenever the
-  toolbar is showing. That made the page taller than the visible screen,
-  and a toolbar-collapse reflow could silently scroll the page down by
-  roughly the height of the tab bar, pushing it above the fold while
-  everything below stayed in view (exactly the symptom reported: tabs
-  gone, content below them fine). Fixed by adding `height: 100dvh` as a
-  progressive-enhancement fallback after the `100vh` line in both places
-  — modern browsers use the dynamic, actually-visible viewport height;
-  older ones that don't understand `dvh` silently keep the old `vh`
-  value. Also boosted inactive-tab text contrast (`#4B5563` →
-  `#7C8591`) and added `flex-shrink: 0` / `min-height` to the tab bar so
-  it can't collapse in a squeezed flex layout, as defense in depth.
-  Verified by simulating a shorter effective viewport (mimicking an
-  address bar still on-screen) and confirming the tab bar's bounding box
-  stays fully within the visible area.
-- Bumped service worker cache to `tasksh-v9`.
-
-**2026-07-22**
-- **Major visual overhaul.** Added a dependency-free inline-SVG chart layer
-  (`RadarChart`, `RadialProgress`, `DonutChart`, `CalendarHeatmap`,
-  `DayTimeline` — all near `DURATION_PRESETS` in `app.jsx`), all
-  hand-written with no chart library, so the zero-CDN bundle stays intact:
-  - **Quest tab**: radar chart across the 4 life-areas by XP, radial ring
-    for level progress, donut for earned-vs-lost XP.
-  - **Today tab**: 12-week GitHub-style activity heatmap aggregating
-    routines + vault habits + good habits.
-  - **Routines tab**: a 24h timeline strip with a live "now" marker,
-    replacing the old plain list-only view. Small completion ring
-    upgraded to the shared `RadialProgress`.
-  - **Tasks tab**: donut chart of open tasks by priority; stats bar
-    upgraded to a radial ring.
-  - **Vault tab**: habit weekly-goal bar replaced with a compact radial
-    ring; month grid now fades in with a stagger.
-- **Added: sound engine.** Tiny synthesized UI tones (click/success/
-  error/whoosh/delete) via the Web Audio API — oscillators, not audio
-  files, so this stays offline-safe. Wired into add/complete/delete/claim
-  across every tab, plus a whoosh on tab switch. Mute toggle lives in the
-  titlebar next to import/export; preference persists to localStorage.
-- **Added: animated counters.** XP totals, streaks, and task counts now
-  ease from their old value to the new one (`useAnimatedNumber` /
-  `AnimatedNumber`) instead of snapping instantly.
-- **Added: tab-switch transition.** Tab content is now wrapped in a
-  `key={tab}` container with a fade/slide-in on every switch.
-- Bumped service worker cache to `tasksh-v8`.
-
-**2026-07-21**
-- **Added: streak freeze.** A single missed day no longer resets a streak to
-  zero — one "freeze" silently bridges a gap, and a fresh freeze regenerates
-  every 7 completed days (see `streakFreezeInfo()` near the top of
-  `app.jsx`). `computeStreak()` still returns a plain number so nothing
-  that reads it needed to change. When a freeze bridged a gap, a small ❄️
-  shows next to the 🔥 streak count on routines, vault habits, and good
-  habits, so it's visible rather than silent.
-- **Added: Today tab.** New default tab combining the next/current
-  routine, top 5 open tasks (sorted by priority), and any rewards
-  currently affordable — all with working quick actions (mark routine
-  done, complete a task, claim a reward) that write back to the same
-  state as their full tabs. "View all in tasks →" jumps to the Tasks tab.
-  Tab bar is now horizontally scrollable so 5 tabs don't overflow narrow
-  phone widths.
-- Bumped service worker cache to `tasksh-v7` (see note in v6 entry below —
-  required any time `bundle.js` changes).
-
-**2026-07-20**
-- **Fixed: duplicate/entangled items on edit or delete.** Every "add" action
-  (routines, tasks, vault habits, projects, good/bad habits, rewards) was
-  generating ids from a plain in-memory counter, e.g. `let ruid = 200; id:
-  ruid++`. That counter reset to its base value on every page reload, so an
-  item added in a new session could get an id that collided with one saved
-  in an earlier session. Since edits/deletes match by `item.id === id`, two
-  items sharing an id meant editing or deleting "one" silently affected
-  both. Replaced all 8 of these counters with a single `makeId()` generator
-  (near the top of `app.jsx`) seeded from `Date.now()` and incremented on
-  every call, so freshly-created ids can't collide with anything from a
-  previous session.
-- **Added: export/import.** Two icon buttons in the titlebar (down-arrow /
-  up-arrow, next to the clock) export all 7 data sets to a timestamped JSON
-  file, or import one back in. Import validates the file shape, applies
-  whichever recognized keys are present, and pushes the id seed above the
-  highest id in the imported file so newly-added items afterward can't
-  collide with imported ones either. Round-tripped and tested with
-  Playwright.
-- Bumped service worker cache to `tasksh-v6` — required any time `bundle.js`
-  changes, or returning users get served the stale cached bundle instead of
-  the fix (see "Deploying" below).
+Moved to **[CHANGELOG.md](CHANGELOG.md)** as of v15 — this file was getting
+long enough that the architecture notes were hard to find. All history from
+v6 onward is preserved there, unedited.
 
 ## Known issues / open items
 
@@ -400,17 +327,35 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
 
 2. ~~**No data portability.**~~ **Resolved 2026-07-20** — export/import
    buttons in the titlebar now let you back up all 7 `localStorage` keys to
-   JSON and restore them, on this device or a new one. See Changelog above.
+   JSON and restore them, on this device or a new one. See CHANGELOG.md.
 
-3. **No real push notifications.** There's an in-app banner (fires only
-   while the tab/app is open) but nothing that survives the app being fully
-   closed. That would require a backend (Web Push + VAPID keys + some
-   scheduler to trigger sends based on each routine's time) — out of scope
-   for the current static-hosting setup.
+3. ~~**No real push notifications.**~~ **Resolved 2026-07-27 (v14)** — Web
+   Push via a Cloudflare Worker with VAPID + an every-minute cron. See the
+   "Push notifications architecture" section above and
+   [worker/README.md](worker/README.md).
+
+   Two follow-ups remain open:
+   - **Doze delay (not yet fixed).** Pushes still go out at default
+     priority, so Android batches them when the screen is off. Needs
+     `{ urgency: "high", TTL: 300 }` on `sendNotification`.
+   - **Android battery management** can block delivery entirely regardless
+     of code. On Samsung/One UI: set both the installed `tasks.sh` WebAPK
+     *and* Chrome to Unrestricted battery, and remove both from
+     Settings → Battery → Background usage limits → Sleeping apps.
 
 4. **No true home-screen widgets.** Not a code limitation — PWAs cannot
    create OS-level widgets on iOS or Android at all. Would require a native
    app wrapper (e.g. Capacitor) to ever be possible.
+
+5. **`package.json` build script doesn't match the repo layout.** It points
+   at `src/app.jsx`, but the repo is flat — `app.jsx` is at the root. A
+   clean clone cannot run `npm run build` until this is reconciled. Do not
+   fix it by creating a duplicate copy in `src/`; the two have already
+   drifted apart once, which cost a debugging session (see CHANGELOG,
+   2026-07-28).
+
+6. **`npm test` references `tests/run.js`, which doesn't exist.** No test
+   suite is checked in — see below.
 
 ## Testing approach used so far
 
@@ -430,3 +375,30 @@ S3+CloudFront, etc.) since there's no backend. Remember: **the service
 worker cache version in `sw.js` (`const CACHE = "tasksh-vN"`) must be bumped
 on every deploy**, or returning users may get served stale cached assets
 instead of your changes.
+
+The Cloudflare Worker is a **separate deploy target**. Pushing to GitHub does
+not update it, and `wrangler deploy` does not update the app:
+
+```bash
+# app  ->  GitHub Pages
+npm run build && git add -A && git commit -m "Release vNN: ..." && git push
+
+# worker -> Cloudflare
+cd worker && npx wrangler deploy
+```
+
+If a phone is stuck on an old build, the cache bump alone may not be enough —
+export data first, then remove from home screen, clear site data in Chrome,
+revisit, reinstall, re-import.
+
+---
+
+<div align="center">
+
+```
+╭─────────────────────────────────────────────────────────────╮
+│  HANDOFF.md · architecture · see AGENTS.md before editing   │
+╰─────────────────────────────────────────────────────────────╯
+```
+
+</div>
