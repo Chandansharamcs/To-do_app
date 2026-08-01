@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 
 // ---- design tokens ----
@@ -139,6 +139,508 @@ const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 // No audio files/CDN, so this stays consistent with the fully
 // offline/bundled build. Mute state persists in localStorage.
 // ============================================================
+// ============================================================
+// PET SYSTEM (v23)
+//
+// A persistent companion that grows with the user. Three separable pieces:
+//   1. FORMS       - 7 evolution stages, each a procedurally-drawn SVG
+//   2. STATS       - happiness / energy / friendship / intelligence, decayed
+//                    over real time and nudged by what the user actually does
+//   3. VOICE       - a local personality engine, with Gemini only for
+//                    open-ended chat (see PET_AI in the worker)
+//
+// Design rule: the pet must never be silent. Everything except free-form
+// conversation is generated locally, so it works offline, with no API key,
+// and when the daily AI quota is gone.
+// ============================================================
+
+// Lightweight event bus so deeply-nested views can report user actions to the
+// pet without threading a callback through four layers of props. One channel,
+// fire-and-forget; nothing depends on delivery.
+const petBus = {
+  listeners: new Set(),
+  emit(kind) { this.listeners.forEach((fn) => { try { fn(kind); } catch {} }); },
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
+};
+
+const STORAGE_KEY_PET = "tasksh.pet.v1";
+
+// Seven forms rather than twenty: each one gets real craft, and the
+// milestones stay meaningful against the v22 XP curve (level 20 ~ 103 days).
+const PET_FORMS = [
+  { stage: 0, minLevel: 1,  name: "Spark",    title: "just hatched",        scale: 0.62 },
+  { stage: 1, minLevel: 3,  name: "Sprout",   title: "finding its feet",    scale: 0.72 },
+  { stage: 2, minLevel: 6,  name: "Drift",    title: "curious and quick",   scale: 0.82 },
+  { stage: 3, minLevel: 10, name: "Ember",    title: "steady, warm",        scale: 0.90 },
+  { stage: 4, minLevel: 14, name: "Cirrus",   title: "calm and knowing",    scale: 0.96 },
+  { stage: 5, minLevel: 17, name: "Solenn",   title: "quietly powerful",    scale: 1.0  },
+  { stage: 6, minLevel: 20, name: "Aurelis",  title: "legendary guardian",  scale: 1.06 },
+];
+
+function formForLevel(level) {
+  let f = PET_FORMS[0];
+  for (const c of PET_FORMS) if (level >= c.minLevel) f = c;
+  return f;
+}
+
+function nextFormAfter(level) {
+  return PET_FORMS.find((f) => f.minLevel > level) || null;
+}
+
+const PET_DEFAULTS = {
+  name: "Pip",
+  happiness: 70,
+  energy: 80,
+  friendship: 20,
+  intelligence: 30,
+  stage: 0,          // last stage the user has *seen*, for evolution detection
+  lastTick: 0,       // ms timestamp of last decay application
+  chats: 0,
+  born: 0,
+  log: [],           // recent conversation, capped -- gives the AI continuity
+};
+
+const clamp100 = (n) => Math.max(0, Math.min(100, Math.round(n)));
+
+/**
+ * Stats drift toward neutral over real elapsed time, so a pet left alone for
+ * days looks it. Applied on load and on an interval rather than continuously.
+ *
+ * Deliberately gentle: full decay from 100 to 0 takes about a week of total
+ * neglect. Punishing the user for a busy day is exactly the wrong feel.
+ */
+function decayPetStats(pet, nowMs) {
+  const last = pet.lastTick || nowMs;
+  const hours = Math.max(0, (nowMs - last) / 3600000);
+  if (hours < 0.25) return pet;
+  const d = (rate) => hours * rate;
+  return {
+    ...pet,
+    happiness: clamp100(pet.happiness - d(0.55)),
+    energy: clamp100(pet.energy - d(0.75)),
+    // friendship fades far slower -- a relationship shouldn't evaporate
+    friendship: clamp100(pet.friendship - d(0.12)),
+    intelligence: pet.intelligence, // knowledge doesn't decay
+    lastTick: nowMs,
+  };
+}
+
+// What each user action does to the pet. Kept as a table so the effects are
+// auditable in one place instead of scattered through components.
+const PET_EFFECTS = {
+  habitDone:     { happiness: +6, energy: -2, friendship: +1 },
+  routineDone:   { happiness: +4, energy: -3, friendship: +1 },
+  taskDone:      { happiness: +3, energy: -2 },
+  vaultDone:     { happiness: +5, energy: -2, friendship: +1 },
+  badHabit:      { happiness: -7, energy: -4 },
+  chat:          { friendship: +3, happiness: +2, intelligence: +1 },
+  rewardClaimed: { happiness: +9, energy: +6 },
+  calmSession:   { happiness: +4, energy: +12, intelligence: +2 },
+  levelUp:       { happiness: +14, energy: +18, friendship: +5, intelligence: +4 },
+};
+
+function applyPetEffect(pet, key) {
+  const e = PET_EFFECTS[key];
+  if (!e) return pet;
+  return {
+    ...pet,
+    happiness: clamp100(pet.happiness + (e.happiness || 0)),
+    energy: clamp100(pet.energy + (e.energy || 0)),
+    friendship: clamp100(pet.friendship + (e.friendship || 0)),
+    intelligence: clamp100(pet.intelligence + (e.intelligence || 0)),
+  };
+}
+
+// Mood is derived, never stored -- same principle as XP. One less field to
+// desync, and it always reflects the current stats.
+function petMood(pet) {
+  const { happiness: h, energy: e } = pet;
+  if (h >= 78 && e >= 60) return { key: "joyful",  label: "joyful",  face: "^^" };
+  if (h >= 60 && e < 32)  return { key: "sleepy",  label: "sleepy",  face: "-_-" };
+  if (h >= 60)            return { key: "content", label: "content", face: "^ ^" };
+  if (h >= 35 && e < 32)  return { key: "tired",   label: "tired",   face: "u_u" };
+  if (h >= 35)            return { key: "okay",    label: "okay",    face: "o o" };
+  if (e < 30)             return { key: "drained", label: "drained", face: "x_x" };
+  return { key: "low", label: "a bit low", face: "._." };
+}
+
+function petBond(friendship) {
+  if (friendship >= 90) return "inseparable";
+  if (friendship >= 70) return "close";
+  if (friendship >= 45) return "warming up";
+  if (friendship >= 20) return "getting to know you";
+  return "new here";
+}
+
+// ---- local personality -----------------------------------------------
+// The pet must never be silent. Everything except free-form conversation is
+// generated here: instant, offline, free, and consistent in tone.
+//
+// Voice rules (kept deliberately narrow so it never drifts):
+//   lowercase, warm, brief. observant rather than cheerful. never nags,
+//   never exclaims twice, never infantile. it notices things.
+
+function pickStable(list, seed) {
+  // deterministic pick so the pet doesn't say a different thing on every
+  // re-render -- it should feel like it *meant* it
+  if (!list.length) return "";
+  const n = Math.abs(Math.floor(seed)) % list.length;
+  return list[n];
+}
+
+/**
+ * Builds a short line of dialogue from the app's real state.
+ * `ctx` carries level, streaks, completion counts and the pet's own stats,
+ * so the pet always sounds like it's been paying attention.
+ */
+function petGreeting(ctx) {
+  const { pet, level, hour, doneToday, totalToday, streak, phase } = ctx;
+  const mood = petMood(pet);
+  const seed = Math.floor(Date.now() / 3600000); // rotates hourly
+
+  // highest-priority observations first -- these override small talk
+  if (pet.energy < 22) {
+    return pickStable([
+      "i'm running low. maybe we both rest a bit.",
+      "energy's thin today. no shame in a slow afternoon.",
+    ], seed);
+  }
+  if (totalToday > 0 && doneToday === totalToday) {
+    return pickStable([
+      `all ${totalToday} done. that's the whole list.`,
+      "everything's ticked off. genuinely well done.",
+      "clean sweep today. i noticed.",
+    ], seed);
+  }
+  if (streak >= 7) {
+    return pickStable([
+      `${streak} days running. that's a habit now, not an effort.`,
+      `${streak} in a row. the hard part's behind you.`,
+    ], seed);
+  }
+  if (doneToday === 0 && hour >= 14) {
+    return pickStable([
+      "nothing marked yet. one small thing counts.",
+      "still a blank slate today. pick the easiest one.",
+    ], seed);
+  }
+  if (phase === "night" && hour >= 23) {
+    return pickStable([
+      "late one. tomorrow will still be there.",
+      "it's late. i'd sleep if i were you.",
+    ], seed);
+  }
+  if (phase === "morning") {
+    return pickStable([
+      "morning. what's the one thing that matters today?",
+      "fresh day. no debts from yesterday.",
+    ], seed);
+  }
+  if (mood.key === "joyful") {
+    return pickStable([
+      "good day so far. i can tell.",
+      "you're in a rhythm. keep it easy.",
+    ], seed);
+  }
+  if (pet.friendship < 15) {
+    return "still getting to know you. tell me something.";
+  }
+  return pickStable([
+    `${doneToday} of ${totalToday} today. steady.`,
+    "here whenever you need. no rush.",
+    "quiet so far. that's allowed.",
+  ], seed);
+}
+
+function petReaction(kind, ctx) {
+  const seed = Date.now() / 1000;
+  const map = {
+    habitDone:   ["nice.", "that counts.", "logged it.", "good one."],
+    routineDone: ["on schedule.", "done and dusted.", "that's the one."],
+    taskDone:    ["off the list.", "one down.", "tidy."],
+    levelUp:     ["something's changing…", "i feel different.", "we grew."],
+    chat:        ["mm.", "i'm listening.", "go on."],
+    rewardClaimed: ["you earned that.", "enjoy it properly."],
+  };
+  return pickStable(map[kind] || ["ok."], seed);
+}
+
+// Compact state summary handed to the AI so replies reference reality.
+function petContextSummary(ctx) {
+  const { pet, level, doneToday, totalToday, streak, routineNow, nextRoutine } = ctx;
+  const mood = petMood(pet);
+  return [
+    `pet: ${pet.name}, ${PET_FORMS[pet.stage].name} form, mood ${mood.label}`,
+    `stats: happiness ${pet.happiness}, energy ${pet.energy}, friendship ${pet.friendship} (${petBond(pet.friendship)}), intelligence ${pet.intelligence}`,
+    `owner: level ${level}, ${doneToday}/${totalToday} habits done today, best streak ${streak}`,
+    routineNow ? `right now: ${routineNow}` : "no routine running",
+    nextRoutine ? `next up: ${nextRoutine}` : "",
+  ].filter(Boolean).join("; ");
+}
+
+/**
+ * Owns the pet: load, persist, decay over real time, and detect evolutions.
+ *
+ * Evolution is detected by comparing the form the user's level *entitles*
+ * them to against the last stage they actually saw (`pet.stage`). That way a
+ * level-up while the app is closed still produces a celebration next launch,
+ * and restoring an old backup can't replay evolutions the user already saw.
+ */
+function usePet(level, deps) {
+  const [pet, setPet] = useState(() => {
+    const stored = loadStored(STORAGE_KEY_PET, null);
+    const base = stored ? { ...PET_DEFAULTS, ...stored } : { ...PET_DEFAULTS, born: Date.now(), lastTick: Date.now() };
+    return decayPetStats(base, Date.now());
+  });
+  const [evolution, setEvolution] = useState(null); // {from,to} while celebrating
+
+  // persist
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_PET, JSON.stringify(pet)); } catch {}
+  }, [pet]);
+
+  // decay on a slow interval; also catches the app being left open overnight
+  useEffect(() => {
+    const t = setInterval(() => setPet((p) => decayPetStats(p, Date.now())), 300000);
+    return () => clearInterval(t);
+  }, []);
+
+  // evolution check
+  const form = useMemo(() => formForLevel(level), [level]);
+  useEffect(() => {
+    if (form.stage > pet.stage) {
+      const from = pet.stage;
+      setEvolution({ from, to: form.stage });
+      setPet((p) => applyPetEffect({ ...p, stage: form.stage }, "levelUp"));
+      sound.success();
+    } else if (form.stage < pet.stage) {
+      // XP was reduced (reward claimed, backup restored) -- follow it down
+      // silently rather than pretending nothing happened
+      setPet((p) => ({ ...p, stage: form.stage }));
+    }
+  }, [form.stage, pet.stage]);
+
+  const nudge = useCallback((kind) => {
+    setPet((p) => applyPetEffect(p, kind));
+  }, []);
+
+  // react to activity reported from anywhere in the app
+  useEffect(() => petBus.on((kind) => setPet((p) => applyPetEffect(p, kind))), []);
+
+  const rename = useCallback((name) => {
+    const n = String(name || "").trim().slice(0, 14);
+    if (n) setPet((p) => ({ ...p, name: n }));
+  }, []);
+
+  const remember = useCallback((role, text) => {
+    setPet((p) => ({
+      ...p,
+      chats: role === "user" ? p.chats + 1 : p.chats,
+      // keep the last few turns only: enough for continuity, small enough
+      // that it never bloats localStorage or the AI prompt
+      log: [...(p.log || []), { role, text: String(text).slice(0, 240) }].slice(-8),
+    }));
+  }, []);
+
+  return { pet, form, mood: petMood(pet), evolution, clearEvolution: () => setEvolution(null), nudge, rename, remember };
+}
+
+/**
+ * The creature.
+ *
+ * One parametric SVG rather than seven hand-drawn files: every form shares a
+ * body plan (round body, big eyes, ear/horn pair, tail, aura) and the stage
+ * dials the parts up. That keeps it recognisably the *same* animal as it
+ * grows, which is the whole point of an evolution line, and means a new stage
+ * is a row in PET_FORMS plus a few numbers here.
+ *
+ * Colours come from theme vars so the pet reskins with the app.
+ * Everything animates via CSS transforms only.
+ */
+const PetCreature = React.memo(function PetCreature({
+  stage = 0, mood = "content", size = 128, animate = true, evolving = false,
+}) {
+  const s = Math.max(0, Math.min(6, stage));
+
+  // --- body plan, interpolated by stage -----------------------------------
+  // Proportions shift deliberately: babies are big-headed and round, adults
+  // are leaner and taller. Linear tweens alone made stages 4-7 look identical,
+  // so several parts switch on/off at thresholds instead.
+  const bodyR   = 25 + s * 1.9;
+  const headR   = 22 - s * 0.55;            // head shrinks RELATIVE to body
+  const bodyCY  = 78 + s * 0.9;             // body sinks slightly as it grows
+  // Head sits a fixed gap above the body so it never overlaps, and the whole
+  // thing stays inside the 128 viewBox once the horns are added.
+  const headY   = bodyCY - bodyR * 0.80 - headR * 0.62 - (s >= 3 ? 5 : 0);
+  const eyeR    = 4.6 - s * 0.3;
+  // horn length is capped by the space actually available above the head
+  const earLen  = Math.min(6 + s * 5.2, Math.max(4, headY - headR - 9));
+  const earSpread = 9 + s * 1.1;
+  const tailLen = 9 + s * 5.4;
+  const auraR   = 33 + s * 5.2;
+  const neck    = s >= 3;                   // visible neck from mid-line
+  const wings   = s >= 4;
+  const crown   = s >= 6;
+  const spines  = s >= 5;                   // back ridge on late forms
+  const marks   = s >= 2 ? Math.min(4, s - 1) : 0;
+
+  // mood drives eyes + mouth only, so it reads instantly at any size
+  const closed = mood === "sleepy" || mood === "tired";
+  const wide   = mood === "joyful";
+  const sad    = mood === "low" || mood === "drained";
+  const eyeH   = closed ? 0.9 : eyeR * (wide ? 1.16 : 1) * 2;
+  const mouthD = sad
+    ? `M 56 ${headY + 9} q 8 -5 16 0`
+    : wide
+      ? `M 55 ${headY + 6} q 9 8 18 0`
+      : `M 57 ${headY + 7} q 7 4 14 0`;
+
+  return (
+    <svg
+      viewBox="-8 4 148 144"
+      width={size}
+      height={size}
+      className={`pet-svg ${animate ? "pet-anim" : ""} ${evolving ? "pet-evolving" : ""}`}
+      style={{ "--pet-scale": PET_FORMS[s].scale }}
+      role="img"
+      aria-label={`${PET_FORMS[s].name}, ${mood}`}
+    >
+      <defs>
+        <radialGradient id={`pg-body-${s}`} cx="38%" cy="30%">
+          <stop offset="0%"   stopColor="var(--accent)" stopOpacity="1" />
+          <stop offset="62%"  stopColor="var(--accent)" stopOpacity="0.88" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.55" />
+        </radialGradient>
+        <radialGradient id={`pg-aura-${s}`} cx="50%" cy="50%">
+          <stop offset="55%" stopColor="var(--accent)" stopOpacity="0" />
+          <stop offset="88%" stopColor="var(--accent)" stopOpacity="0.16" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* aura — grows with stage, breathes independently of the body */}
+      <circle className="pet-aura" cx="64" cy={bodyCY - 8} r={auraR} fill={`url(#pg-aura-${s})`} />
+
+      {/* wings, later forms only */}
+      {wings && (
+        <g className="pet-wings" fill="var(--accent)" opacity="0.26">
+          <path d={`M ${64 - bodyR * 0.75} ${bodyCY - 8} q -${16 + s * 2} -${12 + s * 2} -${5 + s} ${8} q ${4} ${9} ${21} ${5} Z`} />
+          <path d={`M ${64 + bodyR * 0.75} ${bodyCY - 8} q ${16 + s * 2} -${12 + s * 2} ${5 + s} ${8} q -${4} ${9} -${21} ${5} Z`} />
+        </g>
+      )}
+
+      {/* tail */}
+      <path
+        className="pet-tail"
+        d={`M ${64 + bodyR * 0.85} ${bodyCY} q ${tailLen} ${2} ${tailLen * 0.9} -${tailLen * 0.85}`}
+        stroke="var(--accent)" strokeWidth={3.2} strokeLinecap="round" fill="none" opacity="0.85"
+      />
+      {s >= 3 && (
+        <circle cx={64 + bodyR * 0.85 + tailLen * 0.9} cy={bodyCY - tailLen * 0.85} r={2.4 + s * 0.35}
+                fill="var(--accent2)" className="pet-tailtip" />
+      )}
+
+      {/* neck, so tall forms don't look like a head glued to a ball */}
+      {neck && (
+        <rect x="59" y={headY + headR - 5} width="10"
+              height={Math.max(0, bodyCY - bodyR * 0.7 - headY - headR + 8)}
+              rx="5" fill="var(--accent)" opacity="0.75" />
+      )}
+
+      {/* back spines */}
+      {spines && (
+        <g opacity="0.8">
+          {[0, 1, 2].map((i) => (
+            <path key={i}
+                  d={`M ${64 - bodyR * 0.72 + i * 3} ${bodyCY - 6 - i * 7} l -${6 + i} -${5 + i * 2} l ${9 + i} ${1 + i} Z`}
+                  fill="var(--accent2)" />
+          ))}
+        </g>
+      )}
+
+      {/* body */}
+      <g className="pet-body">
+        <ellipse cx="64" cy={bodyCY} rx={bodyR} ry={bodyR * 0.86} fill={`url(#pg-body-${s})`} />
+        {/* belly */}
+        <ellipse cx="64" cy={bodyCY + 2} rx={bodyR * 0.56} ry={bodyR * 0.5}
+                 fill="#FFFFFF" opacity="0.13" />
+        {/* markings appear as it matures */}
+        {Array.from({ length: marks }).map((_, i) => (
+          <circle key={i} cx={50 + i * 14} cy={68 + (i % 2) * 5} r={1.9}
+                  fill="var(--accent2)" opacity="0.75" />
+        ))}
+      </g>
+
+      {/* feet */}
+      <ellipse cx={64 - bodyR * 0.42} cy={bodyCY + bodyR * 0.80} rx={5.5 + s * 0.3} ry={3.4} fill="var(--accent)" opacity="0.75" />
+      <ellipse cx={64 + bodyR * 0.42} cy={bodyCY + bodyR * 0.80} rx={5.5 + s * 0.3} ry={3.4} fill="var(--accent)" opacity="0.75" />
+
+      {/* head group — the bob animation lives here */}
+      <g className="pet-head">
+        {/* ears / horns */}
+        <path d={`M ${64 - earSpread} ${headY - headR * 0.72}
+                  q -3 -${earLen} 3 -${earLen * 1.25}
+                  q 5 ${earLen * 0.45} 4 ${earLen * 0.95} Z`}
+              fill="var(--accent)" opacity="0.9" />
+        <path d={`M ${64 + earSpread} ${headY - headR * 0.72}
+                  q 3 -${earLen} -3 -${earLen * 1.25}
+                  q -5 ${earLen * 0.45} -4 ${earLen * 0.95} Z`}
+              fill="var(--accent)" opacity="0.9" />
+
+        {crown && (
+          <g className="pet-crown">
+            <path d={`M ${64 - 13} ${headY - headR + 2}
+                      l 4 -8 l 4.5 5 l 4.5 -9 l 4.5 9 l 4.5 -5 l 4 8 Z`}
+                  fill="var(--accent2)" opacity="0.95" />
+            <circle cx="64" cy={headY - headR - 6} r="2" fill="#FFFFFF" opacity="0.9" />
+          </g>
+        )}
+
+        <circle cx="64" cy={headY} r={headR} fill={`url(#pg-body-${s})`} />
+
+        {/* eyes */}
+        {closed ? (
+          <>
+            <path d={`M ${64 - 8.5} ${headY} q 4 3 8 0`} stroke="var(--bg)" strokeWidth="2"
+                  fill="none" strokeLinecap="round" />
+            <path d={`M ${64 + 0.5} ${headY} q 4 3 8 0`} stroke="var(--bg)" strokeWidth="2"
+                  fill="none" strokeLinecap="round" />
+          </>
+        ) : (
+          <g className="pet-eyes">
+            <ellipse cx={64 - 7.5} cy={headY} rx={eyeR} ry={eyeH / 2} fill="var(--bg)" />
+            <ellipse cx={64 + 7.5} cy={headY} rx={eyeR} ry={eyeH / 2} fill="var(--bg)" />
+            <circle cx={64 - 6.2} cy={headY - 1.4} r={1.25} fill="#FFFFFF" opacity="0.92" />
+            <circle cx={64 + 8.8} cy={headY - 1.4} r={1.25} fill="#FFFFFF" opacity="0.92" />
+          </g>
+        )}
+
+        {/* mouth */}
+        <path d={mouthD} stroke="var(--bg)" strokeWidth="1.8" fill="none" strokeLinecap="round" opacity="0.85" />
+
+        {/* cheek blush when happy */}
+        {wide && (
+          <>
+            <ellipse cx={64 - 15} cy={headY + 4} rx="3.4" ry="2.1" fill="var(--accent2)" opacity="0.5" />
+            <ellipse cx={64 + 15} cy={headY + 4} rx="3.4" ry="2.1" fill="var(--accent2)" opacity="0.5" />
+          </>
+        )}
+      </g>
+
+      {/* orbiting motes, count scales with stage */}
+      {s >= 1 && (
+        <g className="pet-orbit">
+          {Array.from({ length: Math.min(4, s) }).map((_, i) => (
+            <circle key={i} cx="64" cy={bodyCY - 8 - auraR} r={1.6 + i * 0.25}
+                    fill="var(--accent2)" opacity="0.8"
+                    style={{ transformOrigin: `64px ${bodyCY - 8}px`, transform: `rotate(${i * (360 / Math.min(4, s))}deg)` }} />
+          ))}
+        </g>
+      )}
+    </svg>
+  );
+});
+
 // ============================================================
 // THEME ENGINE (v22)
 //
@@ -1350,17 +1852,16 @@ function RoutinesView({ routines, setRoutines }) {
 
   const toggleToday = (id) => {
     const today = getISTDateString(0);
-    let willBeDone = false;
+    const willBeDone = !(routines.find((r) => r.id === id)?.history || []).includes(today);
     setRoutines((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
         const has = (r.history || []).includes(today);
-        willBeDone = !has;
         const history = has ? r.history.filter((d) => d !== today) : [...(r.history || []), today];
         return { ...r, history: history.slice(-60) };
       })
     );
-    willBeDone ? sound.success() : sound.click();
+    if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
   };
 
   const saveRoutine = (id, patch) =>
@@ -1739,17 +2240,16 @@ function VaultHabitsSection({ habits, setHabits }) {
   const saveHabit = (id, patch) => setHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
   const toggleToday = (id) => {
     const today = getISTDateString(0);
-    let willBeDone = false;
+    const willBeDone = !(habits.find((h) => h.id === id)?.history || []).includes(today);
     setHabits((prev) =>
       prev.map((h) => {
         if (h.id !== id) return h;
         const has = (h.history || []).includes(today);
-        willBeDone = !has;
         const history = has ? h.history.filter((d) => d !== today) : [...(h.history || []), today];
         return { ...h, history: history.slice(-370) };
       })
     );
-    willBeDone ? sound.success() : sound.click();
+    if (willBeDone) { sound.success(); petBus.emit("vaultDone"); } else { sound.click(); }
   };
 
   return (
@@ -2507,26 +3007,26 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
 
   const toggleGood = (id) => {
     const today = getISTDateString(0);
-    let willBeDone = false;
+    // derive from current state, not from inside the updater -- the updater
+    // is not guaranteed to have run by the time we read the flag
+    const willBeDone = !(goodHabits.find((h) => h.id === id)?.history || []).includes(today);
     setGoodHabits((prev) =>
       prev.map((h) => {
         if (h.id !== id) return h;
         const has = (h.history || []).includes(today);
-        willBeDone = !has;
         const history = has ? h.history.filter((d) => d !== today) : [...(h.history || []), today];
         return { ...h, history: history.slice(-370) };
       })
     );
-    willBeDone ? sound.success() : sound.click();
+    if (willBeDone) { sound.success(); petBus.emit("habitDone"); } else { sound.click(); }
   };
   const toggleBad = (id) => {
     const today = getISTDateString(0);
-    let willBeDone = false;
+    const willBeDone = !(badHabits.find((h) => h.id === id)?.history || []).includes(today);
     setBadHabits((prev) =>
       prev.map((h) => {
         if (h.id !== id) return h;
         const has = (h.history || []).includes(today);
-        willBeDone = !has;
         const history = has ? h.history.filter((d) => d !== today) : [...(h.history || []), today];
         return { ...h, history: history.slice(-370) };
       })
@@ -2541,6 +3041,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
     const today = getISTDateString(0);
     setRewards((prev) => prev.map((r) => (r.id === id ? { ...r, claimed: [...(r.claimed || []), today] } : r)));
     sound.success();
+    petBus.emit("rewardClaimed");
   };
   const delReward = (id) => { setRewards((prev) => prev.filter((r) => r.id !== id)); sound.delete(); };
   const saveReward = (id, patch) => setRewards((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -2923,7 +3424,7 @@ function ThemePicker({ ctl, level, totalXP, onClose }) {
           </div>
           <button
             className={`calm-switch ${ctl.calm ? "on" : ""}`}
-            onClick={() => { ctl.setCalm(!ctl.calm); sound.click(); }}
+            onClick={() => { if (!ctl.calm) petBus.emit("calmSession"); ctl.setCalm(!ctl.calm); sound.click(); }}
             aria-pressed={ctl.calm}
           >
             <span className="calm-knob" />
@@ -2933,6 +3434,163 @@ function ThemePicker({ ctl, level, totalXP, onClose }) {
         <div className="sheet-foot">
           ambience follows the time of day · currently <b>{ctl.phase.label}</b>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PetStatBar({ label, value, color }) {
+  return (
+    <div className="pet-stat">
+      <div className="pet-stat-top">
+        <span className="pet-stat-label">{label}</span>
+        <span className="pet-stat-val">{Math.round(value)}</span>
+      </div>
+      <div className="pet-stat-track">
+        <div className="pet-stat-fill" style={{ width: `${value}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
+/** Full-screen celebration when the pet reaches a new form. */
+function EvolutionOverlay({ from, to, petName, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 5200);
+    return () => clearTimeout(t);
+  }, [onDone]);
+  const nf = PET_FORMS[to];
+  return (
+    <div className="evo-backdrop" onClick={onDone}>
+      <div className="screen-pulse" />
+      <div className="burst" />
+      <div className="evo-card" onClick={(e) => e.stopPropagation()}>
+        <div className="evo-kicker">evolution</div>
+        <div className="evo-stage-row">
+          <div className="evo-old"><PetCreature stage={from} mood="content" size={72} animate={false} /></div>
+          <span className="evo-arrow">→</span>
+          <div className="evo-new"><PetCreature stage={to} mood="joyful" size={132} evolving /></div>
+        </div>
+        <div className="evo-name">{petName} became <b>{nf.name}</b></div>
+        <div className="evo-title">{nf.title}</div>
+        <button className="evo-btn" onClick={onDone}>continue</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The pet tab. Creature up top, stats, then chat.
+ * Chat uses the local voice engine by default and only calls the AI worker
+ * for open-ended input, so the pet still talks with no key and no quota.
+ */
+function PetView({ petCtl, ctx, apiKey, showDataMsg }) {
+  const { pet, form, mood, nudge, rename, remember } = petCtl;
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(pet.name);
+  const logRef = useRef(null);
+
+  const greeting = useMemo(() => petGreeting(ctx), [ctx]);
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [pet.log]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    setDraft("");
+    remember("user", text);
+    nudge("chat");
+    sound.click();
+
+    if (!apiKey) {
+      // no key: stay in character rather than showing an error
+      remember("pet", pickStable([
+        "i can hear you, but my words are limited right now. add an ai key in the ai tab and i can really talk.",
+        "i'm listening — though i can only nod until you connect an ai key.",
+      ], Date.now() / 1000));
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await requestPetReply(text, petContextSummary(ctx), pet.log || [], apiKey);
+      remember("pet", res.reply);
+      sound.success();
+    } catch (err) {
+      remember("pet", err instanceof AIKeyError
+        ? "my link to the wider world got rejected. check the key in the ai tab."
+        : "couldn't reach far enough to answer that. try again in a moment.");
+      sound.error();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="task-list pet-scroll">
+      <div className="pet-stage">
+        <PetCreature stage={form.stage} mood={mood.key} size={168} />
+        <div className="pet-id">
+          {editingName ? (
+            <input
+              className="pet-name-input"
+              value={nameDraft}
+              autoFocus
+              maxLength={14}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={() => { rename(nameDraft); setEditingName(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { rename(nameDraft); setEditingName(false); } }}
+            />
+          ) : (
+            <button className="pet-name" onClick={() => { setNameDraft(pet.name); setEditingName(true); }}>
+              {pet.name}
+            </button>
+          )}
+          <span className="pet-form">{form.name} · {mood.label}</span>
+          <span className="pet-bond">{petBond(pet.friendship)}</span>
+        </div>
+      </div>
+
+      <div className="pet-speech">{greeting}</div>
+
+      <div className="pet-stats">
+        <PetStatBar label="happiness"    value={pet.happiness}    color="var(--accent)" />
+        <PetStatBar label="energy"       value={pet.energy}       color="var(--accent2)" />
+        <PetStatBar label="friendship"   value={pet.friendship}   color="var(--accent)" />
+        <PetStatBar label="intelligence" value={pet.intelligence} color="var(--accent2)" />
+      </div>
+
+      {nextFormAfter(ctx.level) && (
+        <div className="pet-next">
+          next form at level {nextFormAfter(ctx.level).minLevel} · {nextFormAfter(ctx.level).name}
+        </div>
+      )}
+
+      <div className="pet-chat" ref={logRef}>
+        {(pet.log || []).length === 0 ? (
+          <div className="pet-chat-empty">say something — it remembers.</div>
+        ) : (
+          (pet.log || []).map((m, i) => (
+            <div key={i} className={`pet-msg ${m.role}`}>{m.text}</div>
+          ))
+        )}
+        {busy && <div className="pet-msg pet thinking"><span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" /></div>}
+      </div>
+
+      <div className="pet-composer">
+        <input
+          className="pet-input"
+          placeholder={`talk to ${pet.name}…`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          disabled={busy}
+        />
+        <button className="pet-send" onClick={send} disabled={busy || !draft.trim()}>say</button>
       </div>
     </div>
   );
@@ -3061,6 +3719,29 @@ async function verifyAIKey(apiKey) {
     throw new Error((payload && payload.message) || `Couldn't verify that key (${res.status}).`);
   }
   return payload.warning || null;
+}
+
+/**
+ * Pet conversation. Separate endpoint from /ai because the pet has a fixed
+ * persona and returns prose, not an action list -- it must never be able to
+ * mutate the user's data.
+ */
+async function requestPetReply(message, contextSummary, log, apiKey) {
+  const res = await fetch(`${NOTIFY_WORKER_URL}/pet`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, context: contextSummary, log, apiKey }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch {}
+  if (!res.ok) {
+    const code = payload && payload.error;
+    if (code === "no_key" || code === "bad_key") {
+      throw new AIKeyError((payload && payload.message) || "key rejected");
+    }
+    throw new Error((payload && payload.message) || `pet request failed (${res.status})`);
+  }
+  return { reply: (payload && payload.reply) || "…" };
 }
 
 async function requestAIActions(prompt, data, apiKey) {
@@ -3588,17 +4269,16 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHa
   const todayStr = getISTDateString(0);
 
   const toggleRoutineToday = (id) => {
-    let willBeDone = false;
+    const willBeDone = !(routines.find((r) => r.id === id)?.history || []).includes(todayStr);
     setRoutines((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r;
         const has = (r.history || []).includes(todayStr);
-        willBeDone = !has;
         const history = has ? r.history.filter((d) => d !== todayStr) : [...(r.history || []), todayStr];
         return { ...r, history: history.slice(-60) };
       })
     );
-    willBeDone ? sound.success() : sound.click();
+    if (willBeDone) { sound.error(); petBus.emit("badHabit"); } else { sound.click(); }
   };
 
   const openTasks = useMemo(() => {
@@ -3754,6 +4434,7 @@ function TodoApp() {
   );
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
   const themeCtl = useTheme(currentLevel);
+  const petCtl = usePet(currentLevel);
   const [input, setInput] = useState("");
   const [priority, setPriority] = useState("mid");
   const [filter, setFilter] = useState("all");
@@ -3974,15 +4655,9 @@ function TodoApp() {
   };
 
   const toggleTask = (id) => {
-    let willBeDone = false;
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        willBeDone = !t.done;
-        return { ...t, done: !t.done };
-      })
-    );
-    willBeDone ? sound.success() : sound.click();
+    const willBeDone = !tasks.find((t) => t.id === id)?.done;
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+    if (willBeDone) { sound.success(); petBus.emit("taskDone"); } else { sound.click(); }
   };
 
   const deleteTask = (id) => { setTasks((prev) => prev.filter((t) => t.id !== id)); sound.delete(); };
@@ -3992,6 +4667,14 @@ function TodoApp() {
   return (
     <div className="app-root" data-particle={themeCtl.theme.ambient.particle}>
       <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} />
+      {petCtl.evolution && (
+        <EvolutionOverlay
+          from={petCtl.evolution.from}
+          to={petCtl.evolution.to}
+          petName={petCtl.pet.name}
+          onDone={petCtl.clearEvolution}
+        />
+      )}
       {showThemes && (
         <ThemePicker
           ctl={themeCtl}
@@ -5188,6 +5871,142 @@ function TodoApp() {
         @media (prefers-reduced-motion: reduce) {
           .just-completed, .xp-pop, .burst, .screen-pulse { animation: none !important; }
           .xp-pop, .burst, .screen-pulse { display: none !important; }
+        }
+
+
+        /* ---- pet (v23) ---- */
+        .tabs button.tab-pet { color: var(--accent2); }
+
+        .pet-svg { display: block; overflow: visible; }
+        .pet-anim .pet-head   { animation: petBob calc(3.4s * var(--motion-scale)) ease-in-out infinite; transform-origin: 64px 60px; }
+        .pet-anim .pet-body   { animation: petBreathe calc(4.2s * var(--motion-scale)) ease-in-out infinite; transform-origin: 64px 84px; }
+        .pet-anim .pet-tail   { animation: petTail calc(2.8s * var(--motion-scale)) ease-in-out infinite; transform-origin: 88px 82px; }
+        .pet-anim .pet-aura   { animation: petAura calc(5.5s * var(--motion-scale)) ease-in-out infinite; transform-origin: 64px 74px; }
+        .pet-anim .pet-orbit  { animation: petOrbit calc(14s * var(--motion-scale)) linear infinite; transform-origin: 64px 74px; }
+        .pet-anim .pet-wings  { animation: petWings calc(3s * var(--motion-scale)) ease-in-out infinite; transform-origin: 64px 72px; }
+        .pet-anim .pet-eyes   { animation: petBlink 6.5s steps(1, end) infinite; transform-origin: center; }
+
+        @keyframes petBob     { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+        @keyframes petBreathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.035); } }
+        @keyframes petTail    { 0%,100% { transform: rotate(-7deg); } 50% { transform: rotate(9deg); } }
+        @keyframes petAura    { 0%,100% { opacity: 0.55; transform: scale(0.97); } 50% { opacity: 1; transform: scale(1.05); } }
+        @keyframes petOrbit   { to { transform: rotate(360deg); } }
+        @keyframes petWings   { 0%,100% { transform: scaleY(1) scaleX(1); } 50% { transform: scaleY(0.86) scaleX(1.04); } }
+        @keyframes petBlink   { 0%,93%,100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+
+        .pet-evolving { animation: petEvolve 1500ms cubic-bezier(.16,1,.3,1); }
+        @keyframes petEvolve {
+          0%   { transform: scale(0.55) rotate(-8deg); opacity: 0; filter: brightness(3); }
+          45%  { transform: scale(1.16) rotate(3deg);  opacity: 1; filter: brightness(1.9); }
+          100% { transform: scale(1) rotate(0);        opacity: 1; filter: brightness(1); }
+        }
+
+        .pet-scroll { padding-top: 6px; }
+        .pet-stage {
+          display: flex; flex-direction: column; align-items: center;
+          padding: 6px 16px 4px;
+        }
+        .pet-id { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: -6px; }
+        .pet-name, .pet-name-input {
+          font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 700;
+          color: var(--text); background: transparent; border: none; cursor: pointer;
+          text-align: center; padding: 2px 6px; border-radius: 6px;
+        }
+        .pet-name-input { border: 1px solid var(--accent); width: 130px; outline: none; }
+        .pet-form { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent); }
+        .pet-bond { font-size: 9.5px; color: var(--muted); }
+
+        .pet-speech {
+          margin: 12px 16px 14px; padding: 11px 13px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 3px solid var(--accent); border-radius: 10px;
+          font-size: 12.5px; line-height: 1.5; color: var(--text);
+        }
+
+        .pet-stats {
+          display: grid; grid-template-columns: 1fr 1fr; gap: 9px 14px;
+          padding: 0 16px 12px;
+        }
+        .pet-stat-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+        .pet-stat-label {
+          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+        }
+        .pet-stat-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text); }
+        .pet-stat-track { height: 4px; background: var(--track); border-radius: 3px; overflow: hidden; }
+        .pet-stat-fill { height: 100%; border-radius: 3px; transition: width 700ms cubic-bezier(.16,1,.3,1); }
+
+        .pet-next {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          color: var(--muted); text-align: center; padding: 0 16px 12px;
+        }
+
+        .pet-chat {
+          margin: 0 16px; padding: 10px; max-height: 240px; overflow-y: auto;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+          display: flex; flex-direction: column; gap: 7px;
+        }
+        .pet-chat-empty { font-size: 10.5px; color: var(--muted); text-align: center; padding: 12px 0; }
+        .pet-msg {
+          font-size: 12px; line-height: 1.45; padding: 8px 10px;
+          border-radius: 9px; max-width: 86%; word-break: break-word;
+        }
+        .pet-msg.user { align-self: flex-end; background: var(--track); color: var(--text); }
+        .pet-msg.pet  { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+        .pet-msg.thinking { display: flex; gap: 4px; align-items: center; }
+
+        .pet-composer { display: flex; gap: 8px; padding: 12px 16px 18px; }
+        .pet-input {
+          flex: 1; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 8px; color: var(--text); font-family: 'Inter', sans-serif;
+          font-size: 12.5px; padding: 10px 12px; outline: none;
+          transition: border-color 140ms ease;
+        }
+        .pet-input:focus { border-color: var(--accent); }
+        .pet-send {
+          background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
+          font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+          letter-spacing: 0.06em; padding: 0 18px; cursor: pointer;
+        }
+        .pet-send:disabled { opacity: 0.35; cursor: default; }
+
+        /* ---- evolution overlay ---- */
+        .evo-backdrop {
+          position: fixed; inset: 0; z-index: 80;
+          background: rgba(0,0,0,0.78);
+          display: flex; align-items: center; justify-content: center;
+          animation: fadeIn 280ms ease;
+        }
+        .evo-card {
+          text-align: center; padding: 26px 22px;
+          max-width: 340px; width: 88%;
+          background: var(--panel); border: 1px solid var(--border);
+          border-radius: 18px;
+          animation: sheetUp 480ms cubic-bezier(.16,1,.3,1);
+        }
+        .evo-kicker {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          letter-spacing: 0.28em; text-transform: uppercase; color: var(--accent2);
+          margin-bottom: 14px;
+        }
+        .evo-stage-row { display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .evo-old { opacity: 0.42; }
+        .evo-arrow { color: var(--muted); font-size: 15px; }
+        .evo-name { font-size: 15px; color: var(--text); margin-top: 12px; }
+        .evo-name b { color: var(--accent); }
+        .evo-title { font-size: 11px; color: var(--muted); margin-top: 3px; }
+        .evo-btn {
+          margin-top: 20px; width: 100%;
+          background: var(--accent); color: var(--bg); border: none;
+          border-radius: 9px; padding: 11px 0; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          font-weight: 700; letter-spacing: 0.08em;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .pet-anim .pet-head, .pet-anim .pet-body, .pet-anim .pet-tail,
+          .pet-anim .pet-aura, .pet-anim .pet-orbit, .pet-anim .pet-wings,
+          .pet-anim .pet-eyes, .pet-evolving { animation: none !important; }
         }
 
         /* ---- bottom sheet (themes / settings) ---- */
@@ -6964,6 +7783,9 @@ function TodoApp() {
           <button className={tab === "quest" ? "active" : ""} onClick={() => changeTab("quest")}>
             quest
           </button>
+          <button className={`tab-pet ${tab === "pet" ? "active" : ""}`} onClick={() => changeTab("pet")}>
+            pet
+          </button>
           <button className={`tab-ai ${tab === "ai" ? "active" : ""}`} onClick={() => changeTab("ai")}>
             ai
           </button>
@@ -7098,6 +7920,23 @@ function TodoApp() {
             setBadHabits={setBadHabits}
             rewards={rewards}
             setRewards={setRewards}
+          />
+        ) : tab === "pet" ? (
+          <PetView
+            petCtl={petCtl}
+            apiKey={getAIKey()}
+            showDataMsg={showDataMsg}
+            ctx={{
+              pet: petCtl.pet,
+              level: currentLevel,
+              hour: now ? new Date(now).getHours() : getISTParts().hour,
+              phase: themeCtl.phase.id,
+              doneToday: goodHabits.filter((h) => (h.history || []).includes(getISTDateString(0))).length,
+              totalToday: goodHabits.length,
+              streak: goodHabits.reduce((m, h) => Math.max(m, computeStreak(h.history)), 0),
+              routineNow: null,
+              nextRoutine: null,
+            }}
           />
         ) : (
           <AIView

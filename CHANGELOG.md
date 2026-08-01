@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v23`** | 2026-08-01 | Pet: 7 forms, stats, evolution, hybrid voice |
 | **`v22`** | 2026-07-31 | Theme engine, ambience, calm mode, XP rebalance |
 | **`v21`** | 2026-07-31 | Ambient bg, 10-axis radar, timeline rebuild |
 | **`v20`** | 2026-07-31 | AI latency: disable thinking, trim prompt |
@@ -49,6 +50,56 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-01 — `tasksh-v23`**  ·  *the pet*
+
+Second of three. v22 built the atmosphere; this adds the companion that lives
+in it. Achievements, coins and the level-reward screen are v24.
+
+- **Added: a pet.** New `pet` tab with a creature that grows, reacts and
+  talks. Seven forms — Spark → Sprout → Drift → Ember → Cirrus → Solenn →
+  Aurelis, unlocking at levels 1/3/6/10/14/17/20 against the v22 curve.
+  - **One parametric SVG, not seven files.** Every form shares a body plan
+    (round body, big eyes, ear/horn pair, tail, aura) and the stage dials
+    each part. It stays recognisably the *same* animal as it grows, which
+    is the point of an evolution line, and a new stage is a table row plus
+    a few numbers. Late forms gain a neck, wings, back spines and a crown.
+  - Colours come from theme variables, so the pet reskins with the app.
+  - viewBox was sized from **measured** bounds of all 7 forms at their
+    largest mood, after finding late-stage horns and tails were being
+    clipped. Verified 0/23 renders clipped.
+  - Readable down to 28px for future list/titlebar use.
+- **Added: pet stats.** Happiness, energy, friendship, intelligence, plus a
+  derived mood (never stored — same principle as XP). Stats decay against
+  *real elapsed time*, so a pet left alone for days looks it, but gently:
+  full decay takes about a week of total neglect. Friendship fades far
+  slower than the rest.
+- **Added: stat reactions to real behaviour.** Completing a habit, routine,
+  task or vault entry, logging a bad habit, claiming a reward, entering
+  calm mode and chatting all move the stats, via a small event bus so
+  deeply-nested views don't have to thread callbacks. Effects live in one
+  auditable table (`PET_EFFECTS`).
+- **Added: hybrid voice.** Greetings, observations and reactions are
+  generated **locally** from real state — streaks, completion counts, time
+  of day, the pet's own energy — so the pet is never silent offline, with
+  no key, or out of quota. Only open-ended chat calls Gemini, via a new
+  `/pet` worker endpoint with a fixed persona that **cannot emit actions**,
+  so no message can make it edit your data.
+- **Added: evolution celebration.** Detected by comparing the form the
+  user's level entitles them to against the last stage they actually saw,
+  so a level-up while the app was closed still celebrates on next launch,
+  and restoring an old backup can't replay evolutions already seen.
+- **Fixed: a pre-existing state race in six toggles.** `willBeDone` was
+  assigned *inside* a `setState` updater and read on the next line. React
+  doesn't guarantee the updater has run by then — it happened to work when
+  updates were synchronous. Found it because the pet's stats silently never
+  moved. Now derived from current state before dispatching, in
+  `toggleGood`, `toggleBad`, routine/vault/today toggles and `toggleTask`.
+- **Verified:** stats respond correctly to each action type, evolution
+  fires and does not replay, the pet renders on every theme, **60fps** with
+  all pet animations running, the pet still speaks with the network fully
+  blocked, and pet data stays out of backup exports.
+- Bumped service worker cache to `tasksh-v23`.
 
 **2026-07-31 — `tasksh-v22`**  ·  *atmosphere release*
 

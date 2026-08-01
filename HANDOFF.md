@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v22   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v23   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -117,6 +117,23 @@ CHANGELOG.md       - version history (moved out of this file at v15)
 not in `src/`. The `build` script in `package.json` still points at
 `src/app.jsx`, so a clean clone cannot build until one or the other is
 reconciled. See AGENTS.md [Known traps](AGENTS.md#2--known-traps).
+
+## The pet (v23)
+
+`usePet(level)` owns it. Data lives in `tasksh.pet.v1`, deliberately **not**
+included in export/import — it's companion state, not user data.
+
+- `PET_FORMS` — seven stages. `PetCreature` draws all of them parametrically
+  from `stage`; there are no per-form SVG files. Add a stage by appending to
+  the table and extending the interpolations.
+- `PET_EFFECTS` — the single table mapping user actions to stat changes.
+- `petBus` — one-channel event bus so nested views report actions without
+  prop-drilling. Emit with `petBus.emit("habitDone")`.
+- Voice: `petGreeting()` / `petReaction()` are **local and must stay that
+  way**. Only `requestPetReply()` hits the network. The pet must never be
+  silent because the network is.
+- Evolution compares `formForLevel(level).stage` against the stored
+  `pet.stage` (the last stage the user *saw*), not against level directly.
 
 ## Theming (v22)
 

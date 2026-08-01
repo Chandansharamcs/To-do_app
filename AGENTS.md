@@ -142,6 +142,25 @@ Anything positioned with a negative offset inside it is invisible. The hour
 labels were clipped this way on every device, for weeks, silently. They now
 live in a separate `.timeline-hours` row. Don't move them back.
 
+### ⚠ Don't read a flag assigned inside a setState updater
+
+This shipped as a real bug and was invisible for versions:
+
+```js
+let willBeDone = false;
+setX(prev => prev.map(o => { willBeDone = !o.done; ... }));
+if (willBeDone) ...   // ← may still be false; updater may not have run
+```
+
+Derive it from current state *before* dispatching. Fixed in six places in
+v23; don't reintroduce the pattern.
+
+### ⚠ The pet must never be silent
+
+`petGreeting`/`petReaction` are local by design. If you add pet dialogue,
+add it locally first and only reach for the AI for genuinely open-ended
+input. A companion that stops talking when the wifi drops isn't a companion.
+
 ### ⚠ Never hardcode a Gemini model ID
 
 Google retires model IDs on a rolling schedule — `gemini-2.0-flash` died in

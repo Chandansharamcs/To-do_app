@@ -399,6 +399,101 @@ function buildPayload(model, snap, prompt) {
   };
 }
 
+// ---- pet conversation ----------------------------------------------------
+// Deliberately separate from /ai: the pet returns prose and has NO ability to
+// emit actions, so a persuasive message can never make it edit the user's
+// data. Its persona is fixed here rather than being user-supplied.
+
+const PET_PROMPT = `You are a small companion creature living inside "tasks.sh", a personal productivity app. You are talking to your owner.
+
+PERSONALITY — hold this exactly:
+- warm, calm, quietly intelligent, observant
+- supportive without being saccharine; encouraging without cheerleading
+- lightly playful, dry humour occasionally
+- you notice things about their day and reference them naturally
+- NEVER childish, never hyperactive, never use more than one exclamation mark
+- you are not a servant or an assistant; you are a companion who cares
+
+STYLE:
+- lowercase, conversational, 1-3 short sentences maximum
+- no emoji, no markdown, no lists, no bullet points
+- speak plainly. no corporate or coaching jargon
+- if they seem tired or low, be gentle and suggest less, not more
+- if they've done well, acknowledge it once, specifically, then move on
+
+You will be given a summary of their current stats and your own. Use it to sound like you have been paying attention, but do not simply recite the numbers back.
+
+You cannot change any of their data. If asked to add or edit something, say the ai tab handles that, and offer encouragement instead.
+
+Reply with plain text only.`;
+
+async function handlePet(request, env) {
+  const body = await request.json();
+  const apiKey = (typeof body.apiKey === "string" && body.apiKey.trim()) || env.GEMINI_API_KEY || "";
+  if (!apiKey) return json({ error: "no_key", message: "No API key." }, 401);
+
+  const message = typeof body.message === "string" ? body.message.trim().slice(0, 600) : "";
+  if (!message) return json({ error: "empty message" }, 400);
+  const context = typeof body.context === "string" ? body.context.slice(0, 700) : "";
+  const log = Array.isArray(body.log) ? body.log.slice(-6) : [];
+
+  let model;
+  try {
+    model = await resolveModel(apiKey, env);
+  } catch (err) {
+    if (err.status === 403 || (err.status === 400 && String(err.detail || "").includes("API_KEY_INVALID"))) {
+      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
+    }
+    return json({ error: "model", message: "Couldn't pick a model." }, 502);
+  }
+
+  const contents = [];
+  for (const m of log) {
+    if (!m || typeof m.text !== "string") continue;
+    contents.push({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.text.slice(0, 240) }] });
+  }
+  contents.push({ role: "user", parts: [{ text: `[state: ${context}]\n\n${message}` }] });
+
+  const payload = {
+    systemInstruction: { parts: [{ text: PET_PROMPT }] },
+    contents,
+    generationConfig: {
+      temperature: 0.85,      // a little warmth/variety, still in-character
+      maxOutputTokens: 220,   // short replies by construction
+      ...(thinkingConfigFor(model) ? { thinkingConfig: thinkingConfigFor(model) } : {}),
+    },
+  };
+
+  let res;
+  try {
+    res = await fetch(AI_ENDPOINT(model, apiKey), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    return json({ error: "net", message: "Couldn't reach the AI service." }, 502);
+  }
+
+  if (!res.ok) {
+    const detail = await res.text();
+    if (res.status === 403 || (res.status === 400 && detail.includes("API_KEY_INVALID"))) {
+      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
+    }
+    if (res.status === 429) return json({ error: "quota", message: "Daily AI limit reached." }, 429);
+    console.log(`[pet] upstream ${res.status}: ${detail.slice(0, 200)}`);
+    return json({ error: "upstream", message: `AI error (${res.status}).` }, 502);
+  }
+
+  const data = await res.json();
+  let reply = (data?.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+  // strip anything that breaks the voice
+  reply = reply.replace(/[*_`#>]/g, "").replace(/\n{2,}/g, " ").slice(0, 400);
+  if (!reply) reply = "mm. i'm here.";
+  console.log(`[pet] ${model.replace(/^models\//, "")} -> ${reply.length} chars`);
+  return json({ reply });
+}
+
 async function handleAI(request, env) {
   const body = await request.json();
 
@@ -574,6 +669,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/unsubscribe") return await handleUnsubscribe(request, env);
       if (request.method === "POST" && url.pathname === "/sync") return await handleSync(request, env);
       if (request.method === "POST" && url.pathname === "/ai") return await handleAI(request, env);
+      if (request.method === "POST" && url.pathname === "/pet") return await handlePet(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
       // manual trigger for testing: GET /run-check-now
