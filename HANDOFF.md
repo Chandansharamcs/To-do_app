@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v21   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v22   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -117,6 +117,18 @@ CHANGELOG.md       - version history (moved out of this file at v15)
 not in `src/`. The `build` script in `package.json` still points at
 `src/app.jsx`, so a clean clone cannot build until one or the other is
 reconciled. See AGENTS.md [Known traps](AGENTS.md#2--known-traps).
+
+## Theming (v22)
+
+All colour flows through CSS custom properties on `:root`, written by
+`applyTheme()` from the `THEMES` table. **Never hardcode a core colour in the
+`<style>` block** — use `var(--accent)`, `var(--panel)` etc, or themes will
+only partially apply. JS colour logic (`CATEGORY_PALETTE`, `AREAS`) keeps
+literal hexes on purpose; those are data, not chrome.
+
+Themes unlock by level (1/3/6/10/14/20) against the v22 XP curve. `useTheme()`
+owns the active theme, the time-of-day phase and calm mode, and guards against
+a save claiming a theme it hasn't earned.
 
 ## Design system
 

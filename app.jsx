@@ -139,6 +139,340 @@ const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 // No audio files/CDN, so this stays consistent with the fully
 // offline/bundled build. Mute state persists in localStorage.
 // ============================================================
+// ============================================================
+// THEME ENGINE (v22)
+//
+// Every colour, glow and ambient parameter in the app resolves through this
+// one table. Adding a theme means adding an entry here -- no component needs
+// to change, because everything reads CSS custom properties that this engine
+// writes onto :root.
+//
+// Design constraint carried over from DESIGN.md: this app is flat terminal /
+// Conky, NOT glassmorphism. Themes vary hue, glow and ambience; they never
+// introduce frosted panels or card shadows.
+//
+// Unlock levels are tuned against the v22 XP curve (level 20 ~= 103 days of
+// steady use), so every theme here is realistically reachable.
+// ============================================================
+
+const THEMES = [
+  {
+    id: "terminal",
+    name: "Terminal",
+    blurb: "where it all started",
+    unlockLevel: 1,
+    colors: {
+      bg: "#0B0D10", panel: "#14171C", track: "#1E2228", border: "#23272E",
+      text: "#E7EAEE", muted: "#6B7280",
+      accent: "#5EEAD4", accent2: "#F5A623", danger: "#F0576B",
+      glow: "rgba(94,234,212,0.35)",
+    },
+    ambient: {
+      blobs: [
+        ["38% 42% at 18% 12%", "rgba(94,234,212,0.065)"],
+        ["42% 38% at 82% 88%", "rgba(245,166,35,0.055)"],
+        ["35% 40% at 62% 28%", "rgba(121,192,255,0.045)"],
+      ],
+      particle: "none",
+      grain: 0.018,
+    },
+  },
+  {
+    id: "moss",
+    name: "Moss",
+    blurb: "quiet green, like a forest floor",
+    unlockLevel: 3,
+    colors: {
+      bg: "#080D0A", panel: "#111814", track: "#19231D", border: "#1F2C25",
+      text: "#E4EDE7", muted: "#67796F",
+      accent: "#7EE787", accent2: "#D9C36B", danger: "#E8737A",
+      glow: "rgba(126,231,135,0.32)",
+    },
+    ambient: {
+      blobs: [
+        ["40% 44% at 22% 16%", "rgba(126,231,135,0.06)"],
+        ["38% 40% at 78% 82%", "rgba(217,195,107,0.045)"],
+        ["36% 38% at 55% 45%", "rgba(60,140,110,0.05)"],
+      ],
+      particle: "motes",
+      grain: 0.022,
+    },
+  },
+  {
+    id: "dusk",
+    name: "Dusk",
+    blurb: "the hour after sunset",
+    unlockLevel: 6,
+    colors: {
+      bg: "#0D0912", panel: "#171122", track: "#20182E", border: "#2A2038",
+      text: "#EDE7F2", muted: "#7A6E88",
+      accent: "#C79BFF", accent2: "#FF9E6B", danger: "#FF6B8A",
+      glow: "rgba(199,155,255,0.38)",
+    },
+    ambient: {
+      blobs: [
+        ["44% 40% at 16% 20%", "rgba(199,155,255,0.075)"],
+        ["40% 44% at 84% 78%", "rgba(255,158,107,0.06)"],
+        ["38% 36% at 50% 50%", "rgba(120,80,190,0.05)"],
+      ],
+      particle: "motes",
+      grain: 0.02,
+    },
+  },
+  {
+    id: "abyss",
+    name: "Abyss",
+    blurb: "deep water, far from the surface",
+    unlockLevel: 10,
+    colors: {
+      bg: "#050A12", panel: "#0D1520", track: "#141F2C", border: "#1B2938",
+      text: "#DFEAF5", muted: "#5F7286",
+      accent: "#4FC3F7", accent2: "#5EEAD4", danger: "#FF7A93",
+      glow: "rgba(79,195,247,0.4)",
+    },
+    ambient: {
+      blobs: [
+        ["46% 42% at 20% 14%", "rgba(79,195,247,0.07)"],
+        ["42% 46% at 80% 86%", "rgba(94,234,212,0.05)"],
+        ["40% 38% at 60% 40%", "rgba(30,90,160,0.06)"],
+      ],
+      particle: "bubbles",
+      grain: 0.024,
+    },
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    blurb: "banked coals at midnight",
+    unlockLevel: 14,
+    colors: {
+      bg: "#0F0906", panel: "#1A110C", track: "#241812", border: "#2F2118",
+      text: "#F5E9E0", muted: "#8A7264",
+      accent: "#FF9F45", accent2: "#FFD166", danger: "#FF6B5B",
+      glow: "rgba(255,159,69,0.4)",
+    },
+    ambient: {
+      blobs: [
+        ["42% 44% at 18% 82%", "rgba(255,159,69,0.075)"],
+        ["40% 42% at 82% 18%", "rgba(255,209,102,0.05)"],
+        ["36% 38% at 50% 55%", "rgba(180,60,30,0.055)"],
+      ],
+      particle: "embers",
+      grain: 0.026,
+    },
+  },
+  {
+    id: "aurora",
+    name: "Aurora",
+    blurb: "light over a frozen sky",
+    unlockLevel: 20,
+    colors: {
+      bg: "#060A10", panel: "#0F1720", track: "#16212C", border: "#1E2B39",
+      text: "#E8F4F2", muted: "#63808A",
+      accent: "#6EE7C8", accent2: "#A78BFA", danger: "#FB7185",
+      glow: "rgba(110,231,200,0.45)",
+    },
+    ambient: {
+      blobs: [
+        ["50% 38% at 24% 10%", "rgba(110,231,200,0.085)"],
+        ["46% 42% at 76% 86%", "rgba(167,139,250,0.07)"],
+        ["44% 40% at 52% 42%", "rgba(64,190,255,0.055)"],
+      ],
+      particle: "aurora",
+      grain: 0.02,
+    },
+  },
+];
+
+// ---- time-of-day ambience ------------------------------------------------
+// Layered *on top of* the active theme rather than replacing it: the theme
+// owns hue and identity, the time of day owns warmth and light level. That
+// way "Ember at night" still looks like Ember.
+
+const TIME_PHASES = [
+  { id: "night",     from: 22, to: 5,  label: "night",     warm: "rgba(40,70,140,0.055)",  light: 0.86, stars: true  },
+  { id: "morning",   from: 5,  to: 11, label: "morning",   warm: "rgba(255,190,120,0.055)", light: 1.04, stars: false },
+  { id: "afternoon", from: 11, to: 17, label: "afternoon", warm: "rgba(210,225,255,0.035)", light: 1.0,  stars: false },
+  { id: "evening",   from: 17, to: 22, label: "evening",   warm: "rgba(255,130,90,0.055)",  light: 0.94, stars: false },
+];
+
+function phaseForHour(h) {
+  for (const p of TIME_PHASES) {
+    if (p.from < p.to ? h >= p.from && h < p.to : h >= p.from || h < p.to) return p;
+  }
+  return TIME_PHASES[2];
+}
+
+function applyTimePhase(phase) {
+  const r = document.documentElement;
+  r.style.setProperty("--time-warm", phase.warm);
+  r.style.setProperty("--time-light", String(phase.light));
+  r.dataset.phase = phase.id;
+}
+
+/**
+ * Renders the ambient background layers.
+ *
+ * Particle positions are generated once per (theme, phase) and memoised --
+ * regenerating them every render would make them visibly jump. Counts are
+ * deliberately small: this is a compositor-only effect and the whole point
+ * is that it never costs frames.
+ */
+const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, calm }) {
+  const kind = theme.ambient.particle;
+
+  const dust = useMemo(() => {
+    if (kind === "none") return [];
+    const n = kind === "aurora" ? 16 : kind === "embers" ? 14 : 18;
+    return Array.from({ length: n }, (_, i) => {
+      const size = kind === "bubbles" ? 3 + (i % 4) * 2 : 2 + (i % 3);
+      return {
+        left: `${(i * 37 + 11) % 100}%`,
+        size,
+        delay: `${-(i * 2.3) % 26}s`,
+        dur: `${(kind === "bubbles" ? 20 : 30) + (i % 7) * 4}s`,
+      };
+    });
+  }, [kind]);
+
+  const stars = useMemo(() => {
+    if (!phase.stars) return [];
+    return Array.from({ length: 34 }, (_, i) => ({
+      left: `${(i * 29 + 7) % 100}%`,
+      top: `${(i * 53 + 13) % 62}%`,
+      delay: `${(i % 9) * 0.7}s`,
+      dur: `${2.6 + (i % 5) * 0.8}s`,
+    }));
+  }, [phase.stars]);
+
+  return (
+    <>
+      <div className="amb-layer amb-time">
+        <div className="amb-ray" />
+      </div>
+      {stars.length > 0 && (
+        <div className="amb-layer amb-stars">
+          {stars.map((st, i) => (
+            <span key={i} style={{ left: st.left, top: st.top, animationDelay: st.delay, animationDuration: st.dur }} />
+          ))}
+        </div>
+      )}
+      {dust.length > 0 && (
+        <div className="amb-layer amb-dust">
+          {dust.map((d, i) => (
+            <span
+              key={i}
+              style={{
+                left: d.left, bottom: "-6vh",
+                width: d.size, height: d.size,
+                animationDelay: d.delay, animationDuration: d.dur,
+              }}
+            />
+          ))}
+        </div>
+      )}
+      <div className="amb-layer amb-grain" />
+      {calm && <div className="calm-breath" />}
+    </>
+  );
+});
+
+const STORAGE_KEY_CALM = "tasksh.calm.v1";
+
+/**
+ * Owns the active theme, the time-of-day phase and calm mode, and pushes all
+ * three into the DOM. Returns everything the settings UI needs.
+ */
+function useTheme(level) {
+  const [themeId, setThemeId] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY_THEME) || DEFAULT_THEME_ID; }
+    catch { return DEFAULT_THEME_ID; }
+  });
+  const [calm, setCalm] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY_CALM) === "1"; } catch { return false; }
+  });
+  const [phase, setPhase] = useState(() => phaseForHour(getISTParts().hour));
+
+  const theme = useMemo(() => themeById(themeId), [themeId]);
+
+  // A saved theme can become invalid if a save is moved between devices, or
+  // if XP is restored from an older backup. Fall back rather than showing a
+  // theme the user hasn't earned.
+  useEffect(() => {
+    if (!isThemeUnlocked(theme, level) && theme.id !== DEFAULT_THEME_ID) {
+      setThemeId(DEFAULT_THEME_ID);
+    }
+  }, [theme, level]);
+
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem(STORAGE_KEY_THEME, theme.id); } catch {}
+  }, [theme]);
+
+  useEffect(() => { applyTimePhase(phase); }, [phase]);
+
+  // re-check the phase every few minutes rather than every tick
+  useEffect(() => {
+    const t = setInterval(() => {
+      const next = phaseForHour(getISTParts().hour);
+      setPhase((cur) => (cur.id === next.id ? cur : next));
+    }, 120000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const r = document.documentElement;
+    r.style.setProperty("--calm", calm ? "1" : "0");
+    r.style.setProperty("--motion-scale", calm ? "1.9" : "1");
+    r.classList.toggle("calm-mode", calm);
+    try { localStorage.setItem(STORAGE_KEY_CALM, calm ? "1" : "0"); } catch {}
+  }, [calm]);
+
+  const unlocked = useMemo(
+    () => THEMES.filter((t) => isThemeUnlocked(t, level)),
+    [level]
+  );
+
+  return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm };
+}
+
+const DEFAULT_THEME_ID = "terminal";
+const STORAGE_KEY_THEME = "tasksh.theme.v1";
+
+function themeById(id) {
+  return THEMES.find((t) => t.id === id) || THEMES[0];
+}
+
+function isThemeUnlocked(theme, level) {
+  return level >= theme.unlockLevel;
+}
+
+/**
+ * Applies a theme by writing CSS custom properties onto :root.
+ * Every component reads var(--accent) etc, so nothing needs re-rendering --
+ * the browser repaints and the CSS transition on :root handles the fade.
+ */
+function applyTheme(theme) {
+  const r = document.documentElement;
+  const c = theme.colors;
+  r.style.setProperty("--bg", c.bg);
+  r.style.setProperty("--panel", c.panel);
+  r.style.setProperty("--track", c.track);
+  r.style.setProperty("--border", c.border);
+  r.style.setProperty("--text", c.text);
+  r.style.setProperty("--muted", c.muted);
+  r.style.setProperty("--accent", c.accent);
+  r.style.setProperty("--accent2", c.accent2);
+  r.style.setProperty("--danger", c.danger);
+  r.style.setProperty("--glow", c.glow);
+  theme.ambient.blobs.forEach((b, i) => {
+    r.style.setProperty(`--blob${i + 1}`, `radial-gradient(${b[0]}, ${b[1]}, transparent 70%)`);
+  });
+  r.style.setProperty("--grain-opacity", String(theme.ambient.grain));
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", c.bg);
+}
+
 const SOUND_KEY = "tasksh.sound.v1";
 let __audioCtx = null;
 function getAudioCtx() {
@@ -1797,19 +2131,26 @@ function computeAreaXP(area, goodHabits, badHabits) {
   return earned - lost;
 }
 
-// cumulative XP required to REACH level L (L>=1): a quadratic curve, so
-// each level demands progressively more than the last (100, 200, 300, 400
-// more XP for levels 2, 3, 4, 5...) instead of a flat 100/level. Level 1
-// still starts at 0 and level 2 still unlocks at exactly 100 XP, so
-// existing progress doesn't retroactively change -- only the climb from
-// here gets steeper.
+// Cumulative XP required to REACH level L (L >= 1).
+//
+// Still quadratic -- each level costs more than the last -- but flattened in
+// v22. The old curve (50*L*(L-1)) put level 20 at 19,000 XP, roughly 238
+// perfect days away, which meant nearly all the level-gated content added in
+// v22 was effectively unreachable. This curve reaches level 20 in ~103 days
+// of steady use while keeping the same shape.
+//
+// Two invariants deliberately preserved:
+//   * level 2 still unlocks at exactly 100 XP
+//   * no level costs MORE than it did before, so no existing save can be
+//     retroactively demoted -- some players will simply level up on upgrade
 function cumulativeXPForLevel(level) {
-  return 50 * level * (level - 1);
+  return 12.5 * (level - 1) * (level + 6);
 }
 
 function levelFromXP(xp) {
   const clamped = Math.max(0, xp);
-  const level = Math.max(1, Math.floor((50 + Math.sqrt(2500 + 200 * clamped)) / 100));
+  // inverse of cumulativeXPForLevel, solved for L
+  const level = Math.max(1, Math.floor((-5 + Math.sqrt(49 + 0.32 * clamped)) / 2));
   const into = clamped - cumulativeXPForLevel(level);
   const span = cumulativeXPForLevel(level + 1) - cumulativeXPForLevel(level);
   return { level, into, span };
@@ -1863,6 +2204,10 @@ function LifeAreaCard({ area, xp }) {
 
 function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   const doneToday = (habit.history || []).includes(getISTDateString(0));
+  // one-shot completion feedback: a pulse ring plus a floating +XP. Keyed
+  // by a counter so repeated toggles retrigger the animation.
+  const [fx, setFx] = useState(0);
+  const fireFx = () => { if (!doneToday) setFx((n) => n + 1); };
   const { streak, freezeUsed } = streakFreezeInfo(habit.history);
   const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
 
@@ -1940,7 +2285,8 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   }
 
   return (
-    <div className="quest-habit-card good">
+    <div className={`quest-habit-card good ${fx ? "just-completed" : ""}`} key={`g${habit.id}`}>
+      {fx > 0 && <span className="xp-pop" key={fx}>+{habit.xp}</span>}
       <span className="area-dot" style={{ background: area.color }} />
       <div className="quest-habit-main">
         <span className="quest-habit-label">{habit.label}</span>
@@ -1950,7 +2296,7 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
       </div>
       <button
         className={`quest-check ${doneToday ? "done" : ""}`}
-        onClick={() => onToggleToday(habit.id)}
+        onClick={() => { fireFx(); onToggleToday(habit.id); }}
         aria-label="Mark done today"
       >
         <svg viewBox="0 0 24 24" width="14" height="14">
@@ -2503,6 +2849,94 @@ const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
 // it is never included in export/import backups (those get shared around and
 // a key is a credential, not data), and never synced to the worker's KV.
 const STORAGE_KEY_AI_KEY = "tasksh.aikey.v1";
+
+/**
+ * Theme gallery. Locked themes show their requirement and live progress
+ * rather than being hidden -- knowing what's coming is most of the pull.
+ */
+function ThemePicker({ ctl, level, totalXP, onClose }) {
+  const nextLevelAt = cumulativeXPForLevel(level + 1);
+  const thisLevelAt = cumulativeXPForLevel(level);
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <span className="sheet-title">themes</span>
+          <button className="sheet-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+
+        <div className="theme-grid">
+          {ctl.themes.map((t) => {
+            const unlocked = isThemeUnlocked(t, level);
+            const active = ctl.themeId === t.id;
+            // progress from the level *before* the requirement, so the bar
+            // reflects the current climb rather than all-time XP
+            const needAt = cumulativeXPForLevel(t.unlockLevel);
+            const prevAt = cumulativeXPForLevel(Math.max(1, t.unlockLevel - 1));
+            const pct = unlocked ? 100
+              : Math.max(0, Math.min(99, Math.round(((totalXP - prevAt) / (needAt - prevAt)) * 100)));
+            return (
+              <button
+                key={t.id}
+                className={`theme-card ${active ? "active" : ""} ${unlocked ? "" : "locked"}`}
+                onClick={() => { if (unlocked) { ctl.setThemeId(t.id); sound.success(); } else { sound.error(); } }}
+                disabled={!unlocked}
+              >
+                <span
+                  className="theme-swatch"
+                  style={{
+                    background: `linear-gradient(135deg, ${t.colors.bg} 0%, ${t.colors.panel} 45%, ${t.colors.accent} 100%)`,
+                  }}
+                >
+                  {!unlocked && (
+                    <svg viewBox="0 0 24 24" width="15" height="15" className="theme-lock">
+                      <rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
+                      <path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" strokeWidth="2" />
+                    </svg>
+                  )}
+                  {active && <span className="theme-active-dot" />}
+                </span>
+                <span className="theme-name">{t.name}</span>
+                {unlocked ? (
+                  <span className="theme-blurb">{t.blurb}</span>
+                ) : (
+                  <>
+                    <span className="theme-req">level {t.unlockLevel}</span>
+                    <span className="theme-bar"><span className="theme-bar-fill" style={{ width: `${pct}%` }} /></span>
+                    <span className="theme-pct">{pct}%</span>
+                  </>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="sheet-sub">
+          level {level} · {Math.max(0, nextLevelAt - totalXP)} XP to level {level + 1}
+        </div>
+
+        <div className="calm-toggle-row">
+          <div>
+            <div className="calm-toggle-label">calm mode</div>
+            <div className="calm-toggle-hint">slower motion, softer light, a breathing guide</div>
+          </div>
+          <button
+            className={`calm-switch ${ctl.calm ? "on" : ""}`}
+            onClick={() => { ctl.setCalm(!ctl.calm); sound.click(); }}
+            aria-pressed={ctl.calm}
+          >
+            <span className="calm-knob" />
+          </button>
+        </div>
+
+        <div className="sheet-foot">
+          ambience follows the time of day · currently <b>{ctl.phase.label}</b>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ---- push notifications config ----
 // 1. Deploy the Cloudflare Worker (see /worker/ in the handoff) and paste its
@@ -3318,6 +3752,8 @@ function TodoApp() {
     () => computeTotalXP(goodHabits, badHabits, rewards),
     [goodHabits, badHabits, rewards]
   );
+  const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
+  const themeCtl = useTheme(currentLevel);
   const [input, setInput] = useState("");
   const [priority, setPriority] = useState("mid");
   const [filter, setFilter] = useState("all");
@@ -3329,6 +3765,7 @@ function TodoApp() {
     () => localStorage.getItem(STORAGE_KEY_NOTIFY_ENABLED) === "1"
   );
   const [notifyBusy, setNotifyBusy] = useState(false);
+  const [showThemes, setShowThemes] = useState(false);
 
   useEffect(() => {
     if (notifyEnabled) syncRoutinesToWorker(routines);
@@ -3553,8 +3990,49 @@ function TodoApp() {
   const clearDone = () => { setTasks((prev) => prev.filter((t) => !t.done)); sound.whoosh(); };
 
   return (
-    <div className="app-root">
+    <div className="app-root" data-particle={themeCtl.theme.ambient.particle}>
+      <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} />
+      {showThemes && (
+        <ThemePicker
+          ctl={themeCtl}
+          level={currentLevel}
+          totalXP={totalXP}
+          onClose={() => setShowThemes(false)}
+        />
+      )}
       <style>{`
+        /* ---- theme variables ----------------------------------------
+           Defaults mirror the "terminal" theme so the app renders
+           correctly before JS runs (no flash of unstyled colour).
+           applyTheme() overwrites these at runtime. The transition makes
+           theme switching fade rather than snap. */
+        :root {
+          --bg: #0B0D10;
+          --panel: #14171C;
+          --track: #1E2228;
+          --border: #23272E;
+          --text: #E7EAEE;
+          --muted: #6B7280;
+          --accent: #5EEAD4;
+          --accent2: #F5A623;
+          --danger: #F0576B;
+          --glow: rgba(94,234,212,0.35);
+          --blob1: radial-gradient(38% 42% at 18% 12%, rgba(94,234,212,0.065), transparent 70%);
+          --blob2: radial-gradient(42% 38% at 82% 88%, rgba(245,166,35,0.055), transparent 70%);
+          --blob3: radial-gradient(35% 40% at 62% 28%, rgba(121,192,255,0.045), transparent 70%);
+          --grain-opacity: 0.018;
+          --calm: 0;              /* 0 = normal, 1 = calm mode */
+          --motion-scale: 1;      /* animations multiply durations by this */
+        }
+
+        /* Colour changes fade; the properties themselves can't transition,
+           so we transition the things that consume them. */
+        .app-root, .panel, .task-row, .hero-card, .timeline-wrap {
+          transition: background-color 620ms ease, border-color 620ms ease,
+                      color 620ms ease;
+        }
+
+
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
 
         * { box-sizing: border-box; }
@@ -3565,9 +4043,9 @@ function TodoApp() {
           height: 100vh;
           height: 100dvh;
           width: 100vw;
-          background: #0B0D10;
+          background: var(--bg);
           font-family: 'Inter', sans-serif;
-          color: #E7EAEE;
+          color: var(--text);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -3589,10 +4067,7 @@ function TodoApp() {
           inset: -25%;
           z-index: -1;
           pointer-events: none;
-          background:
-            radial-gradient(38% 42% at 18% 12%, rgba(94,234,212,0.065), transparent 70%),
-            radial-gradient(42% 38% at 82% 88%, rgba(245,166,35,0.055), transparent 70%),
-            radial-gradient(35% 40% at 62% 28%, rgba(121,192,255,0.045), transparent 70%);
+          background: var(--blob1), var(--blob2), var(--blob3);
           animation: ambientDrift 96s ease-in-out infinite alternate;
           will-change: transform;
         }
@@ -3630,8 +4105,8 @@ function TodoApp() {
           max-width: 640px;
           height: 100%;
           max-height: 780px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 14px;
           overflow: hidden;
           box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
@@ -3670,22 +4145,22 @@ function TodoApp() {
           align-items: center;
           justify-content: space-between;
           padding: 14px 18px;
-          border-bottom: 1px solid #1E2228;
+          border-bottom: 1px solid var(--track);
         }
 
         .titlebar-left { display: flex; align-items: center; gap: 8px; }
 
         .dots { display: flex; gap: 6px; }
         .dot { width: 9px; height: 9px; border-radius: 50%; }
-        .dot.red { background: #F0576B; }
-        .dot.amber { background: #F5A623; }
-        .dot.green { background: #5EEAD4; }
+        .dot.red { background: var(--danger); }
+        .dot.amber { background: var(--accent2); }
+        .dot.green { background: var(--accent); }
 
         .titlebar-name {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
           letter-spacing: 0.06em;
-          color: #6B7280;
+          color: var(--muted);
           text-transform: uppercase;
         }
 
@@ -3704,16 +4179,16 @@ function TodoApp() {
           width: 24px;
           height: 24px;
           padding: 0;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 6px;
-          background: #14171C;
-          color: #6B7280;
+          background: var(--panel);
+          color: var(--muted);
           cursor: pointer;
           transition: color 140ms ease, border-color 140ms ease;
         }
 
-        .titlebar-icon-btn:hover { color: #5EEAD4; border-color: #5EEAD4; }
-        .titlebar-icon-btn.notify-on { color: #5EEAD4; border-color: #5EEAD4; background: rgba(94,234,212,0.08); }
+        .titlebar-icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+        .titlebar-icon-btn.notify-on { color: var(--accent); border-color: var(--accent); background: rgba(94,234,212,0.08); }
         .titlebar-icon-btn:disabled { opacity: 0.5; cursor: default; }
 
         .data-toast {
@@ -3723,14 +4198,14 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11.5px;
           text-align: center;
-          border: 1px solid #23272E;
-          background: #14171C;
-          color: #E7EAEE;
+          border: 1px solid var(--border);
+          background: var(--panel);
+          color: var(--text);
           animation: rowIn 200ms ease backwards;
         }
 
-        .data-toast.ok { border-color: #5EEAD4; color: #5EEAD4; }
-        .data-toast.err { border-color: #F0576B; color: #F0576B; }
+        .data-toast.ok { border-color: var(--accent); color: var(--accent); }
+        .data-toast.err { border-color: var(--danger); color: var(--danger); }
 
         .tabs {
           display: flex;
@@ -3738,7 +4213,7 @@ function TodoApp() {
           min-height: 42px;
           gap: 2px;
           padding: 10px 14px 0;
-          border-bottom: 1px solid #1E2228;
+          border-bottom: 1px solid var(--track);
           overflow-x: auto;
           scrollbar-width: none;
         }
@@ -3762,7 +4237,7 @@ function TodoApp() {
           transition: color 150ms ease;
         }
 
-        .tabs button.active { color: #E7EAEE; }
+        .tabs button.active { color: var(--text); }
 
         .tabs button.active::after {
           content: "";
@@ -3771,7 +4246,7 @@ function TodoApp() {
           right: 14px;
           bottom: -1px;
           height: 2px;
-          background: #5EEAD4;
+          background: var(--accent);
           box-shadow: 0 0 8px rgba(94,234,212,0.6);
           animation: tabIn 220ms ease;
         }
@@ -3784,8 +4259,8 @@ function TodoApp() {
         .hero-card {
           margin: 16px 18px;
           padding: 16px 18px;
-          background: linear-gradient(160deg, #171B21, #14171C);
-          border: 1px solid #23272E;
+          background: linear-gradient(160deg, #171B21, var(--panel));
+          border: 1px solid var(--border);
           border-radius: 12px;
           display: flex;
           flex-direction: column;
@@ -3802,22 +4277,22 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 30px;
           font-weight: 700;
-          color: #E7EAEE;
+          color: var(--text);
           font-variant-numeric: tabular-nums;
           letter-spacing: 0.01em;
         }
 
-        .hero-sec { font-size: 16px; color: #5EEAD4; }
+        .hero-sec { font-size: 16px; color: var(--accent); }
         .hero-ampm {
           font-size: 13px;
-          color: #6B7280;
+          color: var(--muted);
           margin-left: 6px;
         }
 
         .hero-tz {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
-          color: #5EEAD4;
+          color: var(--accent);
           letter-spacing: 0.06em;
           background: rgba(94,234,212,0.08);
           border: 1px solid rgba(94,234,212,0.25);
@@ -3828,20 +4303,20 @@ function TodoApp() {
         .hero-date {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #6B7280;
+          color: var(--muted);
           margin-top: 2px;
         }
 
         .hero-divider {
           height: 1px;
-          background: #1E2228;
+          background: var(--track);
           margin: 12px 0;
         }
 
         .hero-label {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #6B7280;
+          color: var(--muted);
           letter-spacing: 0.08em;
         }
 
@@ -3851,7 +4326,7 @@ function TodoApp() {
           gap: 8px;
           font-size: 17px;
           font-weight: 600;
-          color: #E7EAEE;
+          color: var(--text);
           margin-top: 5px;
         }
 
@@ -3859,7 +4334,7 @@ function TodoApp() {
           width: 8px;
           height: 8px;
           border-radius: 50%;
-          background: #5EEAD4;
+          background: var(--accent);
           box-shadow: 0 0 0 0 rgba(94,234,212,0.6);
           animation: pulse 1.8s ease-out infinite;
           flex-shrink: 0;
@@ -3874,7 +4349,7 @@ function TodoApp() {
         .hero-sub {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #6B7280;
+          color: var(--muted);
           margin-top: 6px;
         }
 
@@ -3892,10 +4367,10 @@ function TodoApp() {
 
         .time-input {
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 8px;
           padding: 9px 10px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'JetBrains Mono', monospace;
           font-size: 12.5px;
           outline: none;
@@ -3905,7 +4380,7 @@ function TodoApp() {
           transition: border-color 160ms ease;
         }
 
-        .time-input:focus { border-color: #5EEAD4; }
+        .time-input:focus { border-color: var(--accent); }
 
         .routine-list { padding-top: 2px; overflow-x: hidden; }
 
@@ -3921,7 +4396,7 @@ function TodoApp() {
         .routine-delete-bg {
           position: absolute;
           inset: 0;
-          background: #F0576B;
+          background: var(--danger);
           border-radius: 8px;
           display: flex;
           align-items: center;
@@ -3935,7 +4410,7 @@ function TodoApp() {
           align-items: flex-start;
           gap: 12px;
           padding: 2px 8px;
-          background: #14171C;
+          background: var(--panel);
           touch-action: pan-y;
           user-select: none;
         }
@@ -3960,26 +4435,26 @@ function TodoApp() {
         }
 
         .routine-node.quest-done {
-          background: #F5A623;
-          border-color: #F5A623;
+          background: var(--accent2);
+          border-color: var(--accent2);
           box-shadow: 0 0 8px rgba(245,166,35,0.6);
         }
 
         .routine-connector {
           width: 1.5px;
           flex: 1;
-          background: #1E2228;
+          background: var(--track);
           margin-top: 2px;
         }
 
         .routine-row.current .routine-node {
-          background: #5EEAD4;
-          border-color: #5EEAD4;
+          background: var(--accent);
+          border-color: var(--accent);
           box-shadow: 0 0 10px rgba(94,234,212,0.7);
         }
 
         .routine-row.next .routine-node {
-          border-color: #F5A623;
+          border-color: var(--accent2);
         }
 
         .routine-main {
@@ -3997,15 +4472,15 @@ function TodoApp() {
         .routine-time {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .live-tag {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px;
           letter-spacing: 0.06em;
-          color: #0B0D10;
-          background: #5EEAD4;
+          color: var(--bg);
+          background: var(--accent);
           padding: 1.5px 6px;
           border-radius: 4px;
           font-weight: 700;
@@ -4014,7 +4489,7 @@ function TodoApp() {
         .streak-tag {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #F5A623;
+          color: var(--accent2);
         }
 
         .freeze-tag {
@@ -4025,7 +4500,7 @@ function TodoApp() {
         .routine-label {
           display: block;
           font-size: 13.5px;
-          color: #E7EAEE;
+          color: var(--text);
           margin-top: 3px;
         }
 
@@ -4035,7 +4510,7 @@ function TodoApp() {
         .routine-alts {
           display: block;
           font-size: 11px;
-          color: #6B7280;
+          color: var(--muted);
           font-style: italic;
           margin-top: 2px;
         }
@@ -4064,8 +4539,8 @@ function TodoApp() {
         }
 
         .quest-check.done {
-          background: #F5A623;
-          border-color: #F5A623;
+          background: var(--accent2);
+          border-color: var(--accent2);
         }
 
         /* inline edit form */
@@ -4079,16 +4554,16 @@ function TodoApp() {
 
         .edit-label {
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 7px;
           padding: 8px 10px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'Inter', sans-serif;
           font-size: 13px;
           outline: none;
         }
 
-        .edit-label:focus { border-color: #5EEAD4; }
+        .edit-label:focus { border-color: var(--accent); }
 
         .edit-row {
           display: flex;
@@ -4099,10 +4574,10 @@ function TodoApp() {
         .duration-input {
           width: 64px;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 7px;
           padding: 8px 8px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'JetBrains Mono', monospace;
           font-size: 12px;
           outline: none;
@@ -4111,7 +4586,7 @@ function TodoApp() {
         .edit-unit {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .edit-actions {
@@ -4131,12 +4606,12 @@ function TodoApp() {
 
         .edit-cancel {
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .edit-save {
-          background: #5EEAD4;
-          color: #0B0D10;
+          background: var(--accent);
+          color: var(--bg);
           font-weight: 700;
         }
 
@@ -4147,8 +4622,8 @@ function TodoApp() {
           gap: 0;
           margin: 0 18px 14px;
           padding: 14px 16px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
         }
 
@@ -4168,17 +4643,17 @@ function TodoApp() {
           top: 2px;
           bottom: 2px;
           width: 1px;
-          background: #1E2228;
+          background: var(--track);
         }
 
         .quest-stat-value {
           font-family: 'JetBrains Mono', monospace;
           font-size: 17px;
           font-weight: 700;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
-        .quest-stat-value.amber { color: #F5A623; }
+        .quest-stat-value.amber { color: var(--accent2); }
 
         .quest-stat-of {
           font-size: 12px;
@@ -4189,7 +4664,7 @@ function TodoApp() {
         .quest-stat-label {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px;
-          color: #6B7280;
+          color: var(--muted);
           letter-spacing: 0.04em;
           text-transform: uppercase;
         }
@@ -4206,7 +4681,7 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9.5px;
           font-weight: 700;
-          color: #5EEAD4;
+          color: var(--accent);
         }
 
         /* ---- hero radial + xp split ---- */
@@ -4229,16 +4704,16 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 26px;
           font-weight: 700;
-          color: #E7EAEE;
+          color: var(--text);
           font-variant-numeric: tabular-nums;
         }
 
-        .hero-xp-total small { font-size: 12px; color: #6B7280; font-weight: 500; }
+        .hero-xp-total small { font-size: 12px; color: var(--muted); font-weight: 500; }
 
         .hero-xp-sub {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .hero-xp-split { display: flex; gap: 12px; margin-top: 6px; }
@@ -4250,8 +4725,8 @@ function TodoApp() {
           border-radius: 6px;
         }
 
-        .hero-xp-earned { color: #5EEAD4; background: rgba(94,234,212,0.08); }
-        .hero-xp-lost { color: #F0576B; background: rgba(240,87,107,0.08); }
+        .hero-xp-earned { color: var(--accent); background: rgba(94,234,212,0.08); }
+        .hero-xp-lost { color: var(--danger); background: rgba(240,87,107,0.08); }
 
         .radial-progress-wrap { position: relative; flex-shrink: 0; }
 
@@ -4268,13 +4743,13 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 15px;
           font-weight: 700;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         .radial-progress-sublabel {
           font-family: 'JetBrains Mono', monospace;
           font-size: 8.5px;
-          color: #6B7280;
+          color: var(--muted);
           letter-spacing: 0.04em;
           text-transform: uppercase;
           margin-top: 2px;
@@ -4284,17 +4759,17 @@ function TodoApp() {
         .radar-card {
           margin: 0 18px 16px;
           padding: 10px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           display: flex;
           justify-content: center;
           animation: rowIn 260ms ease backwards;
         }
 
-        .radar-ring { fill: none; stroke: #23272E; stroke-width: 1; }
-        .radar-spoke { stroke: #1E2228; stroke-width: 1; }
-        .radar-fill { fill: rgba(94,234,212,0.16); stroke: #5EEAD4; stroke-width: 1.5; }
+        .radar-ring { fill: none; stroke: var(--border); stroke-width: 1; }
+        .radar-spoke { stroke: var(--track); stroke-width: 1; }
+        .radar-fill { fill: rgba(94,234,212,0.16); stroke: var(--accent); stroke-width: 1.5; }
         .radar-label {
           fill: #9CA3AF;
           font-family: 'JetBrains Mono', monospace;
@@ -4310,8 +4785,8 @@ function TodoApp() {
         .donut-card {
           margin: 0 18px 16px;
           padding: 14px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           display: flex;
           align-items: center;
@@ -4334,13 +4809,13 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 17px;
           font-weight: 700;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         .donut-center-sublabel {
           font-family: 'JetBrains Mono', monospace;
           font-size: 8px;
-          color: #6B7280;
+          color: var(--muted);
           text-transform: uppercase;
           letter-spacing: 0.04em;
         }
@@ -4361,15 +4836,15 @@ function TodoApp() {
           margin-left: auto;
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         /* ---- calendar heatmap ---- */
         .heatmap-wrap {
           margin: 0 18px 16px;
           padding: 14px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           animation: rowIn 260ms ease backwards;
           overflow-x: auto;
@@ -4386,7 +4861,7 @@ function TodoApp() {
           animation: heatmapIn 260ms ease backwards;
         }
 
-        .heatmap-cell.today { box-shadow: 0 0 0 1.5px #5EEAD4; }
+        .heatmap-cell.today { box-shadow: 0 0 0 1.5px var(--accent); }
 
         @keyframes heatmapIn {
           from { opacity: 0; transform: scale(0.4); }
@@ -4400,7 +4875,7 @@ function TodoApp() {
           margin-top: 10px;
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .heatmap-legend-cell { width: 9px; height: 9px; border-radius: 2px; }
@@ -4409,8 +4884,8 @@ function TodoApp() {
         .timeline-wrap {
           margin: 0 18px 16px;
           padding: 14px 0 12px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           animation: rowIn 220ms ease backwards;
           overflow: hidden;
@@ -4442,7 +4917,7 @@ function TodoApp() {
         .timeline-count {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #5EEAD4;
+          color: var(--accent);
           font-variant-numeric: tabular-nums;
         }
 
@@ -4451,7 +4926,7 @@ function TodoApp() {
           background: transparent;
           border: 1px solid #2C323A;
           border-radius: 999px;
-          color: #F5A623;
+          color: var(--accent2);
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px;
           letter-spacing: 0.1em;
@@ -4464,14 +4939,14 @@ function TodoApp() {
         .timeline-progress {
           height: 2px;
           margin: 0 14px 12px;
-          background: #1E2228;
+          background: var(--track);
           border-radius: 2px;
           overflow: hidden;
         }
 
         .timeline-progress-fill {
           height: 100%;
-          background: linear-gradient(90deg, #5EEAD4, #79C0FF);
+          background: linear-gradient(90deg, var(--accent), #79C0FF);
           border-radius: 2px;
           transition: width 800ms cubic-bezier(0.22, 1, 0.36, 1);
         }
@@ -4570,7 +5045,7 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9.5px;
           font-weight: 600;
-          color: #0B0D10;
+          color: var(--bg);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -4584,7 +5059,7 @@ function TodoApp() {
           top: -4px;
           bottom: -4px;
           width: 2px;
-          background: #F5A623;
+          background: var(--accent2);
           box-shadow: 0 0 8px rgba(245,166,35,0.7);
           z-index: 2;
           pointer-events: none;
@@ -4599,7 +5074,7 @@ function TodoApp() {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #F5A623;
+          background: var(--accent2);
           box-shadow: 0 0 6px rgba(245,166,35,0.9);
         }
 
@@ -4614,7 +5089,7 @@ function TodoApp() {
 
         @media (hover: hover) and (pointer: fine) {
           .timeline-jump:hover {
-            border-color: #F5A623;
+            border-color: var(--accent2);
             background: rgba(245,166,35,0.1);
           }
         }
@@ -4651,6 +5126,310 @@ function TodoApp() {
           .tab-content { animation: none !important; }
         }
 
+
+
+
+        /* ---- microinteractions (v22) ---- */
+
+        /* completion pulse: a one-shot ring that expands and fades. Applied
+           via a class the component removes on animationend, so it can
+           retrigger. transform/opacity only -- compositor, no layout. */
+        @keyframes completePulse {
+          0%   { box-shadow: 0 0 0 0 var(--glow); }
+          100% { box-shadow: 0 0 0 16px rgba(0,0,0,0); }
+        }
+        .just-completed { animation: completePulse 620ms ease-out; }
+
+        /* floating +XP */
+        .xp-pop {
+          position: absolute;
+          right: 12px; top: 50%;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; font-weight: 700;
+          color: var(--accent);
+          text-shadow: 0 0 10px var(--glow);
+          pointer-events: none;
+          animation: xpFloat 1000ms cubic-bezier(.16,1,.3,1) forwards;
+          z-index: 5;
+        }
+        @keyframes xpFloat {
+          0%   { transform: translateY(0) scale(0.85); opacity: 0; }
+          22%  { transform: translateY(-8px) scale(1.08); opacity: 1; }
+          100% { transform: translateY(-34px) scale(1); opacity: 0; }
+        }
+
+        /* light burst, used on theme unlock + level up */
+        .burst {
+          position: fixed; left: 50%; top: 42%;
+          width: 10px; height: 10px; margin: -5px 0 0 -5px;
+          border-radius: 50%;
+          background: var(--accent);
+          box-shadow: 0 0 30px 10px var(--glow);
+          pointer-events: none; z-index: 70;
+          animation: burstOut 900ms cubic-bezier(.16,1,.3,1) forwards;
+        }
+        @keyframes burstOut {
+          0%   { transform: scale(0.4); opacity: 0.95; }
+          100% { transform: scale(26); opacity: 0; }
+        }
+
+        /* whole-screen breath on level up */
+        .screen-pulse {
+          position: fixed; inset: 0; z-index: 65; pointer-events: none;
+          background: radial-gradient(circle at 50% 45%, var(--glow), transparent 62%);
+          animation: screenPulse 1100ms ease-out forwards;
+        }
+        @keyframes screenPulse {
+          0%   { opacity: 0; }
+          28%  { opacity: 0.75; }
+          100% { opacity: 0; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .just-completed, .xp-pop, .burst, .screen-pulse { animation: none !important; }
+          .xp-pop, .burst, .screen-pulse { display: none !important; }
+        }
+
+        /* ---- bottom sheet (themes / settings) ---- */
+        .sheet-backdrop {
+          position: fixed; inset: 0; z-index: 60;
+          background: rgba(0,0,0,0.55);
+          display: flex; align-items: flex-end; justify-content: center;
+          animation: fadeIn 200ms ease;
+        }
+        @media (min-width: 900px) { .sheet-backdrop { align-items: center; } }
+
+        .sheet {
+          width: 100%; max-width: 520px; max-height: 86vh; overflow-y: auto;
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 16px 16px 0 0;
+          padding: 16px 16px 22px;
+          animation: sheetUp 320ms cubic-bezier(.16,1,.3,1);
+        }
+        @media (min-width: 900px) { .sheet { border-radius: 16px; } }
+
+        @keyframes sheetUp { from { transform: translateY(22px); opacity: 0; } to { transform: none; opacity: 1; } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+        .sheet-title {
+          font-family: 'JetBrains Mono', monospace; font-size: 12px;
+          letter-spacing: 0.12em; text-transform: uppercase; color: var(--text);
+        }
+        .sheet-close {
+          background: transparent; border: none; color: var(--muted);
+          font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px;
+        }
+        .sheet-sub, .sheet-foot {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          color: var(--muted); text-align: center; margin-top: 12px;
+        }
+        .sheet-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--track); }
+
+        .theme-grid {
+          display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px;
+        }
+        @media (min-width: 520px) { .theme-grid { grid-template-columns: repeat(3, 1fr); } }
+
+        .theme-card {
+          display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+          background: var(--bg); border: 1px solid var(--border);
+          border-radius: 11px; padding: 9px; cursor: pointer; text-align: left;
+          font-family: inherit; transition: border-color 180ms ease, transform 180ms ease;
+        }
+        .theme-card.active { border-color: var(--accent); }
+        .theme-card.locked { cursor: not-allowed; opacity: 0.72; }
+        .theme-card:not(:disabled):active { transform: scale(0.975); }
+
+        .theme-swatch {
+          width: 100%; height: 46px; border-radius: 7px; position: relative;
+          display: flex; align-items: center; justify-content: center;
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .theme-lock { color: rgba(255,255,255,0.82); }
+        .theme-active-dot {
+          position: absolute; top: 5px; right: 5px;
+          width: 7px; height: 7px; border-radius: 50%;
+          background: #fff; box-shadow: 0 0 6px rgba(255,255,255,0.9);
+        }
+        .theme-name {
+          font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+          font-weight: 600; color: var(--text); margin-top: 2px;
+        }
+        .theme-blurb { font-size: 9px; color: var(--muted); line-height: 1.35; }
+        .theme-req {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--accent2);
+        }
+        .theme-bar {
+          width: 100%; height: 3px; background: var(--track);
+          border-radius: 2px; overflow: hidden; margin-top: 2px;
+        }
+        .theme-bar-fill {
+          display: block; height: 100%; background: var(--accent2);
+          border-radius: 2px; transition: width 600ms cubic-bezier(.16,1,.3,1);
+        }
+        .theme-pct { font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--muted); }
+
+        /* ---- calm toggle ---- */
+        .calm-toggle-row {
+          display: flex; align-items: center; justify-content: space-between; gap: 14px;
+          margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--track);
+        }
+        .calm-toggle-label {
+          font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text);
+        }
+        .calm-toggle-hint { font-size: 9.5px; color: var(--muted); margin-top: 2px; }
+        .calm-switch {
+          flex-shrink: 0; width: 42px; height: 24px; border-radius: 999px;
+          background: var(--track); border: 1px solid var(--border);
+          position: relative; cursor: pointer; transition: background 220ms ease, border-color 220ms ease;
+        }
+        .calm-switch.on { background: var(--accent); border-color: var(--accent); }
+        .calm-knob {
+          position: absolute; top: 2px; left: 2px;
+          width: 18px; height: 18px; border-radius: 50%;
+          background: var(--muted); transition: transform 220ms cubic-bezier(.16,1,.3,1), background 220ms ease;
+        }
+        .calm-switch.on .calm-knob { transform: translateX(18px); background: var(--bg); }
+
+        @media (hover: hover) and (pointer: fine) {
+          .theme-card:not(:disabled):hover { border-color: var(--accent); }
+          .sheet-close:hover { color: var(--text); }
+        }
+
+        /* ---- ambient engine (v22) -----------------------------------
+           Four stacked layers, all pointer-events:none and behind the
+           panel. Layers are pure CSS -- no canvas, no rAF loop -- so the
+           cost is compositor-only and the main thread stays free.
+             ::before  theme blobs        (drift, 96s)
+             ::after   secondary blobs    (drift, 138s)
+             .amb-time time-of-day wash + light ray
+             .amb-dust particle field     (theme dependent)
+        */
+        .amb-layer {
+          position: fixed;
+          inset: 0;
+          z-index: -1;
+          pointer-events: none;
+          contain: strict;
+        }
+
+        .amb-time {
+          background:
+            radial-gradient(120% 80% at 50% -10%, var(--time-warm), transparent 65%);
+          opacity: var(--time-light, 1);
+          transition: opacity 2s ease, background 2s ease;
+        }
+
+        /* a single soft diagonal shaft, very faint, slowly sweeping */
+        .amb-ray {
+          position: absolute;
+          top: -40%;
+          left: -20%;
+          width: 55%;
+          height: 190%;
+          background: linear-gradient(
+            105deg, transparent 0%, rgba(255,255,255,0.022) 45%,
+            rgba(255,255,255,0.032) 50%, rgba(255,255,255,0.022) 55%, transparent 100%);
+          filter: blur(26px);
+          transform: rotate(8deg);
+          animation: raySweep calc(180s * var(--motion-scale)) ease-in-out infinite alternate;
+        }
+
+        @keyframes raySweep {
+          0%   { transform: translateX(-12%) rotate(8deg); opacity: 0.55; }
+          100% { transform: translateX(115%) rotate(8deg); opacity: 0.95; }
+        }
+
+        /* film grain: one tiny repeating SVG, no image request */
+        .amb-grain {
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+          opacity: var(--grain-opacity, 0.018);
+          mix-blend-mode: overlay;
+        }
+
+        /* ---- particles ---- */
+        .amb-dust span {
+          position: absolute;
+          border-radius: 50%;
+          background: var(--accent);
+          opacity: 0;
+          animation: floatUp linear infinite;
+          will-change: transform, opacity;
+        }
+
+        @keyframes floatUp {
+          0%   { transform: translateY(8vh) scale(0.7); opacity: 0; }
+          12%  { opacity: 0.5; }
+          88%  { opacity: 0.4; }
+          100% { transform: translateY(-102vh) scale(1.05); opacity: 0; }
+        }
+
+        /* bubbles rise faster and wobble; embers glow warm and fade early */
+        [data-particle="bubbles"] .amb-dust span {
+          background: transparent;
+          border: 1px solid var(--accent);
+        }
+        [data-particle="embers"] .amb-dust span {
+          background: var(--accent2);
+          box-shadow: 0 0 6px var(--glow);
+        }
+        [data-particle="aurora"] .amb-dust span {
+          background: linear-gradient(180deg, var(--accent), var(--accent2));
+          filter: blur(1px);
+        }
+
+        /* stars only at night, and only as a static field so they don't
+           compete with the drifting layers */
+        .amb-stars span {
+          position: absolute;
+          width: 2px; height: 2px;
+          border-radius: 50%;
+          background: #FFFFFF;
+          animation: twinkle ease-in-out infinite alternate;
+        }
+        @keyframes twinkle {
+          from { opacity: 0.12; }
+          to   { opacity: 0.6; }
+        }
+
+        /* ---- calm mode ----------------------------------------------
+           Slows everything (via --motion-scale), lifts blur, dims accents
+           and hides secondary chrome. Navigation stays fully usable. */
+        .calm-mode .amb-layer { filter: blur(14px) saturate(0.82); }
+        .calm-mode .panel {
+          filter: saturate(0.85) brightness(0.96);
+          transition: filter 900ms ease;
+        }
+        .calm-mode .amb-grain { opacity: calc(var(--grain-opacity) * 0.4); }
+
+        .calm-breath {
+          position: fixed;
+          left: 50%; top: 50%;
+          width: 220px; height: 220px;
+          margin: -110px 0 0 -110px;
+          border-radius: 50%;
+          border: 1px solid var(--accent);
+          background: radial-gradient(circle, var(--glow), transparent 68%);
+          opacity: 0.5;
+          z-index: -1;
+          pointer-events: none;
+          animation: breathe 11s ease-in-out infinite;
+        }
+
+        @keyframes breathe {
+          0%, 100% { transform: scale(0.72); opacity: 0.30; }
+          42%      { transform: scale(1.16); opacity: 0.62; }
+          58%      { transform: scale(1.16); opacity: 0.62; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .amb-ray, .amb-dust span, .amb-stars span, .calm-breath {
+            animation: none !important;
+          }
+        }
+
         @media (prefers-reduced-motion: reduce) {
           .radar-fill, .timeline-block, .heatmap-cell, .task-list,
           .radial-progress-wrap circle, .donut-wrap circle {
@@ -4672,9 +5451,9 @@ function TodoApp() {
         }
 
         .duration-chips button {
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           background: #0F1215;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           padding: 5px 10px;
@@ -4685,17 +5464,17 @@ function TodoApp() {
 
         .duration-chips button.active {
           background: rgba(94,234,212,0.12);
-          border-color: #5EEAD4;
-          color: #5EEAD4;
+          border-color: var(--accent);
+          color: var(--accent);
         }
 
         .duration-custom {
           width: 58px;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 6px;
           padding: 5px 8px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           outline: none;
@@ -4703,7 +5482,7 @@ function TodoApp() {
 
         .stats-bar {
           padding: 18px 18px 14px;
-          border-bottom: 1px solid #1E2228;
+          border-bottom: 1px solid var(--track);
         }
 
         .stats-bar-viz {
@@ -4721,7 +5500,7 @@ function TodoApp() {
           color: #9CA3AF;
         }
 
-        .stats-row-viz b { color: #E7EAEE; font-weight: 700; }
+        .stats-row-viz b { color: var(--text); font-weight: 700; }
 
         .stats-top {
           display: flex;
@@ -4733,7 +5512,7 @@ function TodoApp() {
         .stats-title {
           font-family: 'JetBrains Mono', monospace;
           font-size: 12px;
-          color: #6B7280;
+          color: var(--muted);
           letter-spacing: 0.04em;
         }
 
@@ -4741,20 +5520,20 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 20px;
           font-weight: 700;
-          color: #5EEAD4;
+          color: var(--accent);
           font-variant-numeric: tabular-nums;
         }
 
         .progress-track {
           height: 6px;
-          background: #1E2228;
+          background: var(--track);
           border-radius: 3px;
           overflow: hidden;
         }
 
         .progress-fill {
           height: 100%;
-          background: linear-gradient(90deg, #5EEAD4, #7BF0DD);
+          background: linear-gradient(90deg, var(--accent), #7BF0DD);
           border-radius: 3px;
           transition: width 420ms cubic-bezier(.65,0,.35,1);
           box-shadow: 0 0 12px rgba(94,234,212,0.5);
@@ -4766,25 +5545,25 @@ function TodoApp() {
           margin-top: 10px;
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
-        .stats-row b { color: #E7EAEE; font-weight: 600; }
+        .stats-row b { color: var(--text); font-weight: 600; }
 
         .composer {
           padding: 16px 18px;
           display: flex;
           gap: 8px;
-          border-bottom: 1px solid #1E2228;
+          border-bottom: 1px solid var(--track);
         }
 
         .composer input[type="text"] {
           flex: 1;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 8px;
           padding: 10px 12px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'Inter', sans-serif;
           font-size: 13.5px;
           outline: none;
@@ -4794,7 +5573,7 @@ function TodoApp() {
         .composer input[type="text"]::placeholder { color: #4B5563; }
 
         .composer input[type="text"]:focus {
-          border-color: #5EEAD4;
+          border-color: var(--accent);
           box-shadow: 0 0 0 3px rgba(94,234,212,0.12);
         }
 
@@ -4802,7 +5581,7 @@ function TodoApp() {
           display: flex;
           gap: 4px;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 8px;
           padding: 3px;
         }
@@ -4810,10 +5589,10 @@ function TodoApp() {
         .alt-toggle-btn {
           flex-shrink: 0;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 8px;
           padding: 0 12px;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
           cursor: pointer;
@@ -4821,13 +5600,13 @@ function TodoApp() {
         }
 
         .alt-toggle-btn:hover { color: #9CA3AF; border-color: #2C3138; }
-        .alt-toggle-btn.active { color: #5EEAD4; border-color: #5EEAD4; background: rgba(94,234,212,0.08); }
+        .alt-toggle-btn.active { color: var(--accent); border-color: var(--accent); background: rgba(94,234,212,0.08); }
 
         .alt-composer {
           margin: 0 18px 14px;
           padding: 10px 12px;
           background: #0F1215;
-          border: 1px dashed #23272E;
+          border: 1px dashed var(--border);
           border-radius: 8px;
           display: flex;
           flex-direction: column;
@@ -4846,36 +5625,36 @@ function TodoApp() {
 
         .alt-composer-row input[type="text"] {
           flex: 1;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 6px;
           padding: 8px 10px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'Inter', sans-serif;
           font-size: 12.5px;
           outline: none;
         }
 
-        .alt-composer-row input[type="text"]:focus { border-color: #5EEAD4; }
+        .alt-composer-row input[type="text"]:focus { border-color: var(--accent); }
 
         .alt-remove-btn {
           flex-shrink: 0;
           width: 30px;
           background: transparent;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 6px;
-          color: #6B7280;
+          color: var(--muted);
           font-size: 15px;
           cursor: pointer;
         }
 
-        .alt-remove-btn:hover { color: #F0576B; border-color: #F0576B; }
+        .alt-remove-btn:hover { color: var(--danger); border-color: var(--danger); }
 
         .alt-add-btn {
           align-self: flex-start;
           background: transparent;
           border: none;
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
           cursor: pointer;
@@ -4893,23 +5672,23 @@ function TodoApp() {
           border-radius: 6px;
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
-          color: #6B7280;
+          color: var(--muted);
           cursor: pointer;
           transition: all 150ms ease;
           text-transform: uppercase;
         }
 
         .prio-select button.active {
-          background: #1E2228;
+          background: var(--track);
           color: var(--pc);
         }
 
         .add-btn {
-          background: #5EEAD4;
+          background: var(--accent);
           border: none;
           border-radius: 8px;
           width: 38px;
-          color: #0B0D10;
+          color: var(--bg);
           cursor: pointer;
           display: flex;
           align-items: center;
@@ -4930,7 +5709,7 @@ function TodoApp() {
         .filters button {
           border: none;
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
           padding: 5px 10px;
@@ -4940,8 +5719,8 @@ function TodoApp() {
         }
 
         .filters button.active {
-          background: #1E2228;
-          color: #E7EAEE;
+          background: var(--track);
+          color: var(--text);
         }
 
         .filters .spacer { flex: 1; }
@@ -4955,7 +5734,7 @@ function TodoApp() {
           cursor: pointer;
           transition: color 150ms ease;
         }
-        .clear-btn:hover { color: #F0576B; }
+        .clear-btn:hover { color: var(--danger); }
 
         .task-list {
           padding: 6px 10px 16px;
@@ -5017,7 +5796,7 @@ function TodoApp() {
 
         .task-text {
           font-size: 13.5px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -5054,8 +5833,8 @@ function TodoApp() {
           flex-shrink: 0;
         }
 
-        .task-row:hover .del-btn { opacity: 1; color: #6B7280; }
-        .del-btn:hover { color: #F0576B !important; }
+        .task-row:hover .del-btn { opacity: 1; color: var(--muted); }
+        .del-btn:hover { color: var(--danger) !important; }
 
         .empty-state {
           text-align: center;
@@ -5075,7 +5854,7 @@ function TodoApp() {
         }
 
         .task-list::-webkit-scrollbar { width: 6px; }
-        .task-list::-webkit-scrollbar-thumb { background: #23272E; border-radius: 3px; }
+        .task-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         .task-list::-webkit-scrollbar-track { background: transparent; }
 
         .today-view { padding-bottom: 24px; }
@@ -5088,7 +5867,7 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           letter-spacing: 0.06em;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .today-section-header:first-child { padding-top: 14px; }
@@ -5096,7 +5875,7 @@ function TodoApp() {
         .today-view-all {
           border: none;
           background: transparent;
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           cursor: pointer;
@@ -5104,16 +5883,16 @@ function TodoApp() {
         }
 
         .today-xp-total {
-          color: #F5A623;
+          color: var(--accent2);
           font-family: 'JetBrains Mono', monospace;
         }
 
         .today-card {
           margin: 0 16px;
           padding: 14px;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 12px;
-          background: #14171C;
+          background: var(--panel);
           animation: rowIn 220ms ease backwards;
         }
 
@@ -5122,19 +5901,19 @@ function TodoApp() {
         .today-card-time {
           font-family: 'JetBrains Mono', monospace;
           font-size: 12px;
-          color: #5EEAD4;
+          color: var(--accent);
         }
 
         .today-card-label {
           font-size: 15px;
           font-weight: 500;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         .today-card-sub {
           margin-top: 4px;
           font-size: 11.5px;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
         }
 
@@ -5142,7 +5921,7 @@ function TodoApp() {
           margin-top: 12px;
           width: 100%;
           padding: 9px;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 8px;
           background: transparent;
           color: #9CA3AF;
@@ -5152,8 +5931,8 @@ function TodoApp() {
           transition: border-color 140ms ease, color 140ms ease;
         }
 
-        .today-mark-btn:hover { border-color: #5EEAD4; color: #5EEAD4; }
-        .today-mark-btn.done { border-color: #5EEAD4; color: #5EEAD4; background: rgba(94,234,212,0.08); }
+        .today-mark-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .today-mark-btn.done { border-color: var(--accent); color: var(--accent); background: rgba(94,234,212,0.08); }
 
         .today-list { margin: 0 16px; display: flex; flex-direction: column; gap: 6px; }
 
@@ -5162,9 +5941,9 @@ function TodoApp() {
           align-items: center;
           gap: 10px;
           padding: 10px 12px;
-          border: 1px solid #1E2228;
+          border: 1px solid var(--track);
           border-radius: 8px;
-          background: #14171C;
+          background: var(--panel);
           animation: rowIn 200ms ease backwards;
         }
 
@@ -5179,12 +5958,12 @@ function TodoApp() {
           padding: 0;
         }
 
-        .today-task-check:hover { border-color: #5EEAD4; }
+        .today-task-check:hover { border-color: var(--accent); }
 
         .today-task-text {
           flex: 1;
           font-size: 13px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -5197,14 +5976,14 @@ function TodoApp() {
           flex-shrink: 0;
         }
 
-        .today-prio-dot.high { background: #F5A623; }
-        .today-prio-dot.mid { background: #5EEAD4; }
-        .today-prio-dot.low { background: #6B7280; }
+        .today-prio-dot.high { background: var(--accent2); }
+        .today-prio-dot.mid { background: var(--accent); }
+        .today-prio-dot.low { background: var(--muted); }
 
         .today-more {
           border: none;
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
           text-align: left;
@@ -5212,20 +5991,20 @@ function TodoApp() {
           cursor: pointer;
         }
 
-        .today-more:hover { color: #5EEAD4; }
+        .today-more:hover { color: var(--accent); }
 
         .today-reward-cost {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #F5A623;
+          color: var(--accent2);
           flex-shrink: 0;
         }
 
         .today-claim-btn {
-          border: 1px solid #5EEAD4;
+          border: 1px solid var(--accent);
           border-radius: 6px;
           background: transparent;
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           padding: 5px 10px;
@@ -5249,7 +6028,7 @@ function TodoApp() {
           align-items: center;
           gap: 8px;
           background: #171B21;
-          border: 1px solid #5EEAD4;
+          border: 1px solid var(--accent);
           box-shadow: 0 8px 24px -8px rgba(0,0,0,0.6), 0 0 0 1px rgba(94,234,212,0.15);
           border-radius: 10px;
           padding: 10px 12px;
@@ -5263,7 +6042,7 @@ function TodoApp() {
         }
 
         .quest-banner-icon {
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace;
           font-size: 13px;
           flex-shrink: 0;
@@ -5272,14 +6051,14 @@ function TodoApp() {
         .quest-banner-text {
           flex: 1;
           font-size: 12.5px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
 
         .quest-banner-text b {
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace;
           font-weight: 700;
           margin-right: 4px;
@@ -5288,14 +6067,14 @@ function TodoApp() {
         .quest-banner-close {
           border: none;
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
           cursor: pointer;
           padding: 3px;
           flex-shrink: 0;
           display: flex;
         }
 
-        .quest-banner-close:hover { color: #E7EAEE; }
+        .quest-banner-close:hover { color: var(--text); }
 
         /* ---- shared: vault + quest sections ---- */
         .vault-scroll { display: flex; flex-direction: column; }
@@ -5308,7 +6087,7 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           letter-spacing: 0.08em;
-          color: #6B7280;
+          color: var(--muted);
           text-transform: uppercase;
         }
 
@@ -5330,8 +6109,8 @@ function TodoApp() {
 
         /* ---- vault: habit cards ---- */
         .vault-card {
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           padding: 14px;
           display: flex;
@@ -5347,7 +6126,7 @@ function TodoApp() {
 
         .vault-card-icon {
           font-size: 13px;
-          color: #5EEAD4;
+          color: var(--accent);
           line-height: 1.4;
           flex-shrink: 0;
         }
@@ -5361,7 +6140,7 @@ function TodoApp() {
 
         .vault-card-label {
           font-size: 13px;
-          color: #E7EAEE;
+          color: var(--text);
           font-weight: 600;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -5371,7 +6150,7 @@ function TodoApp() {
         .vault-card-goal {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #6B7280;
+          color: var(--muted);
           margin-top: 2px;
         }
 
@@ -5386,7 +6165,7 @@ function TodoApp() {
           transition: color 150ms ease;
         }
 
-        .vault-card-del:hover { color: #F0576B; }
+        .vault-card-del:hover { color: var(--danger); }
 
         .month-grid-wrap { display: flex; flex-direction: column; gap: 5px; }
 
@@ -5407,12 +6186,12 @@ function TodoApp() {
           width: 100%;
           aspect-ratio: 1;
           border-radius: 2px;
-          background: #1E2228;
+          background: var(--track);
           animation: heatmapIn 240ms ease backwards;
         }
 
-        .month-cell.filled { background: #F5A623; }
-        .month-cell.today { box-shadow: 0 0 0 1.5px #5EEAD4; }
+        .month-cell.filled { background: var(--accent2); }
+        .month-cell.today { box-shadow: 0 0 0 1.5px var(--accent); }
 
         .vault-card-bottom {
           display: flex;
@@ -5429,13 +6208,13 @@ function TodoApp() {
         .vault-card-pct {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         .vault-check {
-          border: 1.5px solid #23272E;
+          border: 1.5px solid var(--border);
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           padding: 8px;
@@ -5446,14 +6225,14 @@ function TodoApp() {
 
         .vault-check.done {
           background: rgba(94,234,212,0.1);
-          border-color: #5EEAD4;
-          color: #5EEAD4;
+          border-color: var(--accent);
+          color: var(--accent);
         }
 
         /* ---- vault: projects ---- */
         .project-card {
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           padding: 14px;
           display: flex;
@@ -5470,17 +6249,17 @@ function TodoApp() {
         .project-name {
           font-size: 13px;
           font-weight: 600;
-          color: #E7EAEE;
+          color: var(--text);
         }
 
         .project-due {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #F5A623;
+          color: var(--accent2);
           width: fit-content;
         }
 
-        .project-due.overdue { color: #F0576B; }
+        .project-due.overdue { color: var(--danger); }
 
         .project-tasks {
           display: flex;
@@ -5497,7 +6276,7 @@ function TodoApp() {
         .project-task-text {
           flex: 1;
           font-size: 12.5px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -5508,16 +6287,16 @@ function TodoApp() {
         .project-add-task input {
           width: 100%;
           background: #0F1215;
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           border-radius: 7px;
           padding: 7px 9px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'Inter', sans-serif;
           font-size: 12px;
           outline: none;
         }
 
-        .project-add-task input:focus { border-color: #5EEAD4; }
+        .project-add-task input:focus { border-color: var(--accent); }
 
         /* ---- quest: life areas ---- */
         .area-grid {
@@ -5528,8 +6307,8 @@ function TodoApp() {
         }
 
         .area-card {
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 10px;
           padding: 10px 12px;
           display: flex;
@@ -5542,7 +6321,7 @@ function TodoApp() {
         .area-label {
           flex: 1;
           font-size: 12px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -5551,7 +6330,7 @@ function TodoApp() {
         .area-xp {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         /* ---- quest: good/bad habit rows ---- */
@@ -5566,8 +6345,8 @@ function TodoApp() {
           display: flex;
           align-items: center;
           gap: 10px;
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 10px;
           padding: 10px 12px;
         }
@@ -5584,7 +6363,7 @@ function TodoApp() {
 
         .quest-habit-label {
           font-size: 13px;
-          color: #E7EAEE;
+          color: var(--text);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -5593,18 +6372,18 @@ function TodoApp() {
         .quest-habit-meta {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         .quest-check.bad-check.done {
-          background: #F0576B;
-          border-color: #F0576B;
+          background: var(--danger);
+          border-color: var(--danger);
         }
 
         /* ---- quest: reward center ---- */
         .reward-card {
-          background: #14171C;
-          border: 1px solid #23272E;
+          background: var(--panel);
+          border: 1px solid var(--border);
           border-radius: 12px;
           padding: 14px;
           display: flex;
@@ -5618,18 +6397,18 @@ function TodoApp() {
           justify-content: space-between;
         }
 
-        .reward-label { font-size: 13px; font-weight: 600; color: #E7EAEE; }
+        .reward-label { font-size: 13px; font-weight: 600; color: var(--text); }
 
         .reward-cost {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
-          color: #F5A623;
+          color: var(--accent2);
         }
 
         .reward-claim {
-          border: 1.5px solid #23272E;
+          border: 1.5px solid var(--border);
           background: transparent;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           padding: 8px;
@@ -5639,8 +6418,8 @@ function TodoApp() {
         }
 
         .reward-claim:not(:disabled):hover {
-          border-color: #F5A623;
-          color: #F5A623;
+          border-color: var(--accent2);
+          color: var(--accent2);
         }
 
         .reward-claim:disabled {
@@ -5664,7 +6443,7 @@ function TodoApp() {
         .xp-bar-label {
           font-family: 'JetBrains Mono', monospace;
           font-size: 10px;
-          color: #6B7280;
+          color: var(--muted);
         }
 
         /* ---- editing affordances added across vault + quest cards ---- */
@@ -5679,7 +6458,7 @@ function TodoApp() {
           transition: color 150ms ease;
         }
 
-        .vault-card-edit:hover { color: #5EEAD4; }
+        .vault-card-edit:hover { color: var(--accent); }
 
         .project-card-actions {
           display: flex;
@@ -5692,10 +6471,10 @@ function TodoApp() {
         .project-task-edit {
           flex: 1;
           background: #0F1215;
-          border: 1px solid #5EEAD4;
+          border: 1px solid var(--accent);
           border-radius: 6px;
           padding: 6px 8px;
-          color: #E7EAEE;
+          color: var(--text);
           font-family: 'Inter', sans-serif;
           font-size: 12.5px;
           outline: none;
@@ -5704,9 +6483,9 @@ function TodoApp() {
         .edit-row-subs { flex-wrap: wrap; gap: 5px; }
 
         .sub-chip {
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           background: #0F1215;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px;
           letter-spacing: 0.03em;
@@ -5717,15 +6496,15 @@ function TodoApp() {
         }
 
         .sub-chip.active {
-          border-color: #5EEAD4;
-          color: #5EEAD4;
+          border-color: var(--accent);
+          color: var(--accent);
           background: rgba(94,234,212,0.1);
         }
 
         .area-chip {
-          border: 1px solid #23272E;
+          border: 1px solid var(--border);
           background: #0F1215;
-          color: #6B7280;
+          color: var(--muted);
           font-family: 'JetBrains Mono', monospace;
           font-size: 10.5px;
           padding: 5px 10px;
@@ -5752,9 +6531,9 @@ function TodoApp() {
            Phones (max-width: 640px) are untouched by these rules.
            ============================================================ */
 
-        .checkbox-btn:hover { border-color: #5EEAD4; }
+        .checkbox-btn:hover { border-color: var(--accent); }
         .tabs button:hover { color: #B8C0CC; }
-        .tabs button.active:hover { color: #E7EAEE; }
+        .tabs button.active:hover { color: var(--text); }
         .routine-row:hover { background: #191D23; }
         .area-card:hover { border-color: #2C3138; }
 
@@ -5771,12 +6550,12 @@ function TodoApp() {
         /* ---- AI tab ---- */
         .ai-scroll { padding-top: 4px; }
 
-        .tabs button.tab-ai { color: #5EEAD4; position: relative; }
+        .tabs button.tab-ai { color: var(--accent); position: relative; }
         .tabs button.tab-ai::after {
           content: "";
           position: absolute; top: 7px; right: 6px;
           width: 4px; height: 4px; border-radius: 50%;
-          background: #5EEAD4; box-shadow: 0 0 6px rgba(94,234,212,0.9);
+          background: var(--accent); box-shadow: 0 0 6px rgba(94,234,212,0.9);
         }
         .tabs button.tab-ai.active::after { display: none; }
 
@@ -5787,15 +6566,15 @@ function TodoApp() {
         }
         .ai-intro-title {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 13px; font-weight: 600; color: #E7EAEE;
+          font-size: 13px; font-weight: 600; color: var(--text);
           letter-spacing: 0.04em;
         }
-        .ai-intro-sub { font-size: 11px; color: #6B7280; line-height: 1.5; }
+        .ai-intro-sub { font-size: 11px; color: var(--muted); line-height: 1.5; }
 
         .ai-key-btn {
           display: inline-flex; align-items: center; gap: 5px;
-          background: transparent; border: 1px solid #23272E;
-          border-radius: 999px; color: #6B7280; cursor: pointer;
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 999px; color: var(--muted); cursor: pointer;
           font-family: 'JetBrains Mono', monospace;
           font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
           padding: 4px 10px; flex-shrink: 0;
@@ -5805,17 +6584,17 @@ function TodoApp() {
         /* ---- key gate ---- */
         .ai-gate { padding: 14px 16px 20px; max-width: 460px; margin: 0 auto; }
         .ai-gate-icon {
-          font-size: 20px; color: #5EEAD4; line-height: 1;
+          font-size: 20px; color: var(--accent); line-height: 1;
           margin-bottom: 10px;
           text-shadow: 0 0 14px rgba(94,234,212,0.5);
         }
         .ai-gate-title {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 14px; font-weight: 600; color: #E7EAEE;
+          font-size: 14px; font-weight: 600; color: var(--text);
           letter-spacing: 0.04em; margin-bottom: 6px;
         }
         .ai-gate-sub {
-          font-size: 11.5px; color: #6B7280; line-height: 1.55;
+          font-size: 11.5px; color: var(--muted); line-height: 1.55;
           margin-bottom: 16px;
         }
         .ai-gate-steps {
@@ -5826,24 +6605,24 @@ function TodoApp() {
           font-size: 11.5px; color: #9AA3AF; line-height: 1.5;
         }
         .ai-gate-steps li::marker {
-          color: #5EEAD4;
+          color: var(--accent);
           font-family: 'JetBrains Mono', monospace; font-size: 10px;
         }
         .ai-gate-steps a {
-          color: #5EEAD4; text-decoration: none;
-          border-bottom: 1px solid rgba(94,234,212,0.35);
+          color: var(--accent); text-decoration: none;
+          border-bottom: 1px solid var(--glow);
           word-break: break-all;
         }
         .ai-key-input {
           width: 100%; box-sizing: border-box;
-          background: #0E1116; border: 1px solid #23272E; border-radius: 8px;
-          color: #E7EAEE; font-family: 'JetBrains Mono', monospace;
+          background: #0E1116; border: 1px solid var(--border); border-radius: 8px;
+          color: var(--text); font-family: 'JetBrains Mono', monospace;
           font-size: 12px; letter-spacing: 0.06em;
           padding: 11px 12px; outline: none;
           transition: border-color 140ms ease;
         }
         .ai-key-input::placeholder { color: #4B5563; letter-spacing: 0.04em; }
-        .ai-key-input:focus { border-color: #5EEAD4; }
+        .ai-key-input:focus { border-color: var(--accent); }
         .ai-key-input:disabled { opacity: 0.55; }
         .ai-gate-error { margin: 10px 0 0; }
         .ai-gate-actions { display: flex; gap: 8px; margin-top: 12px; }
@@ -5856,17 +6635,17 @@ function TodoApp() {
         .ai-composer { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 12px; }
         .ai-input {
           width: 100%; box-sizing: border-box; resize: vertical; min-height: 62px;
-          background: #0E1116; border: 1px solid #23272E; border-radius: 8px;
-          color: #E7EAEE; font-family: 'Inter', sans-serif;
+          background: #0E1116; border: 1px solid var(--border); border-radius: 8px;
+          color: var(--text); font-family: 'Inter', sans-serif;
           font-size: 12.5px; line-height: 1.5; padding: 10px 12px;
           outline: none; transition: border-color 140ms ease;
         }
         .ai-input::placeholder { color: #4B5563; }
-        .ai-input:focus { border-color: #5EEAD4; }
+        .ai-input:focus { border-color: var(--accent); }
         .ai-input:disabled { opacity: 0.55; }
 
         .ai-send {
-          align-self: flex-end; background: #5EEAD4; color: #07100E;
+          align-self: flex-end; background: var(--accent); color: #07100E;
           border: none; border-radius: 7px;
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
@@ -5878,7 +6657,7 @@ function TodoApp() {
 
         .ai-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 14px; }
         .ai-chip {
-          background: #14171C; border: 1px solid #23272E; border-radius: 999px;
+          background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
           color: #9AA3AF; font-size: 10.5px; padding: 6px 12px;
           cursor: pointer; text-align: left;
           transition: border-color 140ms ease, color 140ms ease;
@@ -5891,13 +6670,13 @@ function TodoApp() {
         .ai-dots { display: flex; gap: 5px; }
         .ai-elapsed {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; color: #6B7280; letter-spacing: 0.05em;
+          font-size: 10px; color: var(--muted); letter-spacing: 0.05em;
           font-variant-numeric: tabular-nums;
         }
-        .ai-slow { color: #F5A623; }
+        .ai-slow { color: var(--accent2); }
         .ai-dot {
           width: 6px; height: 6px; border-radius: 50%;
-          background: #5EEAD4; opacity: 0.35;
+          background: var(--accent); opacity: 0.35;
           animation: aiPulse 1.05s ease-in-out infinite;
         }
         .ai-dot:nth-child(2) { animation-delay: 0.16s; }
@@ -5911,7 +6690,7 @@ function TodoApp() {
           margin: 0 16px 12px; padding: 10px 12px;
           background: rgba(240,87,107,0.08);
           border: 1px solid rgba(240,87,107,0.35);
-          border-radius: 8px; color: #F0576B;
+          border-radius: 8px; color: var(--danger);
           font-size: 11.5px; line-height: 1.45;
         }
 
@@ -5919,10 +6698,10 @@ function TodoApp() {
         .ai-reply {
           font-size: 12.5px; color: #C9D1D9; line-height: 1.55;
           padding: 11px 13px; margin-bottom: 12px;
-          background: #14171C; border: 1px solid #23272E;
-          border-left: 3px solid #5EEAD4; border-radius: 8px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 3px solid var(--accent); border-radius: 8px;
         }
-        .ai-noop { font-size: 11px; color: #6B7280; text-align: center; padding: 6px 0 4px; }
+        .ai-noop { font-size: 11px; color: var(--muted); text-align: center; padding: 6px 0 4px; }
 
         .ai-diff-head {
           display: flex; align-items: center; justify-content: space-between;
@@ -5931,7 +6710,7 @@ function TodoApp() {
         .ai-diff-title {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9.5px; letter-spacing: 0.1em;
-          text-transform: uppercase; color: #6B7280;
+          text-transform: uppercase; color: var(--muted);
         }
         .ai-diff-counts {
           display: flex; gap: 8px;
@@ -5939,45 +6718,45 @@ function TodoApp() {
           font-size: 10.5px; font-weight: 600;
         }
         .ai-diff-counts .c-add { color: #7EE787; }
-        .ai-diff-counts .c-edit { color: #F5A623; }
-        .ai-diff-counts .c-remove { color: #F0576B; }
+        .ai-diff-counts .c-edit { color: var(--accent2); }
+        .ai-diff-counts .c-remove { color: var(--danger); }
 
         .ai-diff { display: flex; flex-direction: column; gap: 5px; }
         .ai-diff-row {
           display: grid; grid-template-columns: 14px 52px 1fr auto;
           align-items: baseline; gap: 8px;
           width: 100%; text-align: left;
-          background: #14171C; border: 1px solid #23272E;
-          border-left: 3px solid #23272E; border-radius: 7px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 3px solid var(--border); border-radius: 7px;
           padding: 9px 11px; cursor: pointer; font-family: inherit;
           transition: opacity 140ms ease, border-color 140ms ease;
         }
         .ai-diff-row.add    { border-left-color: #7EE787; }
-        .ai-diff-row.edit   { border-left-color: #F5A623; }
-        .ai-diff-row.remove { border-left-color: #F0576B; }
+        .ai-diff-row.edit   { border-left-color: var(--accent2); }
+        .ai-diff-row.remove { border-left-color: var(--danger); }
         .ai-diff-row.skipped { opacity: 0.38; }
         .ai-diff-row.skipped .ai-diff-text { text-decoration: line-through; }
 
         .ai-sign { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; line-height: 1; }
         .ai-diff-row.add .ai-sign    { color: #7EE787; }
-        .ai-diff-row.edit .ai-sign   { color: #F5A623; }
-        .ai-diff-row.remove .ai-sign { color: #F0576B; }
+        .ai-diff-row.edit .ai-sign   { color: var(--accent2); }
+        .ai-diff-row.remove .ai-sign { color: var(--danger); }
 
         .ai-surface {
           font-family: 'JetBrains Mono', monospace;
           font-size: 9px; letter-spacing: 0.06em;
-          text-transform: uppercase; color: #6B7280;
+          text-transform: uppercase; color: var(--muted);
         }
-        .ai-diff-text { font-size: 12px; color: #E7EAEE; line-height: 1.4; word-break: break-word; }
+        .ai-diff-text { font-size: 12px; color: var(--text); line-height: 1.4; word-break: break-word; }
         .ai-skip-mark {
           font-family: 'JetBrains Mono', monospace;
           font-size: 8.5px; letter-spacing: 0.08em;
-          text-transform: uppercase; color: #6B7280;
+          text-transform: uppercase; color: var(--muted);
         }
 
         .ai-actions { display: flex; gap: 8px; margin-top: 12px; }
         .ai-apply {
-          flex: 1; background: #5EEAD4; color: #07100E; border: none;
+          flex: 1; background: var(--accent); color: #07100E; border: none;
           border-radius: 7px; padding: 10px 0; cursor: pointer;
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
@@ -5987,7 +6766,7 @@ function TodoApp() {
         .ai-apply:not(:disabled):active { transform: scale(0.98); }
         .ai-discard {
           background: transparent; color: #9AA3AF;
-          border: 1px solid #23272E; border-radius: 7px;
+          border: 1px solid var(--border); border-radius: 7px;
           padding: 10px 18px; cursor: pointer;
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px; letter-spacing: 0.06em;
@@ -5996,13 +6775,13 @@ function TodoApp() {
         .ai-hint { font-size: 10px; color: #4B5563; text-align: center; margin-top: 8px; }
 
         @media (hover: hover) and (pointer: fine) {
-          .ai-chip:hover { border-color: #5EEAD4; color: #C9D1D9; }
+          .ai-chip:hover { border-color: var(--accent); color: #C9D1D9; }
           .ai-diff-row:hover { border-color: #39414D; }
           .ai-send:not(:disabled):hover,
           .ai-apply:not(:disabled):hover { opacity: 0.88; }
-          .ai-discard:hover { border-color: #39414D; color: #E7EAEE; }
-          .ai-key-btn:hover { border-color: #5EEAD4; color: #5EEAD4; }
-          .ai-gate-steps a:hover { border-bottom-color: #5EEAD4; }
+          .ai-discard:hover { border-color: #39414D; color: var(--text); }
+          .ai-key-btn:hover { border-color: var(--accent); color: var(--accent); }
+          .ai-gate-steps a:hover { border-bottom-color: var(--accent); }
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -6017,7 +6796,7 @@ function TodoApp() {
               radial-gradient(circle at 85% 100%, rgba(245,166,35,0.06), transparent 45%),
               repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 28px),
               repeating-linear-gradient(90deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 28px),
-              #0B0D10;
+              var(--bg);
           }
 
           .panel {
@@ -6137,6 +6916,17 @@ function TodoApp() {
                   <path d="M16 9l5 6M21 9l-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
               )}
+            </button>
+            <button
+              className="titlebar-icon-btn"
+              onClick={() => { setShowThemes(true); sound.click(); }}
+              aria-label="Themes and ambience"
+              title="Themes & ambience"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14">
+                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M12 3a9 9 0 0 0 0 18" fill="currentColor" opacity="0.55" />
+              </svg>
             </button>
             <button className="titlebar-icon-btn" onClick={triggerImport} aria-label="Import backup" title="Import backup">
               <svg viewBox="0 0 24 24" width="14" height="14">

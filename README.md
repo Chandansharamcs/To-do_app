@@ -95,7 +95,8 @@ To-do_app/
 ├── DESIGN.md ·············· design system, tokens, component anatomy
 ├── HANDOFF.md ············· architecture, features, known issues
 ├── AGENTS.md ·············· conventions for AI agents & contributors
-├── CHANGELOG.md ··········· version history, v11 → v15
+├── CHANGELOG.md ··········· version history, v6 → v21
+├── release.sh ············· release automation (verify → commit → push)
 │
 ├── icon-*.png ············· 192/512 + maskable variants
 ├── favicon*.{png,ico} ····· 16/32 + legacy
@@ -195,12 +196,14 @@ Static hosting — currently GitHub Pages off `main`. Any host works.
 > more than once — see [CHANGELOG.md](CHANGELOG.md).
 
 ```bash
-# 1. bump the cache tag in sw.js
-# 2. rebuild
-npm run build
-# 3. ship
-git add -A && git commit -m "Release vNN: ..." && git push origin main
+./release.sh 22            # verifies, commits, pushes
+./release.sh 22 --worker   # also deploys the Cloudflare worker
+./release.sh 22 --dry-run  # preview, change nothing
 ```
+
+The script refuses to continue if the cache tag didn't actually change, if the
+version doesn't match the source, or if a credential appears in the staged
+diff. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full table.
 
 The worker deploys **separately** and is not touched by a Pages deploy:
 

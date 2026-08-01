@@ -90,17 +90,23 @@ When adding a new action type: add it to the system prompt, add a validator
 branch, add a `describeAIAction` case, and add an `applyAIActions` case. All
 four, or it silently no-ops.
 
-**`R11` · The AI key never leaves the device except to Google.**
+**`R11` · Core colours come from CSS variables, never hex literals.**
+Anything in the `<style>` block uses `var(--accent)`, `var(--panel)`,
+`var(--text)` and friends. A hardcoded hex will look correct on the default
+theme and wrong on the other five. `CATEGORY_PALETTE` and `AREAS` are the
+exception — those are data.
+
+**`R12` · The AI key never leaves the device except to Google.**
 It lives in `tasksh.aikey.v1`. Do not add it to the export payload, do not
 sync it to KV, do not log it. If you add a new "backup everything" feature,
 explicitly exclude it — backups get shared between devices and people.
 
-**`R12` · Edits must preserve history.**
+**`R13` · Edits must preserve history.**
 `applyAIActions` spreads over the existing object (`{...r, ...changes}`) rather
 than rebuilding it. Streak `history`, `claimed` and `icon` fields must survive
 any edit. There's a regression test for this; keep it passing.
 
-**`R13` · No modals. No new libraries. No CSS framework.**
+**`R14` · No new libraries. No CSS framework.**
 Editing happens inline, in place, on the row or card itself. The app has zero
 runtime dependencies beyond React. Keep it that way unless there's a real
 reason and the user agrees.
@@ -257,6 +263,13 @@ change can't retroactively demote anyone. Match that standard.
 ## 4 · Workflow
 
 ### The release ritual
+
+**Use `./release.sh <version>`.** It performs every step below plus the
+verification each one needs. Manual releases have failed silently more than
+once; the script's job is to refuse rather than to be convenient. Run it with
+`--dry-run` first if unsure, `--worker` to also deploy Cloudflare.
+
+The steps it automates:
 
 ```
   ┌─────────────────────────────────────────────────────────┐

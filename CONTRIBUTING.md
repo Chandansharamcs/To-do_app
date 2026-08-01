@@ -46,32 +46,43 @@ npm run serve      # http://localhost:8080
 
 ## The loop
 
-```
-   edit app.jsx
-        │
-        ▼
-   npm run build          ← never hand-edit bundle.js
-        │
-        ▼
-   bump CACHE = "tasksh-vN" in sw.js
-        │
-        ▼
-   verify (see below — actually verify, don't assert)
-        │
-        ▼
-   CHANGELOG.md entry: what broke · why · how you checked
-        │
-        ▼
-   git commit -m "Release vNN: <summary>"
-   git push origin main
-        │
-        ▼
-   worker changed?  cd worker && npx wrangler deploy
+Use the script. It exists because the manual version has failed repeatedly in
+*silent* ways — a truncated paste leaving bash at a `>` prompt, a `sed` that
+matched nothing and exited 0, files copied while a stale worker got deployed.
+
+```bash
+./release.sh 22            # copy, verify, commit, push
+./release.sh 22 --worker   # ...and deploy the Cloudflare worker
+./release.sh 22 --dry-run  # show everything, change nothing
 ```
 
-Skipping the cache bump means returning users silently keep the old app.
-Skipping the changelog entry means the *why* is lost in three weeks.
+What it refuses to do:
 
+| Situation | Result |
+|---|---|
+| Source folder missing | Stops, tells you the `unzip` command |
+| Version arg ≠ tag in `sw.js` | Stops, tells you the right number |
+| Cache tag didn't actually change after copying | Stops — the copy silently failed |
+| `bundle.js` doesn't match source | Stops |
+| An API key / private key is in the staged diff | **Stops before committing** |
+| Working tree already dirty | Asks before sweeping it into the commit |
+| Same version run twice | No-ops cleanly, exit 0 |
+
+It commits as `Release vNN` — deliberately short and comma-free, because long
+messages have been truncated mid-paste by the terminal.
+
+If `worker/src/index.js` changed but you didn't pass `--worker`, it warns you
+on the way out. GitHub Pages and Cloudflare are separate deploy targets and
+neither updates the other.
+
+### Doing it by hand
+
+Only if the script can't run. The order matters:
+
+```
+edit app.jsx → npm run build → bump CACHE in sw.js
+  → verify with grep → commit → push → wrangler deploy (if worker changed)
+```
 
 ## Verification bar
 

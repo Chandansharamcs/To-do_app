@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v22`** | 2026-07-31 | Theme engine, ambience, calm mode, XP rebalance |
 | **`v21`** | 2026-07-31 | Ambient bg, 10-axis radar, timeline rebuild |
 | **`v20`** | 2026-07-31 | AI latency: disable thinking, trim prompt |
 | **`v19`** | 2026-07-31 | Fix AI 404 — dynamic model resolution |
@@ -48,6 +49,59 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-07-31 — `tasksh-v22`**  ·  *atmosphere release*
+
+First of three planned releases turning the app into a gamified companion.
+This one is the foundation everything else plugs into: themes, ambience and
+motion. The pet, achievements and reward screens land in v23/v24.
+
+- **Rebalanced the XP curve.** The old curve put level 20 at 19,000 XP —
+  roughly **238 perfect days**, which meant nearly all level-gated content
+  would never be seen. New curve `12.5(L-1)(L+6)` reaches level 20 in
+  **~103 days**. Two invariants held deliberately: level 2 still unlocks at
+  exactly 100 XP, and **no level costs more than before**, so no save can
+  be retroactively demoted — some players simply level up on upgrade.
+  Verified the inverse is exact on every boundary from level 1 to 40.
+- **Added: theme engine.** Six themes — Terminal, Moss (lv3), Dusk (lv6),
+  Abyss (lv10), Ember (lv14), Aurora (lv20). Each changes background,
+  panels, borders, text, accents, glow, particles and the PWA theme-color.
+  - Driven by one `THEMES` table. Adding a theme is a config entry; no
+    component changes.
+  - **284 hardcoded hex values in the `<style>` block were converted to
+    CSS custom properties.** This was the real work — without it a theme
+    could only recolour a fraction of the UI. JS colour logic
+    (`CATEGORY_PALETTE`, `AREAS`) deliberately keeps literals.
+  - Locked themes show the required level and live progress, and are
+    genuinely unselectable (verified: clicking one changes nothing).
+  - A saved theme that's no longer unlocked (restored backup, older save)
+    falls back to default rather than granting unearned content.
+- **Added: ambient engine.** Four stacked layers — theme blobs drifting on
+  96s/138s offset cycles, a time-of-day wash with a slow light ray, a
+  particle field, and film grain. All CSS, no canvas and no rAF loop, so
+  cost is compositor-only. Particle positions are memoised per theme so
+  they don't jump on re-render.
+- **Added: time-of-day ambience.** Morning / afternoon / evening / night,
+  layered *over* the theme rather than replacing it, so "Ember at night"
+  still looks like Ember. Night adds a star field. Re-checked every 2
+  minutes, not every tick.
+- **Added: calm mode.** Slows all motion (`--motion-scale`), lifts blur on
+  the ambient layers, desaturates the panel and shows a breathing guide.
+  Navigation stays fully functional.
+- **Added: microinteractions.** Completion pulse ring and a floating +XP
+  on habit completion; light-burst and screen-pulse keyframes ready for
+  v23's level-up screen. All transform/opacity only.
+- **Performance:** measured **60fps** both idle on the heaviest theme
+  (Aurora, 16 particles + rays + grain) and while scrolling the Quest tab.
+- **Accessibility:** `prefers-reduced-motion` disables particles, rays,
+  the breathing guide and all one-shot effects while keeping the colours.
+- Bumped service worker cache to `tasksh-v22`.
+
+**Deliberately not done this release** (and why): glassmorphism was
+requested but the app is flat terminal/Conky by design — `DESIGN.md`
+explicitly forbids card shadows, and adding frosted panels would reverse
+that. Confirmed with the owner: staying flat, richness comes from ambience
+and motion instead.
 
 **2026-07-31 — `tasksh-v21`**
 - **Added: ambient animated background.** Two layers of oversized, very
