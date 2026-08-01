@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v23   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v24   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -117,6 +117,21 @@ CHANGELOG.md       - version history (moved out of this file at v15)
 not in `src/`. The `build` script in `package.json` still points at
 `src/app.jsx`, so a clean clone cannot build until one or the other is
 reconciled. See AGENTS.md [Known traps](AGENTS.md#2--known-traps).
+
+## Achievements & coins (v24)
+
+`useAchievements(snapshot)` owns both. Achievements are **pure predicates**
+over a derived snapshot — never incremental counters — so they can be added
+later and award retroactively, and can't desync. Add one by appending to
+`ACHIEVEMENTS` with a `test(s)` function; set `hidden: true` to keep it out of
+the gallery until earned.
+
+Coins accumulate and currently have no sink; that's deliberate until there's
+something worth balancing them against.
+
+`tasksh.meta.v1` holds one-off flags (`seenLevel`, hidden triggers, counters).
+Level-ups fire from `seenLevel`, not from XP directly, so they survive the app
+being closed.
 
 ## The pet (v23)
 

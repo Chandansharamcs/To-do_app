@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v24`** | 2026-08-01 | Achievements, coins, level rewards, ambience fix |
 | **`v23`** | 2026-08-01 | Pet: 7 forms, stats, evolution, hybrid voice |
 | **`v22`** | 2026-07-31 | Theme engine, ambience, calm mode, XP rebalance |
 | **`v21`** | 2026-07-31 | Ambient bg, 10-axis radar, timeline rebuild |
@@ -50,6 +51,52 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-01 — `tasksh-v24`**  ·  *progression*
+
+Last of the three-release arc. v22 built the atmosphere, v23 added the
+companion, this closes the loop with things to earn.
+
+- **Fixed: the ambience was invisible inside the app.** The v22 layers were
+  `position: fixed` *behind* `.panel` — but `.panel` has an opaque
+  background, and on phones it's full-bleed, so it covered them completely.
+  You only ever saw ambience in the margins on a wide desktop window.
+  - `AmbientBackground` gained a `scoped` mode rendering the same layers
+    absolutely **inside** the panel, with all real content lifted to
+    `z-index: 1`.
+  - The blob gradients were also authored for a full viewport where they
+    overlap heavily; inside a narrower panel they washed out. The scoped
+    layer now uses its own stronger four-blob set driven by the theme's own
+    accents, plus a counter-drifting second layer so it never reads static.
+    Measured colour spread across the panel more than doubled.
+- **Added: achievements.** 21 total, 7 of them hidden until earned.
+  Evaluated as **pure predicates over a snapshot** of existing data rather
+  than tracked incrementally, so they cannot desync and a new achievement
+  added later awards retroactively. Unlocks queue into a self-dismissing
+  toast.
+- **Added: coins.** Earned from achievements and level-ups. Deliberately
+  unspendable for now — v24 establishes the economy; a shop would need
+  balancing against content that doesn't exist yet. Purely additive avoids
+  designing a broken sink.
+- **Added: level reward screen.** Replaces the silent level change with a
+  moment: level, title, coins earned, themes unlocked, whether the pet is
+  evolving, and what's next.
+  - Crossing several levels at once (big XP import, long absence) reports
+    **every** theme unlocked in the span — "Abyss +2 more" — rather than
+    only one landing exactly on the new level.
+  - Fires once per level via a `seenLevel` marker, so a level-up that
+    happened while the app was closed still celebrates on next launch, and
+    restoring an older backup won't replay it.
+- **Added: achievement gallery** inside the themes sheet, with earned/locked
+  states, coin values, and a count of hidden ones still undiscovered.
+- **Added:** `tasksh.meta.v1` for one-off flags (seen level, hidden-achievement
+  triggers, calm-session count) rather than a key per flag.
+- **Verified:** achievements fire and pay out, the toast queues, the reward
+  screen fires once and reports multi-level unlocks correctly, the gallery
+  hides hidden entries, all 7 tabs render clean, export excludes achievement
+  and pet data, boots offline, reduced-motion respected, 43fps with every
+  system running at once.
+- Bumped service worker cache to `tasksh-v24`.
 
 **2026-08-01 — `tasksh-v23`**  ·  *the pet*
 

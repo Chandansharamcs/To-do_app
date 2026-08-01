@@ -140,6 +140,122 @@ const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 // offline/bundled build. Mute state persists in localStorage.
 // ============================================================
 // ============================================================
+// ACHIEVEMENTS, COINS & LEVEL REWARDS (v24)
+//
+// All three share one idea: progress should be *noticed*. Achievements are
+// evaluated from existing data rather than tracked incrementally, so they
+// can be added retroactively and can never desync -- same principle as XP.
+// ============================================================
+
+// Misc one-off flags that don't warrant their own key: which level the user
+// has already been congratulated for, hidden-achievement triggers, counters.
+const STORAGE_KEY_META = "tasksh.meta.v1";
+
+function saveMeta(patch) {
+  try {
+    const cur = loadStored(STORAGE_KEY_META, {});
+    localStorage.setItem(STORAGE_KEY_META, JSON.stringify({ ...cur, ...patch }));
+  } catch {}
+}
+
+function bumpMeta(key, by = 1) {
+  const cur = loadStored(STORAGE_KEY_META, {});
+  saveMeta({ [key]: (cur[key] || 0) + by });
+}
+
+const STORAGE_KEY_ACH = "tasksh.achievements.v1";
+const STORAGE_KEY_WALLET = "tasksh.wallet.v1";
+
+/**
+ * Each achievement is a pure predicate over a snapshot of app state.
+ * `hidden: true` means it isn't listed until earned -- discovering one
+ * should feel like finding something, not ticking a checklist.
+ */
+const ACHIEVEMENTS = [
+  // --- visible: the obvious ladder ---
+  { id: "first_task",   icon: "◇", name: "First Step",      desc: "complete your first task",              coins: 10,  test: (s) => s.tasksDone >= 1 },
+  { id: "ten_tasks",    icon: "◈", name: "Getting Going",   desc: "complete 10 tasks",                     coins: 25,  test: (s) => s.tasksDone >= 10 },
+  { id: "streak_7",     icon: "▲", name: "One Week",        desc: "hold a 7-day streak",                   coins: 40,  test: (s) => s.bestStreak >= 7 },
+  { id: "streak_30",    icon: "▲", name: "One Month",       desc: "hold a 30-day streak",                  coins: 120, test: (s) => s.bestStreak >= 30 },
+  { id: "streak_100",   icon: "★", name: "Centurion",       desc: "hold a 100-day streak",                 coins: 500, test: (s) => s.bestStreak >= 100 },
+  { id: "level_5",      icon: "◆", name: "Finding Rhythm",  desc: "reach level 5",                         coins: 30,  test: (s) => s.level >= 5 },
+  { id: "level_10",     icon: "◆", name: "Committed",       desc: "reach level 10",                        coins: 80,  test: (s) => s.level >= 10 },
+  { id: "level_20",     icon: "✦", name: "Ascendant",       desc: "reach level 20",                        coins: 400, test: (s) => s.level >= 20 },
+  { id: "perfect_day",  icon: "●", name: "Clean Sweep",     desc: "complete every habit in one day",       coins: 35,  test: (s) => s.totalHabits > 0 && s.doneToday >= s.totalHabits },
+  { id: "full_routine", icon: "▣", name: "On Schedule",     desc: "complete every routine in one day",     coins: 45,  test: (s) => s.totalRoutines > 0 && s.routinesDoneToday >= s.totalRoutines },
+  { id: "vault_5",      icon: "▢", name: "Vault Keeper",    desc: "keep 5 habits in the vault",            coins: 20,  test: (s) => s.vaultCount >= 5 },
+  { id: "bond_max",     icon: "♡", name: "Inseparable",     desc: "reach maximum friendship with your pet", coins: 150, test: (s) => s.friendship >= 95 },
+  { id: "evolved",      icon: "✧", name: "Metamorphosis",   desc: "see your pet evolve",                   coins: 25,  test: (s) => s.petStage >= 1 },
+  { id: "final_form",   icon: "✦", name: "Guardian",        desc: "reach your pet's final form",           coins: 350, test: (s) => s.petStage >= 6 },
+
+  // --- hidden: found, not pursued ---
+  { id: "early_bird",   icon: "☀", name: "Before Sunrise",  desc: "finish something before 6am",           coins: 60,  hidden: true, test: (s) => s.earlyFinish },
+  { id: "night_owl",    icon: "☾", name: "Night Shift",     desc: "finish something after midnight",       coins: 60,  hidden: true, test: (s) => s.lateFinish },
+  { id: "chatterbox",   icon: "◌", name: "Good Company",    desc: "have 50 conversations with your pet",   coins: 90,  hidden: true, test: (s) => s.chats >= 50 },
+  { id: "themed",       icon: "◐", name: "Interior Design", desc: "unlock every theme",                    coins: 200, hidden: true, test: (s) => s.level >= 20 },
+  { id: "calm_soul",    icon: "◯", name: "Stillness",       desc: "use calm mode 10 times",                coins: 70,  hidden: true, test: (s) => s.calmSessions >= 10 },
+  { id: "comeback",     icon: "↻", name: "Back Again",      desc: "return after a week away",              coins: 50,  hidden: true, test: (s) => s.returnedAfterGap },
+  { id: "wealthy",      icon: "◉", name: "Saver",           desc: "hold 1000 coins at once",               coins: 100, hidden: true, test: (s) => s.coins >= 1000 },
+];
+
+function achievementById(id) {
+  return ACHIEVEMENTS.find((a) => a.id === id);
+}
+
+/**
+ * Evaluates every achievement against the snapshot and returns the ids that
+ * are newly satisfied. Pure: callers decide what to do with the result.
+ */
+function evaluateAchievements(snapshot, earnedIds) {
+  const have = new Set(earnedIds);
+  const fresh = [];
+  for (const a of ACHIEVEMENTS) {
+    if (have.has(a.id)) continue;
+    let ok = false;
+    try { ok = !!a.test(snapshot); } catch { ok = false; }
+    if (ok) fresh.push(a.id);
+  }
+  return fresh;
+}
+
+// Coins are a soft currency: earned from achievements and level-ups, spent
+// on nothing yet by design -- v24 establishes the economy, spending comes
+// later. Keeping them purely additive avoids balance problems now.
+const LEVEL_COIN_REWARD = (level) => 20 + level * 5;
+
+/**
+ * Owns achievements + the coin wallet. Achievements are evaluated from a
+ * snapshot on every meaningful change, so adding a new one later awards it
+ * retroactively rather than only counting from the moment it shipped.
+ */
+function useAchievements(snapshot) {
+  const [earned, setEarned] = useState(() => loadStored(STORAGE_KEY_ACH, []));
+  const [wallet, setWallet] = useState(() => loadStored(STORAGE_KEY_WALLET, { coins: 0 }));
+  const [queue, setQueue] = useState([]);   // ids waiting to be celebrated
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_ACH, JSON.stringify(earned)); } catch {}
+  }, [earned]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_WALLET, JSON.stringify(wallet)); } catch {}
+  }, [wallet]);
+
+  useEffect(() => {
+    const fresh = evaluateAchievements({ ...snapshot, coins: wallet.coins }, earned);
+    if (!fresh.length) return;
+    setEarned((prev) => [...prev, ...fresh]);
+    setQueue((prev) => [...prev, ...fresh]);
+    const payout = fresh.reduce((sum, id) => sum + (achievementById(id)?.coins || 0), 0);
+    if (payout) setWallet((w) => ({ ...w, coins: w.coins + payout }));
+  }, [snapshot, earned, wallet.coins]);
+
+  const addCoins = useCallback((n) => setWallet((w) => ({ ...w, coins: Math.max(0, w.coins + n) })), []);
+  const shift = useCallback(() => setQueue((q) => q.slice(1)), []);
+
+  return { earned, wallet, coins: wallet.coins, queue, current: queue[0] || null, shift, addCoins };
+}
+
+// ============================================================
 // PET SYSTEM (v23)
 //
 // A persistent companion that grows with the user. Three separable pieces:
@@ -820,8 +936,12 @@ function applyTimePhase(phase) {
  * deliberately small: this is a compositor-only effect and the whole point
  * is that it never costs frames.
  */
-const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, calm }) {
+const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, calm, scoped = false }) {
   const kind = theme.ambient.particle;
+  // `scoped` renders the same layers absolutely inside the panel instead of
+  // fixed behind it. Needed because .panel is opaque -- without this the
+  // ambience is invisible on phones, where the panel is full-bleed.
+  const L = scoped ? "amb-layer amb-scoped" : "amb-layer";
 
   const dust = useMemo(() => {
     if (kind === "none") return [];
@@ -849,18 +969,19 @@ const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, 
 
   return (
     <>
-      <div className="amb-layer amb-time">
+      {scoped && <div className={`${L} amb-blobs`} />}
+      <div className={`${L} amb-time`}>
         <div className="amb-ray" />
       </div>
       {stars.length > 0 && (
-        <div className="amb-layer amb-stars">
+        <div className={`${L} amb-stars`}>
           {stars.map((st, i) => (
             <span key={i} style={{ left: st.left, top: st.top, animationDelay: st.delay, animationDuration: st.dur }} />
           ))}
         </div>
       )}
       {dust.length > 0 && (
-        <div className="amb-layer amb-dust">
+        <div className={`${L} amb-dust`}>
           {dust.map((d, i) => (
             <span
               key={i}
@@ -873,7 +994,7 @@ const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, 
           ))}
         </div>
       )}
-      <div className="amb-layer amb-grain" />
+      <div className={`${L} amb-grain`} />
       {calm && <div className="calm-breath" />}
     </>
   );
@@ -3018,7 +3139,14 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
         return { ...h, history: history.slice(-370) };
       })
     );
-    if (willBeDone) { sound.success(); petBus.emit("habitDone"); } else { sound.click(); }
+    if (willBeDone) {
+      sound.success();
+      petBus.emit("habitDone");
+      // hidden-achievement triggers: note the hour the user actually finished
+      const h = getISTParts().hour;
+      if (h < 6) saveMeta({ earlyFinish: true });
+      if (h >= 0 && h < 4) saveMeta({ lateFinish: true });
+    } else { sound.click(); }
   };
   const toggleBad = (id) => {
     const today = getISTDateString(0);
@@ -3351,11 +3479,114 @@ const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
 // a key is a credential, not data), and never synced to the worker's KV.
 const STORAGE_KEY_AI_KEY = "tasksh.aikey.v1";
 
+/** Slide-in toast when an achievement unlocks. Self-dismissing, queued. */
+function AchievementToast({ id, onDone }) {
+  const a = achievementById(id);
+  useEffect(() => {
+    const t = setTimeout(onDone, 4200);
+    return () => clearTimeout(t);
+  }, [id, onDone]);
+  if (!a) return null;
+  return (
+    <div className="ach-toast" onClick={onDone}>
+      <span className="ach-toast-icon">{a.icon}</span>
+      <span className="ach-toast-body">
+        <span className="ach-toast-kicker">achievement</span>
+        <span className="ach-toast-name">{a.name}</span>
+        <span className="ach-toast-desc">{a.desc}</span>
+      </span>
+      <span className="ach-toast-coins">+{a.coins}</span>
+    </div>
+  );
+}
+
+/**
+ * Level-up reward screen. Replaces the old silent level change with a
+ * moment: what you gained, what it unlocked, what's next.
+ */
+function LevelRewardScreen({ level, coins, unlockedTheme, extraThemes = 0, evolvedTo, onDone }) {
+  const next = THEMES.find((t) => t.unlockLevel > level);
+  const nextForm = nextFormAfter(level);
+  return (
+    <div className="lvl-backdrop" onClick={onDone}>
+      <div className="screen-pulse" />
+      <div className="burst" />
+      <div className="lvl-card" onClick={(e) => e.stopPropagation()}>
+        <div className="lvl-kicker">level up</div>
+        <div className="lvl-num">{level}</div>
+        <div className="lvl-title">{titleForLevel(level)}</div>
+
+        <div className="lvl-rewards">
+          <div className="lvl-reward">
+            <span className="lvl-reward-icon">◉</span>
+            <span className="lvl-reward-text">+{coins} coins</span>
+          </div>
+          {unlockedTheme && (
+            <div className="lvl-reward">
+              <span className="lvl-reward-icon" style={{ color: unlockedTheme.colors.accent }}>◐</span>
+              <span className="lvl-reward-text">
+                theme unlocked · <b>{unlockedTheme.name}</b>
+                {extraThemes > 0 ? ` +${extraThemes} more` : ""}
+              </span>
+            </div>
+          )}
+          {evolvedTo != null && (
+            <div className="lvl-reward">
+              <span className="lvl-reward-icon">✧</span>
+              <span className="lvl-reward-text">your pet is evolving…</span>
+            </div>
+          )}
+        </div>
+
+        <div className="lvl-next">
+          {next ? `next theme at level ${next.unlockLevel}` : "all themes unlocked"}
+          {nextForm ? ` · next form at ${nextForm.minLevel}` : ""}
+        </div>
+
+        <button className="evo-btn" onClick={onDone}>continue</button>
+      </div>
+    </div>
+  );
+}
+
+/** Achievement gallery, shown inside the themes sheet. */
+function AchievementGrid({ earned, coins }) {
+  const have = new Set(earned);
+  const visible = ACHIEVEMENTS.filter((a) => !a.hidden || have.has(a.id));
+  const hiddenLeft = ACHIEVEMENTS.filter((a) => a.hidden && !have.has(a.id)).length;
+  return (
+    <>
+      <div className="ach-head">
+        <span className="sheet-title">achievements</span>
+        <span className="ach-count">{have.size}/{ACHIEVEMENTS.length} · ◉ {coins}</span>
+      </div>
+      <div className="ach-grid">
+        {visible.map((a) => {
+          const got = have.has(a.id);
+          return (
+            <div key={a.id} className={`ach-card ${got ? "got" : ""}`}>
+              <span className="ach-icon">{got ? a.icon : "·"}</span>
+              <span className="ach-name">{a.name}</span>
+              <span className="ach-desc">{a.desc}</span>
+              <span className="ach-coins">◉ {a.coins}</span>
+            </div>
+          );
+        })}
+      </div>
+      {hiddenLeft > 0 && (
+        <div className="ach-hidden-note">
+          {hiddenLeft} hidden achievement{hiddenLeft === 1 ? "" : "s"} left to discover
+        </div>
+      )}
+    </>
+  );
+}
+
 /**
  * Theme gallery. Locked themes show their requirement and live progress
  * rather than being hidden -- knowing what's coming is most of the pull.
  */
-function ThemePicker({ ctl, level, totalXP, onClose }) {
+function ThemePicker({ ctl, level, totalXP, earned = [], coins = 0, onClose }) {
   const nextLevelAt = cumulativeXPForLevel(level + 1);
   const thisLevelAt = cumulativeXPForLevel(level);
 
@@ -3417,6 +3648,10 @@ function ThemePicker({ ctl, level, totalXP, onClose }) {
           level {level} · {Math.max(0, nextLevelAt - totalXP)} XP to level {level + 1}
         </div>
 
+        <div className="ach-section">
+          <AchievementGrid earned={earned} coins={coins} />
+        </div>
+
         <div className="calm-toggle-row">
           <div>
             <div className="calm-toggle-label">calm mode</div>
@@ -3424,7 +3659,11 @@ function ThemePicker({ ctl, level, totalXP, onClose }) {
           </div>
           <button
             className={`calm-switch ${ctl.calm ? "on" : ""}`}
-            onClick={() => { if (!ctl.calm) petBus.emit("calmSession"); ctl.setCalm(!ctl.calm); sound.click(); }}
+            onClick={() => {
+              if (!ctl.calm) { petBus.emit("calmSession"); bumpMeta("calmSessions"); }
+              ctl.setCalm(!ctl.calm);
+              sound.click();
+            }}
             aria-pressed={ctl.calm}
           >
             <span className="calm-knob" />
@@ -4435,6 +4674,60 @@ function TodoApp() {
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
   const themeCtl = useTheme(currentLevel);
   const petCtl = usePet(currentLevel);
+
+  // Achievements read a single derived snapshot. Memoised so the evaluation
+  // effect only re-runs when something it actually depends on changes.
+  const todayStr = getISTDateString(0);
+  const achSnapshot = useMemo(() => {
+    const meta = loadStored(STORAGE_KEY_META, {});
+    return {
+      level: currentLevel,
+      tasksDone: tasks.filter((t) => t.done).length,
+      bestStreak: Math.max(
+        goodHabits.reduce((m, h) => Math.max(m, computeStreak(h.history)), 0),
+        routines.reduce((m, r) => Math.max(m, computeStreak(r.history)), 0)
+      ),
+      doneToday: goodHabits.filter((h) => (h.history || []).includes(todayStr)).length,
+      totalHabits: goodHabits.length,
+      routinesDoneToday: routines.filter((r) => (r.history || []).includes(todayStr)).length,
+      totalRoutines: routines.length,
+      vaultCount: vaultHabits.length,
+      friendship: petCtl.pet.friendship,
+      petStage: petCtl.pet.stage,
+      chats: petCtl.pet.chats,
+      calmSessions: meta.calmSessions || 0,
+      earlyFinish: !!meta.earlyFinish,
+      lateFinish: !!meta.lateFinish,
+      returnedAfterGap: !!meta.returnedAfterGap,
+    };
+  }, [currentLevel, tasks, goodHabits, routines, vaultHabits, petCtl.pet, todayStr]);
+
+  const achCtl = useAchievements(achSnapshot);
+
+  // Level-up detection. Stored separately from XP so a reward screen fires
+  // once per level crossed, even if the app was closed when it happened.
+  const [levelReward, setLevelReward] = useState(null);
+  useEffect(() => {
+    const meta = loadStored(STORAGE_KEY_META, {});
+    const seen = meta.seenLevel || 1;
+    if (currentLevel > seen) {
+      const coins = LEVEL_COIN_REWARD(currentLevel);
+      achCtl.addCoins(coins);
+      // If several levels were crossed at once, report every theme unlocked
+      // in the span -- not just one landing exactly on the new level.
+      const spanned = THEMES.filter((t) => t.unlockLevel > seen && t.unlockLevel <= currentLevel);
+      setLevelReward({
+        level: currentLevel,
+        coins,
+        unlockedTheme: spanned.length ? spanned[spanned.length - 1] : null,
+        extraThemes: spanned.length > 1 ? spanned.length - 1 : 0,
+        evolvedTo: formForLevel(currentLevel).stage > formForLevel(seen).stage ? formForLevel(currentLevel).stage : null,
+      });
+      saveMeta({ seenLevel: currentLevel });
+    } else if (currentLevel < seen) {
+      saveMeta({ seenLevel: currentLevel });
+    }
+  }, [currentLevel]);
   const [input, setInput] = useState("");
   const [priority, setPriority] = useState("mid");
   const [filter, setFilter] = useState("all");
@@ -4667,6 +4960,19 @@ function TodoApp() {
   return (
     <div className="app-root" data-particle={themeCtl.theme.ambient.particle}>
       <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} />
+      {achCtl.current && (
+        <AchievementToast id={achCtl.current} onDone={achCtl.shift} />
+      )}
+      {levelReward && (
+        <LevelRewardScreen
+          level={levelReward.level}
+          coins={levelReward.coins}
+          unlockedTheme={levelReward.unlockedTheme}
+          extraThemes={levelReward.extraThemes}
+          evolvedTo={levelReward.evolvedTo}
+          onDone={() => setLevelReward(null)}
+        />
+      )}
       {petCtl.evolution && (
         <EvolutionOverlay
           from={petCtl.evolution.from}
@@ -4680,6 +4986,8 @@ function TodoApp() {
           ctl={themeCtl}
           level={currentLevel}
           totalXP={totalXP}
+          earned={achCtl.earned}
+          coins={achCtl.coins}
           onClose={() => setShowThemes(false)}
         />
       )}
@@ -4789,6 +5097,7 @@ function TodoApp() {
           height: 100%;
           max-height: 780px;
           background: var(--panel);
+          isolation: isolate;
           border: 1px solid var(--border);
           border-radius: 14px;
           overflow: hidden;
@@ -5873,6 +6182,162 @@ function TodoApp() {
           .xp-pop, .burst, .screen-pulse { display: none !important; }
         }
 
+
+
+        /* Scoped ambience: the same layers, rendered INSIDE the panel.
+           .panel is opaque, so the fixed layers behind it are invisible --
+           on phones the panel is full-bleed and covers the screen entirely.
+           These sit at z-index 0 with all real content lifted to 1. */
+        .amb-scoped {
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          border-radius: inherit;
+        }
+
+        .amb-scoped.amb-blobs {
+          background:
+            radial-gradient(58% 42% at 14% 8%,  var(--accent),  transparent 62%),
+            radial-gradient(52% 40% at 88% 92%, var(--accent2), transparent 62%),
+            radial-gradient(46% 38% at 72% 26%, var(--accent),  transparent 66%),
+            radial-gradient(50% 44% at 26% 74%, var(--accent2), transparent 66%);
+          /* the gradients use full-strength theme colours and are dimmed
+             here, so every theme keeps its own character */
+          opacity: 0.14;
+          animation: ambientDrift calc(96s * var(--motion-scale)) ease-in-out infinite alternate;
+          transform-origin: center;
+        }
+
+        /* a second, slower counter-drifting layer stops it reading as a
+           static wash */
+        .amb-scoped.amb-blobs::after {
+          content: "";
+          position: absolute;
+          inset: -18%;
+          background:
+            radial-gradient(46% 40% at 78% 18%, var(--accent),  transparent 64%),
+            radial-gradient(44% 42% at 20% 84%, var(--accent2), transparent 64%);
+          opacity: 0.55;
+          animation: ambientDriftAlt calc(138s * var(--motion-scale)) ease-in-out infinite alternate;
+        }
+
+        /* the time-of-day wash needs more presence inside the panel too */
+        .amb-scoped.amb-time {
+          background: radial-gradient(130% 78% at 50% -8%, var(--time-warm), transparent 62%);
+          opacity: calc(var(--time-light, 1) * 2.2);
+        }
+
+        /* Everything the user actually reads sits above the ambience. */
+        .panel > .titlebar,
+        .panel > .tabs,
+        .panel > .tab-content,
+        .panel > .data-msg,
+        .panel > .banner { position: relative; z-index: 1; }
+
+
+        /* ---- achievements + rewards (v24) ---- */
+        .ach-toast {
+          position: fixed; left: 50%; top: 16px;
+          transform: translateX(-50%);
+          z-index: 90; width: calc(100% - 32px); max-width: 380px;
+          display: flex; align-items: center; gap: 11px;
+          padding: 11px 13px; cursor: pointer;
+          background: var(--panel);
+          border: 1px solid var(--accent);
+          border-radius: 12px;
+          box-shadow: 0 8px 30px -8px var(--glow);
+          animation: achIn 420ms cubic-bezier(.16,1,.3,1);
+        }
+        @keyframes achIn {
+          from { transform: translate(-50%, -20px); opacity: 0; }
+          to   { transform: translate(-50%, 0);     opacity: 1; }
+        }
+        .ach-toast-icon {
+          font-size: 20px; color: var(--accent);
+          text-shadow: 0 0 12px var(--glow); flex-shrink: 0;
+        }
+        .ach-toast-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+        .ach-toast-kicker {
+          font-family: 'JetBrains Mono', monospace; font-size: 8px;
+          letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent);
+        }
+        .ach-toast-name { font-size: 13px; font-weight: 600; color: var(--text); }
+        .ach-toast-desc { font-size: 10px; color: var(--muted); }
+        .ach-toast-coins {
+          font-family: 'JetBrains Mono', monospace; font-size: 12px;
+          font-weight: 700; color: var(--accent2); flex-shrink: 0;
+        }
+
+        /* level reward */
+        .lvl-backdrop {
+          position: fixed; inset: 0; z-index: 85;
+          background: rgba(0,0,0,0.8);
+          display: flex; align-items: center; justify-content: center;
+          animation: fadeIn 300ms ease;
+        }
+        .lvl-card {
+          text-align: center; padding: 28px 22px; width: 88%; max-width: 340px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-radius: 18px;
+          animation: sheetUp 520ms cubic-bezier(.16,1,.3,1);
+        }
+        .lvl-kicker {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          letter-spacing: 0.3em; text-transform: uppercase; color: var(--accent2);
+        }
+        .lvl-num {
+          font-family: 'JetBrains Mono', monospace; font-size: 62px; font-weight: 700;
+          line-height: 1.05; color: var(--accent);
+          text-shadow: 0 0 26px var(--glow); margin: 6px 0 2px;
+        }
+        .lvl-title { font-size: 13px; color: var(--text); margin-bottom: 18px; }
+        .lvl-rewards {
+          display: flex; flex-direction: column; gap: 8px;
+          padding: 14px 0; border-top: 1px solid var(--track); border-bottom: 1px solid var(--track);
+        }
+        .lvl-reward { display: flex; align-items: center; gap: 9px; justify-content: center; }
+        .lvl-reward-icon { font-size: 14px; color: var(--accent2); }
+        .lvl-reward-text { font-size: 12px; color: var(--text); }
+        .lvl-reward-text b { color: var(--accent); }
+        .lvl-next {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--muted); margin-top: 12px;
+        }
+
+        /* gallery */
+        .ach-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--track); }
+        .ach-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+        .ach-count {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--accent2);
+        }
+        .ach-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+        @media (min-width: 520px) { .ach-grid { grid-template-columns: repeat(3, 1fr); } }
+        .ach-card {
+          display: flex; flex-direction: column; gap: 2px;
+          padding: 9px; border-radius: 10px;
+          background: var(--bg); border: 1px solid var(--border);
+          opacity: 0.5;
+        }
+        .ach-card.got { opacity: 1; border-color: var(--accent); }
+        .ach-icon { font-size: 15px; color: var(--muted); }
+        .ach-card.got .ach-icon { color: var(--accent); text-shadow: 0 0 10px var(--glow); }
+        .ach-name {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-weight: 600; color: var(--text);
+        }
+        .ach-desc { font-size: 8.5px; color: var(--muted); line-height: 1.35; }
+        .ach-coins {
+          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          color: var(--accent2); margin-top: 2px;
+        }
+        .ach-hidden-note {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--muted); text-align: center; margin-top: 10px; font-style: italic;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .ach-toast, .lvl-card { animation: none !important; }
+        }
 
         /* ---- pet (v23) ---- */
         .tabs button.tab-pet { color: var(--accent2); }
@@ -7661,6 +8126,7 @@ function TodoApp() {
       `}</style>
 
       <div className="panel">
+        <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} scoped />
         {banner && (
           <div className="quest-banner" onClick={() => setBanner(null)}>
             <span className="quest-banner-icon">▸</span>
