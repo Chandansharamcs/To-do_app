@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v25`** | 2026-08-01 | Merged pet+ai into one companion, big perf fix |
 | **`v24`** | 2026-08-01 | Achievements, coins, level rewards, ambience fix |
 | **`v23`** | 2026-08-01 | Pet: 7 forms, stats, evolution, hybrid voice |
 | **`v22`** | 2026-07-31 | Theme engine, ambience, calm mode, XP rebalance |
@@ -51,6 +52,58 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-01 — `tasksh-v25`**  ·  *one companion*
+
+- **Merged the `pet` and `ai` tabs into one.** They were two chat boxes
+  talking to the same model: the thing with a face couldn't change anything,
+  and the thing that could change things had no personality. Now there is
+  one creature — it replies in character, and when a message implies a
+  change it hands over a reviewable diff **in the same conversation**.
+  - The tab is named after your pet (`pip` by default).
+  - New `POST /companion` worker endpoint returns `{reply, actions}` in a
+    single call instead of two round trips to two prompts.
+  - **The trust boundary did not move.** Actions are still re-validated by
+    `sanitiseActions()` and still applied only after you approve the diff.
+  - If the model returns prose instead of JSON, the pet speaks it rather
+    than erroring — a companion that goes silent on a parse failure is
+    worse than one that just talks.
+  - Stats collapse behind a toggle so the conversation gets the space.
+  - Local greetings still come from the offline voice engine, so the pet
+    is never mute without a key.
+  - Removed ~390 lines of now-dead code (`PetView`, `AIView`,
+    `requestPetReply`, `requestAIActions`). `/pet` and `/ai` remain on the
+    worker, annotated as legacy, because a phone on a cached pre-v25
+    bundle still calls them until its service worker updates.
+
+- **Fixed: ambience was invisible inside the app.** Reported after v24 —
+  the layers were `position: fixed` *behind* `.panel`, which is opaque and
+  full-bleed on phones, so it covered them entirely. The layers now render
+  **inside** the panel with content lifted above them, and use their own
+  stronger gradient set (the originals were tuned for a full viewport where
+  they overlap heavily, and washed out in a narrower panel).
+
+- **Fixed: a serious frame-rate regression that fix introduced.** Measured
+  **13fps** on a 1366px laptop. Diagnosed by isolation rather than guesswork:
+  - The whole ambient stack was being rendered **twice** — fixed behind the
+    panel *and* scoped inside it. On a laptop the panel covers most of the
+    viewport, so the outer copy was paying full cost to composite pixels
+    nobody could see. Removed. *(+17fps)*
+  - `.app-root::before/::after` were v22 leftovers animating two
+    full-viewport gradient surfaces behind that same opaque panel. Replaced
+    with one cheap static gradient for the margin area. *(+18fps)*
+  - Gradient layers now rasterise at **1/3 resolution and scale up** —
+    radial gradients have no high-frequency detail so the upscale is
+    invisible, but the painted area drops ~9x. *(+13fps)*
+  - Dropped `mix-blend-mode` on the grain (forces a backdrop re-read every
+    frame) and `contain: strict` (forced a composited layer per element,
+    multiplying memory bandwidth on large panels).
+  - Above 900px the grain is hidden and the wash dialled back — the
+    subtlest layers are the least visible on a big screen, so shed them
+    rather than drop frames for effects nobody can see.
+  - **Result: 1920px 17→46fps, 1366px 13→60fps, phone 60fps.**
+
+- Bumped service worker cache to `tasksh-v25`.
 
 **2026-08-01 — `tasksh-v24`**  ·  *progression*
 

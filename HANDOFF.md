@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v24   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v25   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -132,6 +132,19 @@ something worth balancing them against.
 `tasksh.meta.v1` holds one-off flags (`seenLevel`, hidden triggers, counters).
 Level-ups fire from `seenLevel`, not from XP directly, so they survive the app
 being closed.
+
+## The companion (v25)
+
+`CompanionView` is the single AI surface — chat and data changes in one place.
+`POST /companion` returns `{reply, actions}`; actions go through the same
+`sanitiseActions()` validation and diff-approval as before. `/pet` and `/ai`
+still exist on the worker as legacy routes for cached clients; don't extend
+them.
+
+**Ambience lives inside `.panel`, not behind it** (it's opaque). Only one
+stack is rendered — adding a second is what caused the v25 frame-rate
+regression. Gradient layers paint at 1/3 scale and are scaled up 3x; keep that
+if you touch them.
 
 ## The pet (v23)
 

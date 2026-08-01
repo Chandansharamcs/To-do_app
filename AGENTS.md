@@ -155,6 +155,16 @@ if (willBeDone) ...   // ← may still be false; updater may not have run
 Derive it from current state *before* dispatching. Fixed in six places in
 v23; don't reintroduce the pattern.
 
+### ⚠ Never render the ambient stack twice
+
+v25 briefly rendered it both fixed-behind and scoped-inside the panel. The
+panel covers most of a laptop viewport, so the outer copy cost ~17fps to
+composite pixels nobody could see. One stack, inside the panel.
+
+Large animated gradient surfaces are fill-rate bound: paint them at 1/3 scale
+and `scale: 3` them up. Avoid `mix-blend-mode` and per-element
+`contain: strict` on full-surface layers.
+
 ### ⚠ The pet must never be silent
 
 `petGreeting`/`petReaction` are local by design. If you add pet dialogue,

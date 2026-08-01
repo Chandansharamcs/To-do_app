@@ -399,7 +399,10 @@ function buildPayload(model, snap, prompt) {
   };
 }
 
-// ---- pet conversation ----------------------------------------------------
+// ---- pet conversation (LEGACY) -------------------------------------------
+// Superseded by /companion in v25, which returns reply + actions in one call.
+// Kept alive because a phone running a cached pre-v25 bundle will still call
+// this until its service worker updates. Do not extend it.
 // Deliberately separate from /ai: the pet returns prose and has NO ability to
 // emit actions, so a persuasive message can never make it edit the user's
 // data. Its persona is fixed here rather than being user-supplied.
@@ -492,6 +495,155 @@ async function handlePet(request, env) {
   if (!reply) reply = "mm. i'm here.";
   console.log(`[pet] ${model.replace(/^models\//, "")} -> ${reply.length} chars`);
   return json({ reply });
+}
+
+// ---- companion: personality + actions in one call -------------------------
+// v25 merged the separate /pet (prose) and /ai (actions) endpoints. Two calls
+// meant two models, two personalities and two chat boxes for what is
+// conceptually one creature. This returns both: an in-character reply, and
+// zero or more proposed actions which are validated exactly as before.
+//
+// The action list is still re-validated by sanitiseActions() and still only
+// applied after the user approves the diff -- merging the surfaces did not
+// merge the trust boundary.
+
+const COMPANION_PROMPT = `You are a small companion creature living inside "tasks.sh", a personal productivity app. You are talking to your owner, and you can also change their data for them.
+
+PERSONALITY — hold this exactly:
+- warm, calm, quietly intelligent, observant
+- supportive without being saccharine; encouraging without cheerleading
+- lightly playful, dry humour occasionally
+- you notice things about their day and reference them naturally
+- NEVER childish, never hyperactive, never more than one exclamation mark
+- you are a companion who cares, not a servant
+
+STYLE:
+- lowercase, conversational, 1-3 short sentences
+- no emoji, no markdown, no bullet lists
+- if they seem tired, suggest less, not more
+- acknowledge wins once, specifically, then move on
+
+You reply with ONLY a JSON object:
+{"reply":"what you say, in character","actions":[...]}
+
+"actions" is usually EMPTY. Only fill it when the user clearly asks you to add, change or remove something. Never volunteer changes they did not ask for.
+
+Action shapes (use exactly):
+{"op":"add_routine","time":"HH:MM","label":str,"duration":mins,"alternatives":[str]}
+{"op":"edit_routine","id":num,"time":"HH:MM","label":str,"duration":mins}
+{"op":"delete_routine","id":num}
+{"op":"add_vault_habit","label":str,"weeklyGoal":1-7,"icon":"glyph"}
+{"op":"edit_vault_habit","id":num,"label":str,"weeklyGoal":1-7}
+{"op":"delete_vault_habit","id":num}
+{"op":"add_good_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
+{"op":"add_bad_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
+{"op":"delete_good_habit","id":num}
+{"op":"delete_bad_habit","id":num}
+{"op":"add_reward","label":str,"cost":num}
+{"op":"delete_reward","id":num}
+
+Rules: 24h times, IST; morning=06:00-09:00, evening=18:00-21:00. Edit/delete MUST use ids from the snapshot — never invent them. On edits include only changed fields. XP: trivial 5-10, normal 10-25, hard 30-50; rewards 50-300. Optional "sub" must match the area: work=deep|admin|learning, fitness=training|movement, health=nutrition|sleep|mind, self=creative|social. Never delete unless clearly asked — prefer an edit. Few good actions over many trivial.
+
+When you do propose actions, your "reply" should say what you're suggesting in one natural sentence — do not list them, the user sees them separately.`;
+
+async function handleCompanion(request, env) {
+  const body = await request.json();
+  const apiKey = (typeof body.apiKey === "string" && body.apiKey.trim()) || env.GEMINI_API_KEY || "";
+  if (!apiKey) return json({ error: "no_key", message: "No API key. Add one to talk." }, 401);
+
+  const message = typeof body.message === "string" ? body.message.trim().slice(0, 800) : "";
+  if (!message) return json({ error: "empty message" }, 400);
+
+  const snap = buildSnapshot(body.data || {});
+  const petState = typeof body.context === "string" ? body.context.slice(0, 700) : "";
+  const log = Array.isArray(body.log) ? body.log.slice(-6) : [];
+
+  let model;
+  try {
+    model = await resolveModel(apiKey, env);
+  } catch (err) {
+    const detail = String(err.detail || "");
+    if (err.status === 403 || (err.status === 400 && detail.includes("API_KEY_INVALID"))) {
+      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
+    }
+    return json({ error: "model", message: "Couldn't pick a model." }, 502);
+  }
+
+  const contents = [];
+  for (const m of log) {
+    if (!m || typeof m.text !== "string") continue;
+    contents.push({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.text.slice(0, 240) }] });
+  }
+  contents.push({
+    role: "user",
+    parts: [{ text: `[you: ${petState}]\n[their data: ${JSON.stringify(snap)}]\n\n${message}` }],
+  });
+
+  const generationConfig = {
+    temperature: 0.75,
+    maxOutputTokens: 1600,
+    responseMimeType: "application/json",
+  };
+  const tc = thinkingConfigFor(model);
+  if (tc) generationConfig.thinkingConfig = tc;
+
+  const started = Date.now();
+  const call = (cfg) => fetch(AI_ENDPOINT(model, apiKey), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: COMPANION_PROMPT }] }, contents, generationConfig: cfg }),
+  });
+
+  let res;
+  try {
+    res = await call(generationConfig);
+    if (res.status === 400) {
+      const peek = await res.clone().text();
+      if (/thinking/i.test(peek)) {
+        const bare = { ...generationConfig };
+        delete bare.thinkingConfig;
+        res = await call(bare);
+      }
+    }
+  } catch (err) {
+    return json({ error: "net", message: "Couldn't reach the AI service." }, 502);
+  }
+
+  if (!res.ok) {
+    const detail = await res.text();
+    if (res.status === 403 || (res.status === 400 && detail.includes("API_KEY_INVALID"))) {
+      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
+    }
+    if (res.status === 429) return json({ error: "quota", message: "Daily AI limit reached. It resets at 12:30 PM IST." }, 429);
+    console.log(`[cmp] upstream ${res.status}: ${detail.slice(0, 200)}`);
+    return json({ error: "upstream", message: `AI error (${res.status}).` }, 502);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
+  }
+  // If the model returned prose instead of JSON, still speak rather than
+  // erroring -- a companion that goes silent on a parse failure is worse
+  // than one that just talks.
+  if (!parsed || typeof parsed !== "object") {
+    const fallback = text.replace(/[*_`#>]/g, "").trim().slice(0, 400);
+    return json({ reply: fallback || "mm. say that again?", actions: [] });
+  }
+
+  const actions = sanitiseActions(parsed.actions, snap);
+  let reply = typeof parsed.reply === "string" ? parsed.reply.trim() : "";
+  reply = reply.replace(/[*_`#>]/g, "").replace(/\n{2,}/g, " ").slice(0, 400);
+  if (!reply) reply = actions.length ? "here's what i'd change." : "mm. i'm here.";
+
+  const u = data.usageMetadata || {};
+  console.log(`[cmp] ${model.replace(/^models\//, "")} ${Date.now() - started}ms in=${u.promptTokenCount || "?"} out=${u.candidatesTokenCount || "?"} think=${u.thoughtsTokenCount || 0} -> ${actions.length} action(s)`);
+  return json({ reply, actions });
 }
 
 async function handleAI(request, env) {
@@ -670,6 +822,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/sync") return await handleSync(request, env);
       if (request.method === "POST" && url.pathname === "/ai") return await handleAI(request, env);
       if (request.method === "POST" && url.pathname === "/pet") return await handlePet(request, env);
+      if (request.method === "POST" && url.pathname === "/companion") return await handleCompanion(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
       // manual trigger for testing: GET /run-check-now

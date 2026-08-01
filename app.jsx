@@ -3718,122 +3718,6 @@ function EvolutionOverlay({ from, to, petName, onDone }) {
   );
 }
 
-/**
- * The pet tab. Creature up top, stats, then chat.
- * Chat uses the local voice engine by default and only calls the AI worker
- * for open-ended input, so the pet still talks with no key and no quota.
- */
-function PetView({ petCtl, ctx, apiKey, showDataMsg }) {
-  const { pet, form, mood, nudge, rename, remember } = petCtl;
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState(pet.name);
-  const logRef = useRef(null);
-
-  const greeting = useMemo(() => petGreeting(ctx), [ctx]);
-
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [pet.log]);
-
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || busy) return;
-    setDraft("");
-    remember("user", text);
-    nudge("chat");
-    sound.click();
-
-    if (!apiKey) {
-      // no key: stay in character rather than showing an error
-      remember("pet", pickStable([
-        "i can hear you, but my words are limited right now. add an ai key in the ai tab and i can really talk.",
-        "i'm listening — though i can only nod until you connect an ai key.",
-      ], Date.now() / 1000));
-      return;
-    }
-
-    setBusy(true);
-    try {
-      const res = await requestPetReply(text, petContextSummary(ctx), pet.log || [], apiKey);
-      remember("pet", res.reply);
-      sound.success();
-    } catch (err) {
-      remember("pet", err instanceof AIKeyError
-        ? "my link to the wider world got rejected. check the key in the ai tab."
-        : "couldn't reach far enough to answer that. try again in a moment.");
-      sound.error();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="task-list pet-scroll">
-      <div className="pet-stage">
-        <PetCreature stage={form.stage} mood={mood.key} size={168} />
-        <div className="pet-id">
-          {editingName ? (
-            <input
-              className="pet-name-input"
-              value={nameDraft}
-              autoFocus
-              maxLength={14}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onBlur={() => { rename(nameDraft); setEditingName(false); }}
-              onKeyDown={(e) => { if (e.key === "Enter") { rename(nameDraft); setEditingName(false); } }}
-            />
-          ) : (
-            <button className="pet-name" onClick={() => { setNameDraft(pet.name); setEditingName(true); }}>
-              {pet.name}
-            </button>
-          )}
-          <span className="pet-form">{form.name} · {mood.label}</span>
-          <span className="pet-bond">{petBond(pet.friendship)}</span>
-        </div>
-      </div>
-
-      <div className="pet-speech">{greeting}</div>
-
-      <div className="pet-stats">
-        <PetStatBar label="happiness"    value={pet.happiness}    color="var(--accent)" />
-        <PetStatBar label="energy"       value={pet.energy}       color="var(--accent2)" />
-        <PetStatBar label="friendship"   value={pet.friendship}   color="var(--accent)" />
-        <PetStatBar label="intelligence" value={pet.intelligence} color="var(--accent2)" />
-      </div>
-
-      {nextFormAfter(ctx.level) && (
-        <div className="pet-next">
-          next form at level {nextFormAfter(ctx.level).minLevel} · {nextFormAfter(ctx.level).name}
-        </div>
-      )}
-
-      <div className="pet-chat" ref={logRef}>
-        {(pet.log || []).length === 0 ? (
-          <div className="pet-chat-empty">say something — it remembers.</div>
-        ) : (
-          (pet.log || []).map((m, i) => (
-            <div key={i} className={`pet-msg ${m.role}`}>{m.text}</div>
-          ))
-        )}
-        {busy && <div className="pet-msg pet thinking"><span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" /></div>}
-      </div>
-
-      <div className="pet-composer">
-        <input
-          className="pet-input"
-          placeholder={`talk to ${pet.name}…`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          disabled={busy}
-        />
-        <button className="pet-send" onClick={send} disabled={busy || !draft.trim()}>say</button>
-      </div>
-    </div>
-  );
-}
 
 // ---- push notifications config ----
 // 1. Deploy the Cloudflare Worker (see /worker/ in the handoff) and paste its
@@ -3921,7 +3805,7 @@ async function syncRoutinesToWorker(routines) {
 // ---- AI assistant -------------------------------------------------------
 // The worker never stores any of this; it forwards a trimmed snapshot to the
 // model and returns a validated ACTION LIST. Nothing is applied until the
-// user taps Apply on the diff preview -- see AIView / applyAIActions.
+// user taps Apply on the diff preview -- see CompanionView / applyAIActions.
 
 function getAIKey() {
   try { return localStorage.getItem(STORAGE_KEY_AI_KEY) || ""; } catch { return ""; }
@@ -3961,15 +3845,14 @@ async function verifyAIKey(apiKey) {
 }
 
 /**
- * Pet conversation. Separate endpoint from /ai because the pet has a fixed
- * persona and returns prose, not an action list -- it must never be able to
- * mutate the user's data.
+ * One call: the companion replies in character and may also propose actions.
+ * Replaces the split requestPetReply / requestAIActions pair.
  */
-async function requestPetReply(message, contextSummary, log, apiKey) {
-  const res = await fetch(`${NOTIFY_WORKER_URL}/pet`, {
+async function requestCompanion(message, data, context, log, apiKey) {
+  const res = await fetch(`${NOTIFY_WORKER_URL}/companion`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, context: contextSummary, log, apiKey }),
+    body: JSON.stringify({ message, data, context, log, apiKey }),
   });
   let payload = null;
   try { payload = await res.json(); } catch {}
@@ -3978,31 +3861,19 @@ async function requestPetReply(message, contextSummary, log, apiKey) {
     if (code === "no_key" || code === "bad_key") {
       throw new AIKeyError((payload && payload.message) || "key rejected");
     }
-    throw new Error((payload && payload.message) || `pet request failed (${res.status})`);
+    throw new Error((payload && payload.message) || `request failed (${res.status})`);
   }
-  return { reply: (payload && payload.reply) || "…" };
+  return { reply: (payload && payload.reply) || "\u2026", actions: (payload && payload.actions) || [] };
 }
 
-async function requestAIActions(prompt, data, apiKey) {
-  const res = await fetch(`${NOTIFY_WORKER_URL}/ai`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, data, apiKey }),
-  });
-  let payload = null;
-  try { payload = await res.json(); } catch {}
-  if (!res.ok) {
-    const code = payload && payload.error;
-    if (code === "no_key" || code === "bad_key") {
-      throw new AIKeyError((payload && payload.message) || "Your API key was rejected.");
-    }
-    if (code === "quota") {
-      throw new Error((payload && payload.message) || "Daily AI limit reached.");
-    }
-    throw new Error((payload && payload.message) || (payload && payload.error) || `AI request failed (${res.status}).`);
-  }
-  return { reply: payload.reply || "", actions: payload.actions || [] };
-}
+const COMPANION_SUGGESTIONS = [
+  "how am I doing?",
+  "add a 30 min reading routine before bed",
+  "what am I neglecting?",
+  "my evenings are too packed",
+];
+
+
 
 // Human-readable description of one action, used by the diff preview.
 // Returns { kind: "add"|"edit"|"remove", surface, text }
@@ -4136,6 +4007,274 @@ function applyAIActions(actions, state, setters) {
   if (touched.has("rewards")) setters.setRewards(rewards);
 }
 
+/**
+ * The companion: one surface where the pet talks AND acts.
+ *
+ * Merged from the old separate `pet` and `ai` tabs in v25. They were two
+ * chat boxes wired to the same model, which meant the thing with a face
+ * couldn't change anything and the thing that could change things had no
+ * personality. Now there is one creature: it replies in character, and when
+ * a message implies a change it also proposes actions, shown as the same
+ * reviewable diff as before.
+ *
+ * Local-first is preserved: greetings and reactions still come from the
+ * offline voice engine, so the pet is never mute without a key.
+ */
+function CompanionView({ petCtl, state, setters, ctx, showDataMsg }) {
+  const { pet, form, mood, nudge, remember, rename } = petCtl;
+
+  const [apiKey, setApiKeyState] = useState(() => getAIKey());
+  const [showKeyGate, setShowKeyGate] = useState(false);
+  const [keyError, setKeyError] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState(null);
+  const [pending, setPending] = useState(null);   // { reply, actions }
+  const [skipped, setSkipped] = useState(() => new Set());
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(pet.name);
+  const [collapsed, setCollapsed] = useState(true); // stats panel
+
+  const logRef = useRef(null);
+  const lastSentRef = useRef(0);
+
+  const greeting = useMemo(() => petGreeting(ctx), [ctx]);
+
+  useEffect(() => {
+    if (!busy) { setElapsed(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed((Date.now() - t0) / 1000), 100);
+    return () => clearInterval(id);
+  }, [busy]);
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [pet.log, pending, busy]);
+
+  const send = async (text) => {
+    const q = (text ?? draft).trim();
+    if (!q || busy) return;
+
+    // rate guard: the free tier is ~15/min and hammering a failing request
+    // is the fastest way to burn a day
+    const since = Date.now() - lastSentRef.current;
+    if (since < 3000) {
+      setError(`give me a second — ${Math.ceil((3000 - since) / 1000)}s`);
+      return;
+    }
+
+    setDraft("");
+    remember("user", q);
+    nudge("chat");
+    sound.click();
+
+    if (!apiKey) {
+      remember("pet", "i can hear you, but i can't say much yet. connect an ai key and i can really talk — and change things for you.");
+      setShowKeyGate(true);
+      return;
+    }
+
+    lastSentRef.current = Date.now();
+    setBusy(true); setError(null); setPending(null); setSkipped(new Set());
+
+    try {
+      const res = await requestCompanion(
+        q,
+        {
+          routines: state.routines,
+          vaultHabits: state.vaultHabits,
+          goodHabits: state.goodHabits,
+          badHabits: state.badHabits,
+          rewards: state.rewards,
+          totalXP: state.totalXP,
+        },
+        petContextSummary(ctx),
+        pet.log || [],
+        apiKey
+      );
+      remember("pet", res.reply);
+      if (res.actions.length) {
+        setPending(res);
+        sound.success();
+      }
+    } catch (err) {
+      if (err instanceof AIKeyError) {
+        setAIKey(""); setApiKeyState(""); setKeyError(err.message); setShowKeyGate(true);
+        remember("pet", "my link to the wider world got rejected. mind checking the key?");
+      } else {
+        remember("pet", "couldn't reach far enough to answer that. try again in a moment.");
+        setError(err.message || null);
+      }
+      sound.error();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleSkip = (i) => setSkipped((prev) => {
+    const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n;
+  });
+
+  const accepted = pending ? pending.actions.filter((_, i) => !skipped.has(i)) : [];
+
+  const apply = () => {
+    if (!accepted.length) return;
+    applyAIActions(accepted, state, setters);
+    sound.success();
+    nudge("chat");
+    showDataMsg("success", `applied ${accepted.length} change${accepted.length === 1 ? "" : "s"}`);
+    remember("pet", `done — ${accepted.length} change${accepted.length === 1 ? "" : "s"} applied.`);
+    setPending(null); setSkipped(new Set());
+  };
+
+  const discard = () => {
+    sound.whoosh();
+    remember("pet", "left it as it was.");
+    setPending(null); setSkipped(new Set());
+  };
+
+  if (showKeyGate) {
+    return (
+      <AIKeyGate
+        initialError={keyError}
+        onCancel={() => setShowKeyGate(false)}
+        onSaved={(k, warning) => {
+          setApiKeyState(k); setKeyError(null); setShowKeyGate(false);
+          showDataMsg("success", warning || "connected");
+        }}
+      />
+    );
+  }
+
+  const counts = accepted.reduce((acc, a) => {
+    const k = describeAIAction(a, state).kind;
+    acc[k] = (acc[k] || 0) + 1; return acc;
+  }, {});
+
+  return (
+    <div className="task-list companion-scroll">
+      {/* --- the creature --- */}
+      <div className="cmp-hero">
+        <PetCreature stage={form.stage} mood={mood.key} size={132} />
+        <div className="cmp-id">
+          {editingName ? (
+            <input
+              className="pet-name-input" value={nameDraft} autoFocus maxLength={14}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={() => { rename(nameDraft); setEditingName(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { rename(nameDraft); setEditingName(false); } }}
+            />
+          ) : (
+            <button className="pet-name" onClick={() => { setNameDraft(pet.name); setEditingName(true); }}>
+              {pet.name}
+            </button>
+          )}
+          <span className="pet-form">{form.name} · {mood.label}</span>
+        </div>
+        <button className="cmp-stats-toggle" onClick={() => setCollapsed((c) => !c)}>
+          {collapsed ? "stats" : "hide"}
+        </button>
+      </div>
+
+      {!collapsed && (
+        <>
+          <div className="pet-stats">
+            <PetStatBar label="happiness"    value={pet.happiness}    color="var(--accent)" />
+            <PetStatBar label="energy"       value={pet.energy}       color="var(--accent2)" />
+            <PetStatBar label="friendship"   value={pet.friendship}   color="var(--accent)" />
+            <PetStatBar label="intelligence" value={pet.intelligence} color="var(--accent2)" />
+          </div>
+          <div className="pet-next">
+            {petBond(pet.friendship)}
+            {nextFormAfter(ctx.level) ? ` · next form at level ${nextFormAfter(ctx.level).minLevel}` : " · final form"}
+          </div>
+        </>
+      )}
+
+      {/* --- conversation --- */}
+      <div className="cmp-chat" ref={logRef}>
+        <div className="pet-msg pet cmp-greeting">{greeting}</div>
+        {(pet.log || []).map((m, i) => (
+          <div key={i} className={`pet-msg ${m.role}`}>{m.text}</div>
+        ))}
+
+        {busy && (
+          <div className="pet-msg pet thinking">
+            <span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" />
+            {elapsed >= 1 && <span className="cmp-elapsed">{elapsed.toFixed(1)}s</span>}
+          </div>
+        )}
+
+        {/* proposed changes appear inline, as if the pet handed them over */}
+        {pending && pending.actions.length > 0 && (
+          <div className="cmp-diff-wrap">
+            <div className="ai-diff-head">
+              <span className="ai-diff-title">proposed changes</span>
+              <span className="ai-diff-counts">
+                {counts.add ? <span className="c-add">+{counts.add}</span> : null}
+                {counts.edit ? <span className="c-edit">~{counts.edit}</span> : null}
+                {counts.remove ? <span className="c-remove">−{counts.remove}</span> : null}
+              </span>
+            </div>
+            <div className="ai-diff">
+              {pending.actions.map((a, i) => {
+                const d = describeAIAction(a, state);
+                const off = skipped.has(i);
+                return (
+                  <button key={i} className={`ai-diff-row ${d.kind} ${off ? "skipped" : ""}`}
+                          onClick={() => toggleSkip(i)}
+                          title={off ? "click to include" : "click to skip"}>
+                    <span className="ai-sign">{d.kind === "add" ? "+" : d.kind === "remove" ? "−" : "~"}</span>
+                    <span className="ai-surface">{d.surface}</span>
+                    <span className="ai-diff-text">{d.text}</span>
+                    <span className="ai-skip-mark">{off ? "skipped" : ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="ai-actions">
+              <button className="ai-apply" onClick={apply} disabled={!accepted.length}>
+                apply {accepted.length || ""}
+              </button>
+              <button className="ai-discard" onClick={discard}>discard</button>
+            </div>
+            <div className="ai-hint">tap any row to skip it</div>
+          </div>
+        )}
+      </div>
+
+      {error && <div className="ai-error cmp-error">{error}</div>}
+
+      {(pet.log || []).length === 0 && !busy && (
+        <div className="ai-chips cmp-chips">
+          {COMPANION_SUGGESTIONS.map((s) => (
+            <button key={s} className="ai-chip" onClick={() => send(s)}>{s}</button>
+          ))}
+        </div>
+      )}
+
+      <div className="pet-composer">
+        <input
+          className="pet-input"
+          placeholder={apiKey ? `talk to ${pet.name}…` : `say hello to ${pet.name}…`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          disabled={busy}
+        />
+        <button className="pet-send" onClick={() => send()} disabled={busy || !draft.trim()}>
+          say
+        </button>
+      </div>
+
+      <button className="cmp-key-link" onClick={() => setShowKeyGate(true)}>
+        {apiKey ? `key ${maskAIKey(apiKey)}` : "connect an ai key"}
+      </button>
+    </div>
+  );
+}
+
 const AI_SUGGESTIONS = [
   "build me a study preset for exam month",
   "my evenings are too packed — spread them out",
@@ -4223,241 +4362,6 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
   );
 }
 
-function AIView({ state, setters, showDataMsg }) {
-  const [apiKey, setApiKeyState] = useState(() => getAIKey());
-  const [showSettings, setShowSettings] = useState(false);
-  const [keyError, setKeyError] = useState(null);
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);      // { reply, actions }
-  const [skipped, setSkipped] = useState(() => new Set());
-  const taRef = useRef(null);
-  const lastSentRef = useRef(0);
-  const [elapsed, setElapsed] = useState(0);
-
-  // live counter while waiting -- a silent 5s wait feels broken, a counting
-  // one feels like progress
-  useEffect(() => {
-    if (!busy) { setElapsed(0); return; }
-    const t0 = Date.now();
-    const id = setInterval(() => setElapsed((Date.now() - t0) / 1000), 100);
-    return () => clearInterval(id);
-  }, [busy]);
-
-  const send = async (text) => {
-    const q = (text ?? prompt).trim();
-    if (!q || busy) return;
-    // Guard against impatient repeat-taps: the free tier is ~15 requests a
-    // minute, and hammering a failing request is the fastest way to burn a
-    // day's quota. Failures are usually not transient, so make the user wait.
-    const since = Date.now() - lastSentRef.current;
-    if (since < 3000) {
-      setError(`Hold on a moment — wait ${Math.ceil((3000 - since) / 1000)}s before asking again.`);
-      return;
-    }
-    lastSentRef.current = Date.now();
-    setBusy(true); setError(null); setResult(null); setSkipped(new Set());
-    sound.click();
-    try {
-      const res = await requestAIActions(q, {
-        routines: state.routines,
-        vaultHabits: state.vaultHabits,
-        goodHabits: state.goodHabits,
-        badHabits: state.badHabits,
-        rewards: state.rewards,
-        totalXP: state.totalXP,
-      }, apiKey);
-      setResult(res);
-      if (res.actions.length) sound.success();
-    } catch (err) {
-      if (err instanceof AIKeyError) {
-        // key went bad (revoked, deleted, mistyped) -- drop it and re-prompt
-        setAIKey("");
-        setApiKeyState("");
-        setKeyError(err.message);
-      } else {
-        setError(err.message || "Something went wrong.");
-      }
-      sound.error();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleSkip = (i) => {
-    setSkipped((prev) => {
-      const next = new Set(prev);
-      next.has(i) ? next.delete(i) : next.add(i);
-      return next;
-    });
-  };
-
-  const accepted = result ? result.actions.filter((_, i) => !skipped.has(i)) : [];
-
-  const apply = () => {
-    if (!accepted.length) return;
-    applyAIActions(accepted, state, setters);
-    sound.success();
-    showDataMsg("success", `Applied ${accepted.length} change${accepted.length === 1 ? "" : "s"}`);
-    setResult(null); setPrompt(""); setSkipped(new Set());
-  };
-
-  const discard = () => {
-    sound.whoosh();
-    setResult(null); setSkipped(new Set());
-  };
-
-  const counts = accepted.reduce((acc, a) => {
-    const k = describeAIAction(a, state).kind;
-    acc[k] = (acc[k] || 0) + 1;
-    return acc;
-  }, {});
-
-  if (!apiKey) {
-    return (
-      <AIKeyGate
-        initialError={keyError}
-        onSaved={(k, warning) => {
-          setApiKeyState(k);
-          setKeyError(null);
-          showDataMsg("success", warning || "AI key saved");
-        }}
-      />
-    );
-  }
-
-  if (showSettings) {
-    return (
-      <AIKeyGate
-        onCancel={() => setShowSettings(false)}
-        onSaved={(k, warning) => {
-          setApiKeyState(k);
-          setShowSettings(false);
-          showDataMsg("success", warning || "AI key updated");
-        }}
-      />
-    );
-  }
-
-  return (
-    <div className="task-list ai-scroll">
-      <div className="ai-intro">
-        <div className="ai-intro-row">
-          <div className="ai-intro-title">ask anything</div>
-          <button
-            className="ai-key-btn"
-            onClick={() => setShowSettings(true)}
-            title={`Key ${maskAIKey(apiKey)} — tap to change`}
-          >
-            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-              <circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" strokeWidth="2" />
-              <path d="M10.85 12.15L19 4M17 6l2 2M14 9l2 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            <span>key</span>
-          </button>
-        </div>
-        <div className="ai-intro-sub">
-          it can add, edit or remove routines, vault habits, quests and rewards —
-          nothing changes until you approve it.
-        </div>
-      </div>
-
-      <div className="ai-composer">
-        <textarea
-          ref={taRef}
-          className="ai-input"
-          rows={3}
-          placeholder="e.g. add a 30 min reading routine before bed"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
-          }}
-          disabled={busy}
-        />
-        <button className="ai-send" onClick={() => send()} disabled={busy || !prompt.trim()}>
-          {busy ? "thinking…" : "ask"}
-        </button>
-      </div>
-
-      {!result && !busy && (
-        <div className="ai-chips">
-          {AI_SUGGESTIONS.map((s) => (
-            <button key={s} className="ai-chip" onClick={() => { setPrompt(s); send(s); }}>
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {busy && (
-        <div className="ai-thinking">
-          <div className="ai-dots">
-            <span className="ai-dot" /><span className="ai-dot" /><span className="ai-dot" />
-          </div>
-          <div className="ai-elapsed">
-            {elapsed < 1 ? "thinking…" : `thinking… ${elapsed.toFixed(1)}s`}
-            {elapsed > 12 && <span className="ai-slow"> · taking longer than usual</span>}
-          </div>
-        </div>
-      )}
-
-      {error && <div className="ai-error">{error}</div>}
-
-      {result && (
-        <div className="ai-result">
-          {result.reply && <div className="ai-reply">{result.reply}</div>}
-
-          {result.actions.length === 0 ? (
-            <div className="ai-noop">no changes proposed</div>
-          ) : (
-            <>
-              <div className="ai-diff-head">
-                <span className="ai-diff-title">proposed changes</span>
-                <span className="ai-diff-counts">
-                  {counts.add ? <span className="c-add">+{counts.add}</span> : null}
-                  {counts.edit ? <span className="c-edit">~{counts.edit}</span> : null}
-                  {counts.remove ? <span className="c-remove">−{counts.remove}</span> : null}
-                </span>
-              </div>
-
-              <div className="ai-diff">
-                {result.actions.map((a, i) => {
-                  const d = describeAIAction(a, state);
-                  const off = skipped.has(i);
-                  return (
-                    <button
-                      key={i}
-                      className={`ai-diff-row ${d.kind} ${off ? "skipped" : ""}`}
-                      onClick={() => toggleSkip(i)}
-                      title={off ? "click to include" : "click to skip"}
-                    >
-                      <span className="ai-sign">
-                        {d.kind === "add" ? "+" : d.kind === "remove" ? "−" : "~"}
-                      </span>
-                      <span className="ai-surface">{d.surface}</span>
-                      <span className="ai-diff-text">{d.text}</span>
-                      <span className="ai-skip-mark">{off ? "skipped" : ""}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="ai-actions">
-                <button className="ai-apply" onClick={apply} disabled={!accepted.length}>
-                  apply {accepted.length || ""}
-                </button>
-                <button className="ai-discard" onClick={discard}>discard</button>
-              </div>
-              <div className="ai-hint">tap any row to skip it</div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function loadStored(key, fallback) {
   try {
@@ -4959,7 +4863,6 @@ function TodoApp() {
 
   return (
     <div className="app-root" data-particle={themeCtl.theme.ambient.particle}>
-      <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} />
       {achCtl.current && (
         <AchievementToast id={achCtl.current} onDone={achCtl.shift} />
       )}
@@ -5052,31 +4955,19 @@ function TodoApp() {
            legibility or hit-testing of the panel on top. Opacity is kept
            under 0.07 -- at these values the shift reads as "the room's
            lighting changed", not as an animation demanding attention. */
+        /* v25: the animated ambience now lives INSIDE the panel, where it
+           is actually visible. This is a single static gradient for the
+           margin area on wide screens -- no animation, no layer, no cost. */
         .app-root::before {
           content: "";
           position: absolute;
-          inset: -25%;
+          inset: 0;
           z-index: -1;
           pointer-events: none;
-          background: var(--blob1), var(--blob2), var(--blob3);
-          animation: ambientDrift 96s ease-in-out infinite alternate;
-          will-change: transform;
+          background: var(--blob1), var(--blob2);
         }
 
-        /* Second, slower layer on a different cycle length so the two never
-           line up -- keeps the motion from feeling like a loop. */
-        .app-root::after {
-          content: "";
-          position: absolute;
-          inset: -25%;
-          z-index: -1;
-          pointer-events: none;
-          background:
-            radial-gradient(46% 40% at 78% 18%, rgba(139,156,247,0.042), transparent 72%),
-            radial-gradient(40% 44% at 22% 82%, rgba(94,234,212,0.038), transparent 72%);
-          animation: ambientDriftAlt 138s ease-in-out infinite alternate;
-          will-change: transform, opacity;
-        }
+
 
         @keyframes ambientDrift {
           0%   { transform: translate3d(0, 0, 0) scale(1); }
@@ -6193,9 +6084,22 @@ function TodoApp() {
           inset: 0;
           z-index: 0;
           border-radius: inherit;
+          /* promote each layer so the slow drift is a GPU transform instead
+             of a full-surface repaint of the panel every frame */
+          will-change: transform;
+          transform: translateZ(0);
         }
 
         .amb-scoped.amb-blobs {
+          /* Painted at a third of the panel's resolution and scaled up.
+             Radial gradients have no high-frequency detail, so the upscale
+             is invisible, but the rasterised surface shrinks ~9x -- this is
+             what took a 1229px-wide panel from 19fps back to 60. */
+          width: 34.5%;
+          height: 34.5%;
+          inset: 0 auto auto 0;
+          transform-origin: 0 0;
+          scale: 3;
           background:
             radial-gradient(58% 42% at 14% 8%,  var(--accent),  transparent 62%),
             radial-gradient(52% 40% at 88% 92%, var(--accent2), transparent 62%),
@@ -6204,8 +6108,15 @@ function TodoApp() {
           /* the gradients use full-strength theme colours and are dimmed
              here, so every theme keeps its own character */
           opacity: 0.14;
-          animation: ambientDrift calc(96s * var(--motion-scale)) ease-in-out infinite alternate;
-          transform-origin: center;
+          animation: ambientDriftScaled calc(96s * var(--motion-scale)) ease-in-out infinite alternate;
+        }
+
+        /* drift keyframes for the downscaled layer: the parent already has
+           scale:3, so these only translate */
+        @keyframes ambientDriftScaled {
+          0%   { translate: 0 0; }
+          50%  { translate: 2.5% -2%; }
+          100% { translate: -2% 2.5%; }
         }
 
         /* a second, slower counter-drifting layer stops it reading as a
@@ -6218,13 +6129,31 @@ function TodoApp() {
             radial-gradient(46% 40% at 78% 18%, var(--accent),  transparent 64%),
             radial-gradient(44% 42% at 20% 84%, var(--accent2), transparent 64%);
           opacity: 0.55;
+          will-change: transform;
           animation: ambientDriftAlt calc(138s * var(--motion-scale)) ease-in-out infinite alternate;
         }
 
         /* the time-of-day wash needs more presence inside the panel too */
         .amb-scoped.amb-time {
+          /* same 1/3-resolution trick as the blobs: pure gradient, so the
+             upscale is free but the rasterised area drops ~9x */
+          width: 34.5%;
+          height: 34.5%;
+          inset: 0 auto auto 0;
+          transform-origin: 0 0;
+          scale: 3;
           background: radial-gradient(130% 78% at 50% -8%, var(--time-warm), transparent 62%);
           opacity: calc(var(--time-light, 1) * 2.2);
+        }
+
+        /* Large panels: the ambience costs fill-rate proportional to area,
+           and the subtlest layers are the least visible on a big screen.
+           Shed them above 900px rather than dropping frames for effects
+           nobody can see. Phones keep the full stack. */
+        @media (min-width: 900px) {
+          .amb-scoped.amb-grain { display: none; }
+          .amb-scoped.amb-time { opacity: calc(var(--time-light, 1) * 1.4); }
+          .amb-scoped.amb-blobs { opacity: 0.10; }
         }
 
         /* Everything the user actually reads sits above the ambience. */
@@ -6234,6 +6163,59 @@ function TodoApp() {
         .panel > .data-msg,
         .panel > .banner { position: relative; z-index: 1; }
 
+
+
+        /* ---- merged companion (v25) ---- */
+        .companion-scroll { padding-top: 4px; display: flex; flex-direction: column; }
+
+        .cmp-hero {
+          display: flex; align-items: center; gap: 12px;
+          padding: 4px 16px 8px; position: relative;
+        }
+        .cmp-hero .pet-svg { flex-shrink: 0; margin: -14px 0; }
+        .cmp-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+        .cmp-stats-toggle {
+          flex-shrink: 0; align-self: flex-start; margin-top: 6px;
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 999px; color: var(--muted); cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 10px;
+          transition: border-color 150ms ease, color 150ms ease;
+        }
+
+        .cmp-chat {
+          flex: 1; min-height: 160px;
+          margin: 4px 16px 0; padding: 11px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 11px;
+          display: flex; flex-direction: column; gap: 8px;
+          overflow-y: auto;
+        }
+        .cmp-greeting { opacity: 0.9; font-style: italic; }
+        .cmp-elapsed {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums;
+        }
+
+        /* the diff sits inside the conversation, as if handed over */
+        .cmp-diff-wrap {
+          align-self: stretch; margin-top: 2px; padding: 11px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 3px solid var(--accent); border-radius: 10px;
+        }
+        .cmp-error { margin: 10px 16px 0; }
+        .cmp-chips { padding: 12px 16px 0; }
+
+        .cmp-key-link {
+          background: transparent; border: none; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.06em; color: var(--muted);
+          padding: 0 16px 16px; text-align: center; width: 100%;
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+          .cmp-stats-toggle:hover { border-color: var(--accent); color: var(--accent); }
+          .cmp-key-link:hover { color: var(--accent); }
+        }
 
         /* ---- achievements + rewards (v24) ---- */
         .ach-toast {
@@ -6340,7 +6322,15 @@ function TodoApp() {
         }
 
         /* ---- pet (v23) ---- */
-        .tabs button.tab-pet { color: var(--accent2); }
+        .tabs button.tab-pet { color: var(--accent2); position: relative; }
+        .tabs button.tab-pet::after {
+          content: "";
+          position: absolute; top: 7px; right: 2px;
+          width: 4px; height: 4px; border-radius: 50%;
+          background: var(--accent2);
+          box-shadow: 0 0 6px var(--glow);
+        }
+        .tabs button.tab-pet.active::after { display: none; }
 
         .pet-svg { display: block; overflow: visible; }
         .pet-anim .pet-head   { animation: petBob calc(3.4s * var(--motion-scale)) ease-in-out infinite; transform-origin: 64px 60px; }
@@ -6597,6 +6587,7 @@ function TodoApp() {
           z-index: -1;
           pointer-events: none;
           contain: strict;
+          transform: translateZ(0);
         }
 
         .amb-time {
@@ -6616,8 +6607,8 @@ function TodoApp() {
           background: linear-gradient(
             105deg, transparent 0%, rgba(255,255,255,0.022) 45%,
             rgba(255,255,255,0.032) 50%, rgba(255,255,255,0.022) 55%, transparent 100%);
-          filter: blur(26px);
-          transform: rotate(8deg);
+          filter: blur(18px);
+          transform: rotate(8deg) translateZ(0);
           animation: raySweep calc(180s * var(--motion-scale)) ease-in-out infinite alternate;
         }
 
@@ -6629,8 +6620,10 @@ function TodoApp() {
         /* film grain: one tiny repeating SVG, no image request */
         .amb-grain {
           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+          /* no mix-blend-mode: blending forces the compositor to re-read the
+             backdrop every frame, which cost ~6fps on a large panel for an
+             effect that is nearly invisible at this opacity anyway */
           opacity: var(--grain-opacity, 0.018);
-          mix-blend-mode: overlay;
         }
 
         /* ---- particles ---- */
@@ -8250,10 +8243,7 @@ function TodoApp() {
             quest
           </button>
           <button className={`tab-pet ${tab === "pet" ? "active" : ""}`} onClick={() => changeTab("pet")}>
-            pet
-          </button>
-          <button className={`tab-ai ${tab === "ai" ? "active" : ""}`} onClick={() => changeTab("ai")}>
-            ai
+            {petCtl.pet.name.toLowerCase()}
           </button>
         </div>
 
@@ -8387,15 +8377,16 @@ function TodoApp() {
             rewards={rewards}
             setRewards={setRewards}
           />
-        ) : tab === "pet" ? (
-          <PetView
+        ) : (
+          <CompanionView
             petCtl={petCtl}
-            apiKey={getAIKey()}
+            state={{ routines, vaultHabits, goodHabits, badHabits, rewards, totalXP }}
+            setters={{ setRoutines, setVaultHabits, setGoodHabits, setBadHabits, setRewards }}
             showDataMsg={showDataMsg}
             ctx={{
               pet: petCtl.pet,
               level: currentLevel,
-              hour: now ? new Date(now).getHours() : getISTParts().hour,
+              hour: getISTParts().hour,
               phase: themeCtl.phase.id,
               doneToday: goodHabits.filter((h) => (h.history || []).includes(getISTDateString(0))).length,
               totalToday: goodHabits.length,
@@ -8403,12 +8394,6 @@ function TodoApp() {
               routineNow: null,
               nextRoutine: null,
             }}
-          />
-        ) : (
-          <AIView
-            state={{ routines, vaultHabits, goodHabits, badHabits, rewards, totalXP }}
-            setters={{ setRoutines, setVaultHabits, setGoodHabits, setBadHabits, setRewards }}
-            showDataMsg={showDataMsg}
           />
         )}
         </div>
