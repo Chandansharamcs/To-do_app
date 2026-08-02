@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v25   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v26   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -132,6 +132,23 @@ something worth balancing them against.
 `tasksh.meta.v1` holds one-off flags (`seenLevel`, hidden triggers, counters).
 Level-ups fire from `seenLevel`, not from XP directly, so they survive the app
 being closed.
+
+## Links (v26)
+
+`useLinks()` + `propagateCompletion()`. Links are undirected pairs of
+`"<kind>:<id>"` refs (kind = routine | good | vault) in `tasksh.links.v1`.
+Completing either end applies the same done-state to the other.
+
+**Propagation is single-hop on purpose.** A→B→C must not cascade — one tap
+rippling through a graph is surprising and hard to undo. Two bridges avoid
+prop-drilling: `linkBridge` (propagate) and `linkUIBridge` (open the sheet).
+
+## Tags (v26)
+
+`useSubAreas()`. `SUB_AREAS` is the default set; the user's edits live in
+`tasksh.subareas.v1`. Habits reference a tag **key**, never its label, so
+renaming is free. `subForHabitIn()` falls back to the area's first tag, which
+is why an area can never be left with zero tags.
 
 ## The companion (v25)
 

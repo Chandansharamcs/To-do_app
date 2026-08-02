@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v26`** | 2026-08-02 | Links, editable tags, quest filters, AI 400 fix |
 | **`v25`** | 2026-08-01 | Merged pet+ai into one companion, big perf fix |
 | **`v24`** | 2026-08-01 | Achievements, coins, level rewards, ambience fix |
 | **`v23`** | 2026-08-01 | Pet: 7 forms, stats, evolution, hybrid voice |
@@ -52,6 +53,71 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-02 — `tasksh-v26`**
+
+- **Fixed: AI error 400.** Gemini rejects a conversation history that starts
+  with a `model` turn or repeats a role on consecutive turns — and both
+  happen in normal use here: the pet speaks first when no key is set, and
+  applying a diff appends a second pet line right after its reply. Reproduced
+  all five failing shapes, then normalised the history (drop leading model
+  turns, merge same-role runs, ensure it ends on a model turn). Upstream
+  errors now surface Google's actual reason instead of a bare status code.
+
+- **Changed: calm mode → ambient background toggle.** Switches between the
+  drifting gradients and the original flat black. Persists across reloads.
+
+- **Added: links.** Any routine, quest habit or vault card can be linked to
+  any other, in any combination — a "planting" routine, quest and vault card
+  are one real act tracked three ways, so ticking one now ticks them all.
+  - Links are stored once, **undirected**, so propagation works both ways
+    without the user thinking about direction.
+  - **Single-hop by design.** A→B→C does not cascade; one tap can't ripple
+    through an entire graph and become impossible to undo. Link A→C
+    explicitly if you want that.
+  - Unticking propagates too, so a mistaken tap is fully reversible.
+  - Link button on routine rows, quest cards and vault cards.
+
+- **Added: quest filtering and tag control.**
+  - Filter habits by life area (all / Work / Fitness / Health / Self-Dev).
+  - Radar switches between the 4 broad areas and the finer tags.
+  - **Tags are now editable** — rename, add and remove, grouped by area.
+    Renaming keeps the underlying key, so habits never lose their tag.
+    An area can't be emptied of tags (habits there would have nothing to
+    resolve to). Reset-to-defaults included.
+
+- **Fixed: two pre-existing bugs found during testing.**
+  - The Today tab's routine toggle played the *error* sound and drained the
+    pet as if a bad habit had been logged — a v23 edit had landed the
+    `badHabit` emit on the wrong function. Completing a routine there also
+    never propagated.
+  - As a result, logging an actual bad habit had **no** effect on the pet
+    since v23. Both restored and covered by tests.
+
+- **Fixed: frame-rate regression, diagnosed by measurement.** Ambience-inside-
+  the-panel had dropped large screens to 13–29fps. Isolated each layer rather
+  than guessing:
+  - **34 star elements each animating `opacity`** = 34 repaints per frame.
+    Now one animation on the container with static per-star opacity.
+    *(43 animating elements → 10.)*
+  - An animated `::after` on the blob layer: a pseudo-element can't get its
+    own compositor layer, so animating one repaints its parent every frame.
+    Folded into the parent's background. *(+17fps)*
+  - `scale: 3` is a separate property from `transform`, so a promoted layer
+    was rasterising at the *scaled* size, discarding the downscale saving.
+    Folded into `transform`.
+  - Above 900px the stack collapses to a single layer; above 1240px the
+    drift is dropped entirely (a ~2% drift across a 1320px panel can't be
+    seen, but compositing it every frame can be felt).
+  - **Result: 1920px 16→52fps, 1366px 29→60fps, phone 60fps. 60fps while
+    scrolling at every size.**
+
+- **Verified:** 16 unit tests on link logic (undirected, single-hop,
+  idempotent, untick, prune), browser tests for propagation in every
+  direction, tag rename/add/delete with the last-tag guard, the ambience
+  toggle, plus the full regression — all 6 tabs, companion, export, offline
+  boot and reduced motion.
+- Bumped service worker cache to `tasksh-v26`.
 
 **2026-08-01 — `tasksh-v25`**  ·  *one companion*
 

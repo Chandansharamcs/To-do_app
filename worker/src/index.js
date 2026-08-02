@@ -569,11 +569,26 @@ async function handleCompanion(request, env) {
     return json({ error: "model", message: "Couldn't pick a model." }, 502);
   }
 
+  // Gemini rejects a history that starts with "model" or repeats a role on
+  // consecutive turns -- both happen naturally here: the pet speaks first
+  // when there's no key yet, and applying a diff appends a second pet line
+  // right after its reply. That produced a hard 400 on the next message.
+  // Normalise: drop leading model turns, and merge same-role runs.
   const contents = [];
   for (const m of log) {
-    if (!m || typeof m.text !== "string") continue;
-    contents.push({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.text.slice(0, 240) }] });
+    if (!m || typeof m.text !== "string" || !m.text.trim()) continue;
+    const role = m.role === "user" ? "user" : "model";
+    if (!contents.length && role !== "user") continue;          // no leading model turn
+    const prev = contents[contents.length - 1];
+    if (prev && prev.role === role) {                            // merge consecutive
+      prev.parts[0].text = `${prev.parts[0].text}\n${m.text}`.slice(0, 480);
+      continue;
+    }
+    contents.push({ role, parts: [{ text: m.text.slice(0, 240) }] });
   }
+  // history must end on a model turn so the new user message alternates
+  if (contents.length && contents[contents.length - 1].role === "user") contents.pop();
+
   contents.push({
     role: "user",
     parts: [{ text: `[you: ${petState}]\n[their data: ${JSON.stringify(snap)}]\n\n${message}` }],
@@ -615,8 +630,13 @@ async function handleCompanion(request, env) {
       return json({ error: "bad_key", message: "That API key was rejected." }, 401);
     }
     if (res.status === 429) return json({ error: "quota", message: "Daily AI limit reached. It resets at 12:30 PM IST." }, 429);
-    console.log(`[cmp] upstream ${res.status}: ${detail.slice(0, 200)}`);
-    return json({ error: "upstream", message: `AI error (${res.status}).` }, 502);
+    console.log(`[cmp] upstream ${res.status}: ${detail.slice(0, 400)}`);
+    let reason = "";
+    try { reason = JSON.parse(detail)?.error?.message || ""; } catch {}
+    return json({
+      error: "upstream",
+      message: reason ? `AI error: ${reason.slice(0, 160)}` : `AI error (${res.status}).`,
+    }, 502);
   }
 
   const data = await res.json();

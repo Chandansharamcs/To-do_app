@@ -155,6 +155,19 @@ if (willBeDone) ...   // ← may still be false; updater may not have run
 Derive it from current state *before* dispatching. Fixed in six places in
 v23; don't reintroduce the pattern.
 
+### ⚠ Never animate opacity on many small elements
+
+34 star spans each animating `opacity` cost ~24fps on a large panel — one
+repaint per element per frame. Animate the *container* once and vary the
+children statically. Same for any particle field.
+
+Also: `scale:` is a separate property from `transform:`. A layer promoted with
+`will-change: transform` rasterises at its scaled size, so `scale: 3` throws
+away the downscale saving. Write `transform: scale(3)`.
+
+And never animate a `::after` on a full-surface layer — pseudo-elements can't
+be promoted, so it repaints the parent every frame.
+
 ### ⚠ Never render the ambient stack twice
 
 v25 briefly rendered it both fixed-behind and scoped-inside the panel. The

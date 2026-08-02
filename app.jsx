@@ -140,6 +140,144 @@ const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 // offline/bundled build. Mute state persists in localStorage.
 // ============================================================
 // ============================================================
+// LINKS (v26)
+//
+// Lets any trackable item complete any other. "Planting" as a routine, a
+// quest habit and a vault card is one real-world act tracked three times --
+// ticking one should tick them all.
+//
+// Design notes:
+//   * links are stored ONCE, undirected, as a pair of refs. Completing
+//     either end propagates to the other, so the user never has to think
+//     about direction.
+//   * propagation is single-hop by design. A->B->C would let one tick
+//     cascade through an entire graph, which is surprising and very hard to
+//     undo. If you want A to also hit C, link A to C explicitly.
+//   * un-ticking propagates too, so a mistaken tap is fully reversible.
+// ============================================================
+
+// Bridge so nested views can propagate a completion without threading links
+// and every setter through four component layers. Registered once by TodoApp.
+const linkUIBridge = {
+  fn: null,
+  register(fn) { this.fn = fn; return () => { this.fn = null; }; },
+  open(ref) { if (this.fn) this.fn(ref); },
+};
+
+const linkBridge = {
+  fn: null,
+  register(fn) { this.fn = fn; return () => { this.fn = null; }; },
+  propagate(kind, id, done) { if (this.fn) this.fn(kind, id, done); },
+};
+
+const STORAGE_KEY_LINKS = "tasksh.links.v1";
+
+// A ref is "<kind>:<id>" -- kind is one of routine | good | bad | vault.
+const LINK_KINDS = {
+  routine: { label: "routine", plural: "routines" },
+  good:    { label: "quest",   plural: "quest habits" },
+  vault:   { label: "vault",   plural: "vault habits" },
+};
+
+const refOf = (kind, id) => `${kind}:${id}`;
+const parseRef = (ref) => {
+  const i = String(ref).indexOf(":");
+  return { kind: String(ref).slice(0, i), id: Number(String(ref).slice(i + 1)) };
+};
+
+/** Everything linked to `ref`, one hop out. */
+function linkedTo(links, ref) {
+  const out = [];
+  for (const [a, b] of links) {
+    if (a === ref) out.push(b);
+    else if (b === ref) out.push(a);
+  }
+  return out;
+}
+
+function hasLink(links, a, b) {
+  return links.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+}
+
+function addLink(links, a, b) {
+  if (a === b || hasLink(links, a, b)) return links;
+  return [...links, [a, b]];
+}
+
+function removeLink(links, a, b) {
+  return links.filter(([x, y]) => !((x === a && y === b) || (x === b && y === a)));
+}
+
+/** Drops links pointing at items that no longer exist. */
+function pruneLinks(links, exists) {
+  return links.filter(([a, b]) => exists(a) && exists(b));
+}
+
+/**
+ * Resolves a ref to something displayable. Returns null if the target was
+ * deleted -- callers should treat that as "link is stale".
+ */
+function describeRef(ref, data) {
+  const { kind, id } = parseRef(ref);
+  const list =
+    kind === "routine" ? data.routines :
+    kind === "good"    ? data.goodHabits :
+    kind === "vault"   ? data.vaultHabits : null;
+  if (!list) return null;
+  const item = list.find((x) => x.id === id);
+  if (!item) return null;
+  return { kind, id, label: item.label, meta: LINK_KINDS[kind]?.label || kind };
+}
+
+/**
+ * Applies a completion to every item linked to `ref`.
+ *
+ * `done` is passed explicitly rather than toggled per-item, so a group ends
+ * up consistent: ticking one makes them all done, unticking makes them all
+ * undone, regardless of what state each was in.
+ */
+function propagateCompletion(ref, done, links, setters, dateStr) {
+  const targets = linkedTo(links, ref);
+  if (!targets.length) return 0;
+
+  const apply = (list, id) => list.map((it) => {
+    if (it.id !== id) return it;
+    const hist = it.history || [];
+    const has = hist.includes(dateStr);
+    if (done === has) return it;                       // already right
+    return {
+      ...it,
+      history: done ? [...hist, dateStr] : hist.filter((d) => d !== dateStr),
+    };
+  });
+
+  const byKind = { routine: [], good: [], vault: [] };
+  for (const t of targets) {
+    const { kind, id } = parseRef(t);
+    if (byKind[kind]) byKind[kind].push(id);
+  }
+
+  if (byKind.routine.length && setters.setRoutines) {
+    setters.setRoutines((prev) => byKind.routine.reduce((acc, id) => apply(acc, id), prev));
+  }
+  if (byKind.good.length && setters.setGoodHabits) {
+    setters.setGoodHabits((prev) => byKind.good.reduce((acc, id) => apply(acc, id), prev));
+  }
+  if (byKind.vault.length && setters.setVaultHabits) {
+    setters.setVaultHabits((prev) => byKind.vault.reduce((acc, id) => apply(acc, id), prev));
+  }
+  return targets.length;
+}
+
+function useLinks() {
+  const [links, setLinks] = useState(() => loadStored(STORAGE_KEY_LINKS, []));
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_LINKS, JSON.stringify(links)); } catch {}
+  }, [links]);
+  return { links, setLinks };
+}
+
+// ============================================================
 // ACHIEVEMENTS, COINS & LEVEL REWARDS (v24)
 //
 // All three share one idea: progress should be *noticed*. Achievements are
@@ -962,8 +1100,7 @@ const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, 
     return Array.from({ length: 34 }, (_, i) => ({
       left: `${(i * 29 + 7) % 100}%`,
       top: `${(i * 53 + 13) % 62}%`,
-      delay: `${(i % 9) * 0.7}s`,
-      dur: `${2.6 + (i % 5) * 0.8}s`,
+      op: 0.2 + ((i * 37) % 60) / 100,
     }));
   }, [phase.stars]);
 
@@ -976,7 +1113,7 @@ const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, 
       {stars.length > 0 && (
         <div className={`${L} amb-stars`}>
           {stars.map((st, i) => (
-            <span key={i} style={{ left: st.left, top: st.top, animationDelay: st.delay, animationDuration: st.dur }} />
+            <span key={i} style={{ left: st.left, top: st.top, opacity: st.op }} />
           ))}
         </div>
       )}
@@ -1001,6 +1138,7 @@ const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, 
 });
 
 const STORAGE_KEY_CALM = "tasksh.calm.v1";
+const STORAGE_KEY_AMBIENCE = "tasksh.ambience.v1";
 
 /**
  * Owns the active theme, the time-of-day phase and calm mode, and pushes all
@@ -1013,6 +1151,11 @@ function useTheme(level) {
   });
   const [calm, setCalm] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY_CALM) === "1"; } catch { return false; }
+  });
+  // Ambience toggle: on = animated gradients, off = the original flat black.
+  // Defaults on; some people just want the terminal back.
+  const [ambience, setAmbience] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY_AMBIENCE) !== "0"; } catch { return true; }
   });
   const [phase, setPhase] = useState(() => phaseForHour(getISTParts().hour));
 
@@ -1056,7 +1199,12 @@ function useTheme(level) {
     [level]
   );
 
-  return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm };
+  useEffect(() => {
+    document.documentElement.classList.toggle("no-ambience", !ambience);
+    try { localStorage.setItem(STORAGE_KEY_AMBIENCE, ambience ? "1" : "0"); } catch {}
+  }, [ambience]);
+
+  return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm, ambience, setAmbience };
 }
 
 const DEFAULT_THEME_ID = "terminal";
@@ -1926,6 +2074,20 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
           </div>
         )}
 
+        {!editing && (
+          <button
+            className="link-btn routine-link"
+            onClick={(e) => { e.stopPropagation(); linkUIBridge.open(refOf("routine", routine.id)); sound.click(); }}
+            aria-label="Links"
+            title="Link to other items"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12">
+              <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </button>
+        )}
+
       </div>
     </div>
   );
@@ -1982,6 +2144,7 @@ function RoutinesView({ routines, setRoutines }) {
         return { ...r, history: history.slice(-60) };
       })
     );
+    linkBridge.propagate("routine", id, willBeDone);
     if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
   };
 
@@ -2332,6 +2495,12 @@ function VaultHabitCard({ habit, onToggleToday, onDelete, onSave }) {
           </span>
         )}
       </div>
+      <button className="link-btn" onClick={(e) => { e.stopPropagation(); linkUIBridge.open(refOf("vault", habit.id)); sound.click(); }} aria-label="Links" title="Link to other items">
+        <svg viewBox="0 0 24 24" width="12" height="12">
+          <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+        </svg>
+      </button>
       <button className={`vault-check ${doneToday ? "done" : ""}`} onClick={() => onToggleToday(habit.id)}>
         {doneToday ? "✓ completed today" : "mark complete today"}
       </button>
@@ -2370,6 +2539,7 @@ function VaultHabitsSection({ habits, setHabits }) {
         return { ...h, history: history.slice(-370) };
       })
     );
+    linkBridge.propagate("vault", id, willBeDone);
     if (willBeDone) { sound.success(); petBus.emit("vaultDone"); } else { sound.click(); }
   };
 
@@ -2714,6 +2884,92 @@ function computeSubXP(subKey, goodHabits, badHabits) {
   return earned - lost;
 }
 
+// ---- user-editable sub-tags (v26) ----------------------------------------
+// SUB_AREAS ships as the default set; users can rename, add and remove tags,
+// and the radar follows. Stored separately from habits so renaming a tag
+// never has to rewrite every habit that uses it -- habits reference the tag
+// KEY, and only the label changes.
+
+const STORAGE_KEY_SUBS = "tasksh.subareas.v1";
+const STORAGE_KEY_RADAR_MODE = "tasksh.radarmode.v1";
+
+function loadSubAreas() {
+  const stored = loadStored(STORAGE_KEY_SUBS, null);
+  if (!Array.isArray(stored) || !stored.length) return SUB_AREAS;
+  // tolerate partial/corrupt entries rather than blanking the user's set
+  return stored.filter((s) => s && s.key && s.area && AREAS.some((a) => a.key === s.area));
+}
+
+function subsForArea(list, areaKey) {
+  return list.filter((s) => s.area === areaKey);
+}
+
+/** Resolves a habit's sub against a *dynamic* tag list. */
+function subForHabitIn(list, h) {
+  if (h.sub && list.some((s) => s.key === h.sub && s.area === h.area)) return h.sub;
+  const first = list.find((s) => s.area === h.area);
+  return first ? first.key : null;
+}
+
+function computeSubXPIn(list, subKey, goodHabits, badHabits) {
+  const earned = goodHabits
+    .filter((h) => subForHabitIn(list, h) === subKey)
+    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  const lost = badHabits
+    .filter((h) => subForHabitIn(list, h) === subKey)
+    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  return earned - lost;
+}
+
+function useSubAreas() {
+  const [subs, setSubs] = useState(loadSubAreas);
+  // "areas" = the 4 broad ones, "subs" = the finer tags
+  const [radarMode, setRadarMode] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY_RADAR_MODE) || "subs"; } catch { return "subs"; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_SUBS, JSON.stringify(subs)); } catch {}
+  }, [subs]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_RADAR_MODE, radarMode); } catch {}
+  }, [radarMode]);
+
+  const renameSub = useCallback((key, label) => {
+    const l = String(label || "").trim().slice(0, 18);
+    if (!l) return;
+    setSubs((prev) => prev.map((s) => (s.key === key ? { ...s, label: l } : s)));
+  }, []);
+
+  const addSub = useCallback((areaKey, label) => {
+    const l = String(label || "").trim().slice(0, 18);
+    if (!l) return;
+    setSubs((prev) => {
+      // key derived from the label, uniquified -- habits reference the key,
+      // so it must be stable even if two tags share a display name
+      let base = l.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "tag";
+      let key = base, n = 2;
+      while (prev.some((s) => s.key === key)) key = `${base}${n++}`;
+      return [...prev, { key, area: areaKey, label: l }];
+    });
+  }, []);
+
+  const removeSub = useCallback((key) => {
+    // never leave an area with zero tags -- habits there would have nothing
+    // to resolve to
+    setSubs((prev) => {
+      const target = prev.find((s) => s.key === key);
+      if (!target) return prev;
+      if (subsForArea(prev, target.area).length <= 1) return prev;
+      return prev.filter((s) => s.key !== key);
+    });
+  }, []);
+
+  const resetSubs = useCallback(() => setSubs(SUB_AREAS), []);
+
+  return { subs, radarMode, setRadarMode, renameSub, addSub, removeSub, resetSubs };
+}
+
 // curated ANSI/terminal-inspired categorical palette, used to give each
 // routine/habit a stable, distinct color (hashed from its id) instead of
 // everything sharing one accent color
@@ -2823,7 +3079,7 @@ function LifeAreaCard({ area, xp }) {
   );
 }
 
-function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
+function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSave }) {
   const doneToday = (habit.history || []).includes(getISTDateString(0));
   // one-shot completion feedback: a pulse ring plus a floating +XP. Keyed
   // by a counter so repeated toggles retrigger the animation.
@@ -2835,13 +3091,13 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
   const [eArea, setEArea] = useState(habit.area);
-  const [eSub, setESub] = useState(() => subForHabit(habit));
+  const [eSub, setESub] = useState(() => subForHabitIn(subs, habit));
   const [eXP, setEXP] = useState(habit.xp);
 
   const openEdit = () => {
     setELabel(habit.label);
     setEArea(habit.area);
-    setESub(subForHabit(habit));
+    setESub(subForHabitIn(subs, habit));
     setEXP(habit.xp);
     setEditing(true);
   };
@@ -2872,7 +3128,7 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
                 style={{ "--ac": a.color }}
                 onClick={() => {
                   setEArea(a.key);
-                  const list = SUBS_BY_AREA[a.key] || [];
+                  const list = subsForArea(subs, a.key);
                   setESub(list.length ? list[0].key : null);
                 }}
               >
@@ -2881,7 +3137,7 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
             ))}
           </div>
           <div className="edit-row edit-row-subs">
-            {(SUBS_BY_AREA[eArea] || []).map((sb) => (
+            {subsForArea(subs, eArea).map((sb) => (
               <button
                 key={sb.key}
                 type="button"
@@ -2916,6 +3172,17 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
         </span>
       </div>
       <button
+        className="link-btn"
+        onClick={(e) => { e.stopPropagation(); linkUIBridge.open(refOf("good", habit.id)); sound.click(); }}
+        aria-label="Links"
+        title="Link to other items"
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12">
+          <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+        </svg>
+      </button>
+      <button
         className={`quest-check ${doneToday ? "done" : ""}`}
         onClick={() => { fireFx(); onToggleToday(habit.id); }}
         aria-label="Mark done today"
@@ -2946,7 +3213,7 @@ function GoodHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   );
 }
 
-function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
+function BadHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSave }) {
   const loggedToday = (habit.history || []).includes(getISTDateString(0));
   const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
   const wk = weeklyCount(habit.history);
@@ -2954,13 +3221,13 @@ function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
   const [eArea, setEArea] = useState(habit.area);
-  const [eSub, setESub] = useState(() => subForHabit(habit));
+  const [eSub, setESub] = useState(() => subForHabitIn(subs, habit));
   const [eXP, setEXP] = useState(habit.xp);
 
   const openEdit = () => {
     setELabel(habit.label);
     setEArea(habit.area);
-    setESub(subForHabit(habit));
+    setESub(subForHabitIn(subs, habit));
     setEXP(habit.xp);
     setEditing(true);
   };
@@ -2991,7 +3258,7 @@ function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
                 style={{ "--ac": a.color }}
                 onClick={() => {
                   setEArea(a.key);
-                  const list = SUBS_BY_AREA[a.key] || [];
+                  const list = subsForArea(subs, a.key);
                   setESub(list.length ? list[0].key : null);
                 }}
               >
@@ -3000,7 +3267,7 @@ function BadHabitCard({ habit, onToggleToday, onDelete, onSave }) {
             ))}
           </div>
           <div className="edit-row edit-row-subs">
-            {(SUBS_BY_AREA[eArea] || []).map((sb) => (
+            {subsForArea(subs, eArea).map((sb) => (
               <button
                 key={sb.key}
                 type="button"
@@ -3121,7 +3388,10 @@ function RewardCard({ reward, canClaim, onClaim, onDelete, onSave }) {
   );
 }
 
-function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards, setRewards }) {
+function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards, setRewards, tagCtl }) {
+  const [areaFilter, setAreaFilter] = useState("all");
+  const [showTagEditor, setShowTagEditor] = useState(false);
+  const subs = tagCtl.subs;
   const totalXP = useMemo(() => computeTotalXP(goodHabits, badHabits, rewards), [goodHabits, badHabits, rewards]);
   const { level, into, span } = levelFromXP(totalXP);
   const levelPct = Math.round((into / span) * 100);
@@ -3139,6 +3409,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
         return { ...h, history: history.slice(-370) };
       })
     );
+    linkBridge.propagate("good", id, willBeDone);
     if (willBeDone) {
       sound.success();
       petBus.emit("habitDone");
@@ -3159,7 +3430,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
         return { ...h, history: history.slice(-370) };
       })
     );
-    willBeDone ? sound.error() : sound.click();
+    if (willBeDone) { sound.error(); petBus.emit("badHabit"); } else { sound.click(); }
   };
   const delGood = (id) => { setGoodHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
   const delBad = (id) => { setBadHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
@@ -3209,12 +3480,23 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   // broad areas, so the shape reads as detailed instead of a sparse diamond.
   // Each vertex keeps its parent area's colour so the four groups stay
   // visually legible around the ring.
-  const areaAxes = SUB_AREAS.map((s) => ({
-    key: s.key,
-    label: s.label,
-    color: (AREAS.find((a) => a.key === s.area) || {}).color,
-    value: Math.max(0, computeSubXP(s.key, goodHabits, badHabits)),
-  }));
+  // Radar plots either the 4 broad areas or the finer user-editable tags.
+  // Both read from the same habit data -- switching is a view change only.
+  const areaAxes = useMemo(() => (
+    tagCtl.radarMode === "areas"
+      ? AREAS.map((a) => ({
+          key: a.key, label: a.label, color: a.color,
+          value: Math.max(0, computeAreaXP(a.key, goodHabits, badHabits)),
+        }))
+      : subs.map((sb) => ({
+          key: sb.key, label: sb.label,
+          color: (AREAS.find((a) => a.key === sb.area) || {}).color,
+          value: Math.max(0, computeSubXPIn(subs, sb.key, goodHabits, badHabits)),
+        }))
+  ), [tagCtl.radarMode, subs, goodHabits, badHabits]);
+
+  const visibleGood = areaFilter === "all" ? goodHabits : goodHabits.filter((h) => h.area === areaFilter);
+  const visibleBad  = areaFilter === "all" ? badHabits  : badHabits.filter((h) => h.area === areaFilter);
   const earnedXP = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
   const lostXP = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
 
@@ -3243,6 +3525,15 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
 
       <div className="section-header"><span>LIFE-AREAS</span></div>
       <div className="radar-card">
+        <div className="radar-controls">
+          <div className="radar-mode">
+            <button className={tagCtl.radarMode === "areas" ? "active" : ""}
+                    onClick={() => { tagCtl.setRadarMode("areas"); sound.click(); }}>4 areas</button>
+            <button className={tagCtl.radarMode === "subs" ? "active" : ""}
+                    onClick={() => { tagCtl.setRadarMode("subs"); sound.click(); }}>{subs.length} tags</button>
+          </div>
+          <button className="radar-edit" onClick={() => setShowTagEditor(true)}>edit tags</button>
+        </div>
         <RadarChart axes={areaAxes} size={252} />
       </div>
 
@@ -3276,6 +3567,21 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
         </>
       )}
 
+      <div className="area-filter">
+        <button className={areaFilter === "all" ? "active" : ""}
+                onClick={() => setAreaFilter("all")}>all</button>
+        {AREAS.map((a) => (
+          <button key={a.key}
+                  className={areaFilter === a.key ? "active" : ""}
+                  style={{ "--ac": a.color }}
+                  onClick={() => { setAreaFilter(a.key); sound.click(); }}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      {showTagEditor && <TagEditor tagCtl={tagCtl} onClose={() => setShowTagEditor(false)} />}
+
       <div className="section-header"><span>GOOD-HABITS</span></div>
       <div className="quest-habit-list">
         {goodHabits.length === 0 ? (
@@ -3284,7 +3590,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
             <div className="msg">no good habits yet</div>
           </div>
         ) : (
-          goodHabits.map((h) => <GoodHabitCard key={h.id} habit={h} onToggleToday={toggleGood} onDelete={delGood} onSave={saveGood} />)
+          visibleGood.map((h) => <GoodHabitCard key={h.id} habit={h} subs={subs} onToggleToday={toggleGood} onDelete={delGood} onSave={saveGood} />)
         )}
       </div>
       <div className="composer">
@@ -3318,7 +3624,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
             <div className="msg">no bad habits tracked</div>
           </div>
         ) : (
-          badHabits.map((h) => <BadHabitCard key={h.id} habit={h} onToggleToday={toggleBad} onDelete={delBad} onSave={saveBad} />)
+          visibleBad.map((h) => <BadHabitCard key={h.id} habit={h} subs={subs} onToggleToday={toggleBad} onDelete={delBad} onSave={saveBad} />)
         )}
       </div>
       <div className="composer">
@@ -3478,6 +3784,146 @@ const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
 // it is never included in export/import backups (those get shared around and
 // a key is a credential, not data), and never synced to the worker's KV.
 const STORAGE_KEY_AI_KEY = "tasksh.aikey.v1";
+
+/** Rename, add and remove the finer tags. Grouped under their parent area. */
+function TagEditor({ tagCtl, onClose }) {
+  const [adding, setAdding] = useState(null);   // area key being added to
+  const [draft, setDraft] = useState("");
+
+  const commitAdd = (areaKey) => {
+    if (draft.trim()) { tagCtl.addSub(areaKey, draft); sound.success(); }
+    setDraft(""); setAdding(null);
+  };
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <span className="sheet-title">edit tags</span>
+          <button className="sheet-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+
+        {AREAS.map((a) => {
+          const mine = subsForArea(tagCtl.subs, a.key);
+          return (
+            <div key={a.key} className="tag-group">
+              <div className="tag-group-head">
+                <span className="tag-dot" style={{ background: a.color }} />
+                <span className="tag-group-name">{a.label}</span>
+              </div>
+              {mine.map((sb) => (
+                <div key={sb.key} className="tag-row">
+                  <input
+                    className="tag-input"
+                    defaultValue={sb.label}
+                    maxLength={18}
+                    onBlur={(e) => tagCtl.renameSub(sb.key, e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                  />
+                  <button
+                    className="tag-del"
+                    disabled={mine.length <= 1}
+                    title={mine.length <= 1 ? "each area needs at least one tag" : "remove"}
+                    onClick={() => { tagCtl.removeSub(sb.key); sound.delete(); }}
+                  >×</button>
+                </div>
+              ))}
+              {adding === a.key ? (
+                <div className="tag-row">
+                  <input
+                    className="tag-input" autoFocus placeholder="new tag…" maxLength={18}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={() => commitAdd(a.key)}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitAdd(a.key); if (e.key === "Escape") { setDraft(""); setAdding(null); } }}
+                  />
+                </div>
+              ) : (
+                <button className="tag-add" onClick={() => { setDraft(""); setAdding(a.key); }}>+ add tag</button>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="sheet-foot">
+          habits keep their tag when you rename it
+          <button className="tag-reset" onClick={() => { tagCtl.resetSubs(); sound.click(); }}>reset to defaults</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Link manager. Shows what an item is connected to and lets you connect it
+ * to anything else — routines, quest habits or vault cards, in any mix.
+ */
+function LinkManager({ selfRef, data, links, setLinks, onClose }) {
+  const [picking, setPicking] = useState(false);
+  const self = describeRef(selfRef, data);
+  const connected = linkedTo(links, selfRef);
+
+  const candidates = useMemo(() => {
+    const all = [
+      ...data.routines.map((r) => ({ ref: refOf("routine", r.id), label: r.label, kind: "routine" })),
+      ...data.goodHabits.map((h) => ({ ref: refOf("good", h.id), label: h.label, kind: "good" })),
+      ...data.vaultHabits.map((h) => ({ ref: refOf("vault", h.id), label: h.label, kind: "vault" })),
+    ];
+    return all.filter((c) => c.ref !== selfRef && !connected.includes(c.ref));
+  }, [data, selfRef, connected]);
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <span className="sheet-title">links · {self?.label || "item"}</span>
+          <button className="sheet-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+
+        <div className="link-intro">
+          ticking any of these completes all of them, both ways.
+        </div>
+
+        {connected.length === 0 ? (
+          <div className="link-empty">not linked to anything yet</div>
+        ) : (
+          <div className="link-list">
+            {connected.map((ref) => {
+              const d = describeRef(ref, data);
+              return (
+                <div key={ref} className={`link-row ${d ? "" : "stale"}`}>
+                  <span className="link-kind">{d ? d.meta : "missing"}</span>
+                  <span className="link-label">{d ? d.label : "deleted item"}</span>
+                  <button className="link-remove"
+                          onClick={() => { setLinks((l) => removeLink(l, selfRef, ref)); sound.delete(); }}>
+                    unlink
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {picking ? (
+          <div className="link-picker">
+            {candidates.length === 0 ? (
+              <div className="link-empty">nothing else to link to</div>
+            ) : candidates.map((c) => (
+              <button key={c.ref} className="link-candidate"
+                      onClick={() => { setLinks((l) => addLink(l, selfRef, c.ref)); setPicking(false); sound.success(); }}>
+                <span className="link-kind">{LINK_KINDS[c.kind].label}</span>
+                <span className="link-label">{c.label}</span>
+                <span className="link-plus">+</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <button className="link-add-btn" onClick={() => setPicking(true)}>+ link to something</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /** Slide-in toast when an achievement unlocks. Self-dismissing, queued. */
 function AchievementToast({ id, onDone }) {
@@ -3654,17 +4100,15 @@ function ThemePicker({ ctl, level, totalXP, earned = [], coins = 0, onClose }) {
 
         <div className="calm-toggle-row">
           <div>
-            <div className="calm-toggle-label">calm mode</div>
-            <div className="calm-toggle-hint">slower motion, softer light, a breathing guide</div>
+            <div className="calm-toggle-label">ambient background</div>
+            <div className="calm-toggle-hint">
+              {ctl.ambience ? "drifting gradients and particles" : "flat black, like the old build"}
+            </div>
           </div>
           <button
-            className={`calm-switch ${ctl.calm ? "on" : ""}`}
-            onClick={() => {
-              if (!ctl.calm) { petBus.emit("calmSession"); bumpMeta("calmSessions"); }
-              ctl.setCalm(!ctl.calm);
-              sound.click();
-            }}
-            aria-pressed={ctl.calm}
+            className={`calm-switch ${ctl.ambience ? "on" : ""}`}
+            onClick={() => { ctl.setAmbience(!ctl.ambience); sound.click(); }}
+            aria-pressed={ctl.ambience}
           >
             <span className="calm-knob" />
           </button>
@@ -4421,7 +4865,8 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHa
         return { ...r, history: history.slice(-60) };
       })
     );
-    if (willBeDone) { sound.error(); petBus.emit("badHabit"); } else { sound.click(); }
+    linkBridge.propagate("routine", id, willBeDone);
+    if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
   };
 
   const openTasks = useMemo(() => {
@@ -4578,6 +5023,21 @@ function TodoApp() {
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
   const themeCtl = useTheme(currentLevel);
   const petCtl = usePet(currentLevel);
+  const { links, setLinks } = useLinks();
+  const tagCtl = useSubAreas();
+  const [linkTarget, setLinkTarget] = useState(null);   // ref string or null
+
+  // any view can request the link sheet without prop-drilling
+  useEffect(() => linkUIBridge.register((ref) => setLinkTarget(ref)), []);
+
+  // One place that knows how to fan a completion out to linked items.
+  useEffect(() => linkBridge.register((kind, id, done) => {
+    propagateCompletion(
+      refOf(kind, id), done, links,
+      { setRoutines, setVaultHabits, setGoodHabits },
+      getISTDateString(0)
+    );
+  }), [links]);
 
   // Achievements read a single derived snapshot. Memoised so the evaluation
   // effect only re-runs when something it actually depends on changes.
@@ -4882,6 +5342,15 @@ function TodoApp() {
           to={petCtl.evolution.to}
           petName={petCtl.pet.name}
           onDone={petCtl.clearEvolution}
+        />
+      )}
+      {linkTarget && (
+        <LinkManager
+          selfRef={linkTarget}
+          data={{ routines, goodHabits, vaultHabits }}
+          links={links}
+          setLinks={setLinks}
+          onClose={() => setLinkTarget(null)}
         />
       )}
       {showThemes && (
@@ -5288,6 +5757,7 @@ function TodoApp() {
         }
 
         .routine-row {
+          position: relative;
           position: relative;
           display: flex;
           align-items: flex-start;
@@ -6099,12 +6569,13 @@ function TodoApp() {
           height: 34.5%;
           inset: 0 auto auto 0;
           transform-origin: 0 0;
-          scale: 3;
+          transform: scale(3) translateZ(0);
           background:
             radial-gradient(58% 42% at 14% 8%,  var(--accent),  transparent 62%),
             radial-gradient(52% 40% at 88% 92%, var(--accent2), transparent 62%),
             radial-gradient(46% 38% at 72% 26%, var(--accent),  transparent 66%),
-            radial-gradient(50% 44% at 26% 74%, var(--accent2), transparent 66%);
+            radial-gradient(50% 44% at 26% 74%, var(--accent2), transparent 66%),
+            radial-gradient(40% 36% at 50% 50%, var(--accent),  transparent 70%);
           /* the gradients use full-strength theme colours and are dimmed
              here, so every theme keeps its own character */
           opacity: 0.14;
@@ -6114,24 +6585,17 @@ function TodoApp() {
         /* drift keyframes for the downscaled layer: the parent already has
            scale:3, so these only translate */
         @keyframes ambientDriftScaled {
-          0%   { translate: 0 0; }
-          50%  { translate: 2.5% -2%; }
-          100% { translate: -2% 2.5%; }
+          0%   { transform: scale(3) translate(0, 0); }
+          25%  { transform: scale(3) translate(1.8%, -1.4%); }
+          50%  { transform: scale(3) translate(2.6%, 1.2%); }
+          75%  { transform: scale(3) translate(-1.2%, 2.2%); }
+          100% { transform: scale(3) translate(-2%, -0.8%); }
         }
 
-        /* a second, slower counter-drifting layer stops it reading as a
-           static wash */
-        .amb-scoped.amb-blobs::after {
-          content: "";
-          position: absolute;
-          inset: -18%;
-          background:
-            radial-gradient(46% 40% at 78% 18%, var(--accent),  transparent 64%),
-            radial-gradient(44% 42% at 20% 84%, var(--accent2), transparent 64%);
-          opacity: 0.55;
-          will-change: transform;
-          animation: ambientDriftAlt calc(138s * var(--motion-scale)) ease-in-out infinite alternate;
-        }
+        /* Deliberately NO ::after here. A pseudo-element can't get its own
+           compositor layer, so animating one forces a full repaint of the
+           parent every frame -- measured at 17fps on a 1366px panel. The
+           extra gradients are folded into the parent's background instead. */
 
         /* the time-of-day wash needs more presence inside the panel too */
         .amb-scoped.amb-time {
@@ -6141,7 +6605,7 @@ function TodoApp() {
           height: 34.5%;
           inset: 0 auto auto 0;
           transform-origin: 0 0;
-          scale: 3;
+          transform: scale(3) translateZ(0);
           background: radial-gradient(130% 78% at 50% -8%, var(--time-warm), transparent 62%);
           opacity: calc(var(--time-light, 1) * 2.2);
         }
@@ -6150,10 +6614,25 @@ function TodoApp() {
            and the subtlest layers are the least visible on a big screen.
            Shed them above 900px rather than dropping frames for effects
            nobody can see. Phones keep the full stack. */
+        /* Large panels: collapse the stack to a single layer.
+           Four overlapping translucent surfaces have to be composited
+           together every frame; at 1320px that measured 25fps, while ONE
+           animated gradient of the same size runs at 60. The blobs layer
+           carries the theme colour, so it is the one we keep. Phones are
+           small enough to afford the full stack and keep it. */
         @media (min-width: 900px) {
-          .amb-scoped.amb-grain { display: none; }
-          .amb-scoped.amb-time { opacity: calc(var(--time-light, 1) * 1.4); }
-          .amb-scoped.amb-blobs { opacity: 0.10; }
+          .amb-scoped.amb-grain,
+          .amb-scoped.amb-time,
+          .amb-scoped.amb-dust { display: none; }
+          .amb-scoped.amb-blobs { opacity: 0.11; }
+        }
+
+        /* Widest layout: keep the colour, drop the motion entirely. A ~2%
+           drift across a 1320px panel cannot be seen; compositing it every
+           frame can be felt. */
+        @media (min-width: 1240px) {
+          .amb-scoped.amb-blobs { animation: none; will-change: auto; }
+          .amb-ray { animation: none; }
         }
 
         /* Everything the user actually reads sits above the ambience. */
@@ -6164,6 +6643,131 @@ function TodoApp() {
         .panel > .banner { position: relative; z-index: 1; }
 
 
+
+        /* Ambience off: back to flat black. Hides every animated surface
+           rather than just dimming, so there is genuinely nothing painting. */
+        .no-ambience .amb-layer,
+        .no-ambience .calm-breath { display: none !important; }
+        .no-ambience .app-root::before { background: none !important; }
+
+
+        /* ---- links + tags (v26) ---- */
+        .link-btn {
+          background: transparent; border: none; cursor: pointer;
+          color: var(--muted); padding: 4px; border-radius: 6px;
+          flex-shrink: 0; line-height: 0;
+          transition: color 150ms ease, background 150ms ease;
+        }
+        .routine-link { position: absolute; top: 8px; right: 8px; }
+
+        .link-intro { font-size: 11px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
+        .link-empty {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          color: var(--muted); text-align: center; padding: 14px 0;
+        }
+        .link-list { display: flex; flex-direction: column; gap: 6px; }
+        .link-row, .link-candidate {
+          display: flex; align-items: center; gap: 9px;
+          padding: 9px 11px; border-radius: 9px;
+          background: var(--bg); border: 1px solid var(--border);
+          width: 100%; text-align: left; font-family: inherit;
+        }
+        .link-candidate { cursor: pointer; transition: border-color 150ms ease; }
+        .link-row.stale { opacity: 0.5; }
+        .link-kind {
+          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          letter-spacing: 0.08em; text-transform: uppercase;
+          color: var(--accent); flex-shrink: 0; min-width: 46px;
+        }
+        .link-label { font-size: 12px; color: var(--text); flex: 1; min-width: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .link-remove {
+          background: transparent; border: none; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--danger); letter-spacing: 0.06em; flex-shrink: 0;
+        }
+        .link-plus { color: var(--accent); font-size: 14px; flex-shrink: 0; }
+        .link-picker { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 300px; overflow-y: auto; }
+        .link-add-btn {
+          width: 100%; margin-top: 12px; padding: 11px 0;
+          background: transparent; border: 1px dashed var(--border);
+          border-radius: 9px; color: var(--accent); cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        }
+
+        /* tag editor */
+        .tag-group { margin-bottom: 16px; }
+        .tag-group-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+        .tag-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .tag-group-name {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          letter-spacing: 0.1em; text-transform: uppercase; color: var(--text);
+        }
+        .tag-row { display: flex; gap: 6px; margin-bottom: 5px; }
+        .tag-input {
+          flex: 1; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 7px; color: var(--text); font-size: 12px;
+          padding: 8px 10px; outline: none; font-family: 'Inter', sans-serif;
+        }
+        .tag-input:focus { border-color: var(--accent); }
+        .tag-del {
+          width: 32px; background: transparent; border: 1px solid var(--border);
+          border-radius: 7px; color: var(--danger); cursor: pointer; font-size: 15px;
+        }
+        .tag-del:disabled { opacity: 0.3; cursor: not-allowed; }
+        .tag-add {
+          background: transparent; border: none; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          color: var(--accent); padding: 4px 0;
+        }
+        .tag-reset {
+          display: block; margin: 8px auto 0; background: transparent;
+          border: 1px solid var(--border); border-radius: 999px;
+          color: var(--muted); cursor: pointer; padding: 5px 12px;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+        }
+
+        /* radar controls + area filter */
+        .radar-controls {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 10px; padding: 0 4px 10px;
+        }
+        .radar-mode { display: flex; gap: 4px; }
+        .radar-mode button, .radar-edit {
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 999px; color: var(--muted); cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.06em; padding: 5px 11px;
+          transition: all 150ms ease;
+        }
+        .radar-mode button.active {
+          border-color: var(--accent); color: var(--accent);
+          background: rgba(94,234,212,0.08);
+        }
+        .radar-edit { color: var(--accent2); }
+
+        .area-filter {
+          display: flex; flex-wrap: wrap; gap: 5px;
+          padding: 4px 18px 10px;
+        }
+        .area-filter button {
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 999px; color: var(--muted); cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          padding: 5px 12px; transition: all 150ms ease;
+        }
+        .area-filter button.active {
+          border-color: var(--ac, var(--accent));
+          color: var(--ac, var(--accent));
+          background: color-mix(in srgb, var(--ac, var(--accent)) 10%, transparent);
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+          .link-btn:hover { color: var(--accent); background: var(--track); }
+          .link-candidate:hover { border-color: var(--accent); }
+          .radar-mode button:hover, .radar-edit:hover { border-color: var(--accent); }
+          .area-filter button:hover { border-color: var(--ac, var(--accent)); }
+        }
 
         /* ---- merged companion (v25) ---- */
         .companion-scroll { padding-top: 4px; display: flex; flex-direction: column; }
@@ -6659,16 +7263,23 @@ function TodoApp() {
 
         /* stars only at night, and only as a static field so they don't
            compete with the drifting layers */
+        /* One animation on the container rather than 34 on the children.
+           Animating opacity per-span forced ~34 repaints every frame (measured
+           at ~24fps on a 1920 panel); the field reads the same when the whole
+           layer breathes and the stars differ only in static opacity. */
+        .amb-stars {
+          animation: twinkle 4.5s ease-in-out infinite alternate;
+          will-change: opacity;
+        }
         .amb-stars span {
           position: absolute;
           width: 2px; height: 2px;
           border-radius: 50%;
           background: #FFFFFF;
-          animation: twinkle ease-in-out infinite alternate;
         }
         @keyframes twinkle {
-          from { opacity: 0.12; }
-          to   { opacity: 0.6; }
+          from { opacity: 0.45; }
+          to   { opacity: 1; }
         }
 
         /* ---- calm mode ----------------------------------------------
@@ -8370,6 +8981,7 @@ function TodoApp() {
           />
         ) : tab === "quest" ? (
           <QuestView
+            tagCtl={tagCtl}
             goodHabits={goodHabits}
             setGoodHabits={setGoodHabits}
             badHabits={badHabits}
