@@ -497,6 +497,237 @@ async function handlePet(request, env) {
   return json({ reply });
 }
 
+// ---- providers (v28) -----------------------------------------------------
+// Keys are routed by prefix, so the user just pastes a key and we work out
+// where it goes. This matters more than it sounds: several Gemini keys from
+// one Google account share ONE project quota and add no capacity, whereas a
+// Groq or OpenRouter key is a genuinely separate pool.
+//
+// Gemini speaks its own protocol; everyone else here speaks OpenAI's
+// chat/completions, so there are exactly two request shapes to support.
+
+const PROVIDERS = {
+  gemini: {
+    id: "gemini", label: "Gemini", test: (k) => /^AIza/.test(k),
+    kind: "gemini", signup: "aistudio.google.com/apikey",
+    resets: "pacific",
+  },
+  groq: {
+    id: "groq", label: "Groq", test: (k) => /^gsk_/.test(k),
+    kind: "openai", base: "https://api.groq.com/openai/v1",
+    // Groq's free tier is per-model; 70b-versatile is the best general one
+    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    signup: "console.groq.com", resets: "utc",
+  },
+  cerebras: {
+    id: "cerebras", label: "Cerebras", test: (k) => /^csk-/.test(k),
+    kind: "openai", base: "https://api.cerebras.ai/v1",
+    // gpt-oss-120b is the only production model; the others are preview and
+    // get retired on short notice, so they sit behind it as fallbacks only.
+    models: ["gpt-oss-120b", "gemma-4-31b"],
+    // free tier caps context at ~8k, which is plenty for Pip but means we
+    // must keep max_tokens modest or the whole request is rejected
+    maxTokens: 900,
+    signup: "cloud.cerebras.ai", resets: "utc",
+  },
+  nvidia: {
+    id: "nvidia", label: "NVIDIA NIM", test: (k) => /^nvapi-/.test(k),
+    kind: "openai", base: "https://integrate.api.nvidia.com/v1",
+    models: ["meta/llama-3.3-70b-instruct", "openai/gpt-oss-120b"],
+    // NIM model support for response_format varies per model; asking for it
+    // 400s on several, so we ask for JSON in the prompt instead.
+    jsonMode: false,
+    signup: "build.nvidia.com", resets: "utc",
+  },
+  github: {
+    id: "github", label: "GitHub Models", test: (k) => /^(ghp_|github_pat_|gho_|ghu_|ghs_)/.test(k),
+    kind: "openai", base: "https://models.github.ai/inference",
+    models: ["openai/gpt-4.1-mini", "openai/gpt-4o-mini"],
+    // 8k input / 4k output ceiling on the free tier
+    maxTokens: 900,
+    signup: "github.com/settings/tokens", resets: "utc",
+  },
+  mistral: {
+    id: "mistral", label: "Mistral",
+    // Mistral keys are bare 32-char alphanumerics with no prefix, so they
+    // cannot be sniffed. They are reachable only via the explicit
+    // "mistral:KEY" form handled in providerFor().
+    test: () => false,
+    kind: "openai", base: "https://api.mistral.ai/v1",
+    models: ["mistral-small-latest", "open-mistral-nemo"],
+    signup: "console.mistral.ai", resets: "utc",
+  },
+  openrouter: {
+    id: "openrouter", label: "OpenRouter", test: (k) => /^sk-or-/.test(k),
+    kind: "openai", base: "https://openrouter.ai/api/v1",
+    models: ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free"],
+    signup: "openrouter.ai/keys", resets: "utc",
+  },
+  openai: {
+    id: "openai", label: "OpenAI-compatible", test: (k) => /^sk-/.test(k),
+    kind: "openai", base: "https://api.openai.com/v1",
+    models: ["gpt-4o-mini"],
+    signup: "platform.openai.com", resets: "utc",
+  },
+};
+
+// Prefix sniffing order. sk-or- must be checked before the generic sk-, and
+// csk-/nvapi- are distinct enough to sit anywhere.
+const PROVIDER_ORDER = ["gemini", "groq", "cerebras", "nvidia", "github", "openrouter", "openai"];
+
+/**
+ * Works out which provider a key belongs to.
+ *
+ * Two forms are accepted:
+ *   "gsk_abc…"          -> sniffed by prefix
+ *   "mistral:abc…"      -> explicit, for providers whose keys have no prefix
+ *
+ * Returns { provider, key } so callers always get the real key back with any
+ * "provider:" tag stripped off.
+ */
+function providerFor(rawKey) {
+  const raw = String(rawKey || "").trim();
+
+  // explicit "<provider>:<key>" form
+  const m = raw.match(/^([a-z][a-z0-9]*):(.+)$/i);
+  if (m) {
+    const p = PROVIDERS[m[1].toLowerCase()];
+    if (p) return { provider: p, key: m[2].trim() };
+  }
+
+  for (const id of PROVIDER_ORDER) {
+    if (PROVIDERS[id].test(raw)) return { provider: PROVIDERS[id], key: raw };
+  }
+  return null;
+}
+
+/**
+ * Calls any OpenAI-compatible provider.
+ * Returns the same { ok, status, detail, text } shape the Gemini path uses,
+ * so withKeyPool() doesn't need to know which provider it just tried.
+ */
+async function callOpenAICompatible(provider, key, systemPrompt, contents, opts = {}) {
+  // translate Gemini's contents[] into OpenAI messages[]
+  const messages = [{ role: "system", content: systemPrompt }];
+  for (const c of contents) {
+    messages.push({
+      role: c.role === "model" ? "assistant" : "user",
+      content: (c.parts || []).map((p) => p.text || "").join("\n"),
+    });
+  }
+
+  // Providers with a small free-tier ceiling (Cerebras 8k context, GitHub
+  // Models 4k output) 400 outright if we ask for more than they allow, so the
+  // provider's own cap wins over the caller's preference.
+  const cap = provider.maxTokens || Infinity;
+  const maxTokens = Math.min(opts.maxTokens ?? 1200, cap);
+
+  // Some providers accept response_format on paper but reject it per-model
+  // (NVIDIA NIM). jsonMode:false opts them out; the prompt already demands
+  // JSON, and the caller already tolerates prose.
+  const wantJson = opts.json && provider.jsonMode !== false;
+
+  const send = async (model, withJson) => {
+    let r;
+    try {
+      r = await fetch(`${provider.base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+          // OpenRouter asks for these; harmless elsewhere
+          "HTTP-Referer": "https://chandansharamcs.github.io/To-do_app/",
+          "X-Title": "tasks.sh",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: opts.temperature ?? 0.75,
+          max_tokens: maxTokens,
+          ...(withJson ? { response_format: { type: "json_object" } } : {}),
+        }),
+      });
+    } catch {
+      return { ok: false, status: 0, detail: "network" };
+    }
+    if (!r.ok) return { ok: false, status: r.status, detail: await r.text() };
+    const data = await r.json();
+    return {
+      ok: true,
+      text: data?.choices?.[0]?.message?.content || "",
+      usage: data.usage || {},
+      model: data.model || model,
+    };
+  };
+
+  const models = provider.models && provider.models.length ? provider.models : ["gpt-4o-mini"];
+  let last = null;
+
+  for (let i = 0; i < models.length; i++) {
+    let res = await send(models[i], wantJson);
+
+    // A model that doesn't do structured output says so with a 400. Retry it
+    // once bare rather than skipping to a weaker model.
+    if (!res.ok && res.status === 400 && wantJson &&
+        /response_format|json_object|json_schema|structured/i.test(res.detail || "")) {
+      console.log(`[prov] ${provider.id}/${models[i]} rejected json mode, retrying plain`);
+      res = await send(models[i], false);
+    }
+
+    if (res.ok) return res;
+    last = res;
+
+    // Only a missing/retired/unauthorised MODEL is worth trying the next one
+    // for. A 401/429 is about the key, so bail and let the pool rotate keys.
+    const modelGone = res.status === 404 ||
+      (res.status === 400 && /model|not found|unknown|does not exist|decommission/i.test(res.detail || ""));
+    if (!modelGone) return res;
+    console.log(`[prov] ${provider.id}/${models[i]} unavailable (${res.status}), trying next model`);
+  }
+
+  return last || { ok: false, status: 502, detail: "no usable model" };
+}
+
+/** Same call against Gemini, normalised to the shape above. */
+async function callGemini(key, model, systemPrompt, contents, opts = {}) {
+  const generationConfig = {
+    temperature: opts.temperature ?? 0.75,
+    maxOutputTokens: opts.maxTokens ?? 1600,
+    ...(opts.json ? { responseMimeType: "application/json" } : {}),
+  };
+  const tc = thinkingConfigFor(model);
+  if (tc) generationConfig.thinkingConfig = tc;
+
+  const send = (cfg) => fetch(AI_ENDPOINT(model, key), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents, generationConfig: cfg,
+    }),
+  });
+
+  let r;
+  try { r = await send(generationConfig); }
+  catch { return { ok: false, status: 0, detail: "network" }; }
+
+  if (r.status === 400) {
+    const peek = await r.clone().text();
+    if (/thinking/i.test(peek)) {
+      const bare = { ...generationConfig };
+      delete bare.thinkingConfig;
+      try { r = await send(bare); } catch { return { ok: false, status: 0, detail: "network" }; }
+    }
+  }
+  if (!r.ok) return { ok: false, status: r.status, detail: await r.text() };
+  const data = await r.json();
+  return {
+    ok: true,
+    text: data?.candidates?.[0]?.content?.parts?.[0]?.text || "",
+    usage: data.usageMetadata || {},
+  };
+}
+
 // ---- key pool ------------------------------------------------------------
 // Tries each key in turn and remembers which are exhausted, so a key that has
 // burned its daily quota isn't probed again on every request (a known way to
@@ -516,9 +747,19 @@ async function coolKey(env, k, seconds) {
   try { await env.TASKSH_KV.put(`cool:${keyId(k)}`, "1", { expirationTtl: Math.max(60, seconds) }); } catch {}
 }
 
-/** Seconds until Google's daily quota reset (midnight US Pacific). */
-function secondsUntilQuotaReset() {
+/**
+ * Seconds until a provider's daily quota resets.
+ *
+ * Google resets at midnight US Pacific; everyone else here resets at midnight
+ * UTC. Parking a key past the wrong reset just wastes capacity, so this is
+ * worth getting right per provider rather than assuming Google's clock.
+ */
+function secondsUntilQuotaReset(zone = "pacific") {
   const now = new Date();
+  if (zone === "utc") {
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    return Math.max(300, Math.round((next - now.getTime()) / 1000));
+  }
   // Pacific is UTC-8/-7; use -8 so we never re-probe too early
   const pac = new Date(now.getTime() - 8 * 3600000);
   const next = Date.UTC(pac.getUTCFullYear(), pac.getUTCMonth(), pac.getUTCDate() + 1) + 8 * 3600000;
@@ -545,8 +786,9 @@ async function withKeyPool(env, keys, attempt) {
     }
     lastErr = res;
     if (res.status === 429) {
-      const daily = /per_day|PerDay|free_tier_requests/i.test(res.detail || "");
-      await coolKey(env, key, daily ? secondsUntilQuotaReset() : 90);
+      const daily = /per_day|PerDay|per-day|free_tier_requests|daily|RPD|quota exceeded/i.test(res.detail || "");
+      const zone = providerFor(key)?.provider?.resets || "pacific";
+      await coolKey(env, key, daily ? secondsUntilQuotaReset(zone) : 90);
       console.log(`[pool] key ${keyId(key)} rate-limited (${daily ? "daily" : "per-minute"}), trying next`);
       continue;
     }
@@ -625,16 +867,16 @@ async function handleCompanion(request, env) {
   const petState = typeof body.context === "string" ? body.context.slice(0, 700) : "";
   const log = Array.isArray(body.log) ? body.log.slice(-6) : [];
 
-  let model;
-  try {
-    model = await resolveModel(apiKey, env);
-  } catch (err) {
-    const detail = String(err.detail || "");
-    if (err.status === 403 || (err.status === 400 && detail.includes("API_KEY_INVALID"))) {
-      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
-    }
-    return json({ error: "model", message: "Couldn't pick a model." }, 502);
-  }
+  // Only Gemini needs model discovery; OpenAI-compatible providers have a
+  // fixed model id per provider. Resolve lazily and only if we actually
+  // reach a Gemini key, so a Groq-only user never pays for a ListModels call.
+  const geminiModelCache = new Map();
+  const geminiModelFor = async (key) => {
+    if (geminiModelCache.has(key)) return geminiModelCache.get(key);
+    const m = await resolveModel(key, env);
+    geminiModelCache.set(key, m);
+    return m;
+  };
 
   // Gemini rejects a history that starts with "model" or repeats a role on
   // consecutive turns -- both happen naturally here: the pet speaks first
@@ -661,36 +903,29 @@ async function handleCompanion(request, env) {
     parts: [{ text: `[you: ${petState}]\n[their data: ${JSON.stringify(snap)}]\n\n${message}` }],
   });
 
-  const generationConfig = {
-    temperature: 0.75,
-    maxOutputTokens: 1600,
-    responseMimeType: "application/json",
-  };
-  const tc = thinkingConfigFor(model);
-  if (tc) generationConfig.thinkingConfig = tc;
-
   const started = Date.now();
 
-  const attempt = async (key) => {
-    const send = (cfg) => fetch(AI_ENDPOINT(model, key), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: COMPANION_PROMPT }] }, contents, generationConfig: cfg }),
-    });
-    let r;
-    try { r = await send(generationConfig); }
-    catch { return { ok: false, status: 0, detail: "network" }; }
+  const attempt = async (rawKey) => {
+    const found = providerFor(rawKey);
+    if (!found) return { ok: false, status: 400, detail: "API_KEY_INVALID unknown key format" };
+    const { provider: prov, key } = found;
 
-    if (r.status === 400) {
-      const peek = await r.clone().text();
-      if (/thinking/i.test(peek)) {
-        const bare = { ...generationConfig };
-        delete bare.thinkingConfig;
-        try { r = await send(bare); } catch { return { ok: false, status: 0, detail: "network" }; }
+    if (prov.kind === "gemini") {
+      let model;
+      try { model = await geminiModelFor(key); }
+      catch (err) {
+        return { ok: false, status: err.status || 502, detail: String(err.detail || err.message || "") };
       }
+      const r = await callGemini(key, model, COMPANION_PROMPT, contents,
+        { temperature: 0.75, maxTokens: 1600, json: true });
+      if (r.ok) r.model = model.replace(/^models\//, "");
+      return r;
     }
-    if (r.ok) return { ok: true, response: r };
-    return { ok: false, status: r.status, detail: await r.text() };
+
+    const r = await callOpenAICompatible(prov, key, COMPANION_PROMPT, contents,
+      { temperature: 0.75, maxTokens: 1200, json: true });
+    if (r.ok) r.model = `${prov.id}/${r.model || prov.models[0]}`;
+    return r;
   };
 
   const result = await withKeyPool(env, keys, attempt);
@@ -715,9 +950,7 @@ async function handleCompanion(request, env) {
       message: reason ? `AI error: ${reason.slice(0, 160)}` : `AI error (${status}).` }, 502);
   }
 
-  const res = result.response;
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const text = result.text || "";
 
   let parsed;
   try { parsed = JSON.parse(text); }
@@ -738,9 +971,9 @@ async function handleCompanion(request, env) {
   reply = reply.replace(/[*_`#>]/g, "").replace(/\n{2,}/g, " ").slice(0, 400);
   if (!reply) reply = actions.length ? "here's what i'd change." : "mm. i'm here.";
 
-  const u = data.usageMetadata || {};
-  console.log(`[cmp] ${model.replace(/^models\//, "")} ${Date.now() - started}ms in=${u.promptTokenCount || "?"} out=${u.candidatesTokenCount || "?"} think=${u.thoughtsTokenCount || 0} -> ${actions.length} action(s)`);
-  return json({ reply, actions });
+  const u = result.usage || {};
+  console.log(`[cmp] ${result.model || "?"} ${Date.now() - started}ms in=${u.promptTokenCount ?? u.prompt_tokens ?? "?"} out=${u.candidatesTokenCount ?? u.completion_tokens ?? "?"} -> ${actions.length} action(s)`);
+  return json({ reply, actions, model: result.model });
 }
 
 async function handleAI(request, env) {
@@ -867,8 +1100,34 @@ async function handleAI(request, env) {
 // into the daily request allowance.
 async function handleAIVerify(request, env) {
   const { apiKey } = await request.json();
-  const key = typeof apiKey === "string" ? apiKey.trim() : "";
-  if (!key) return json({ ok: false, message: "No key provided." }, 400);
+  const raw = typeof apiKey === "string" ? apiKey.trim() : "";
+  if (!raw) return json({ ok: false, message: "No key provided." }, 400);
+
+  const found = providerFor(raw);
+  if (!found) {
+    return json({ ok: false, message:
+      "Unrecognised key. Expected AIza… (Gemini), gsk_… (Groq), csk-… (Cerebras), " +
+      "nvapi-… (NVIDIA), ghp_… (GitHub) or sk-or-… (OpenRouter). " +
+      "For a Mistral key, prefix it: mistral:YOUR_KEY" }, 400);
+  }
+  const { provider: prov, key } = found;
+
+  // OpenAI-compatible providers: a tiny real call is the only reliable check
+  if (prov.kind === "openai") {
+    const r = await callOpenAICompatible(prov, key, "reply with: ok",
+      [{ role: "user", parts: [{ text: "ok" }] }], { maxTokens: 5, temperature: 0 });
+    if (r.ok) return json({ ok: true, provider: prov.label, model: r.model || prov.models[0] });
+    if (r.status === 401 || r.status === 403) {
+      return json({ ok: false, message: `${prov.label} rejected that key.` }, 401);
+    }
+    if (r.status === 429) {
+      return json({ ok: true, provider: prov.label, warning: `${prov.label} key accepted, but rate limited right now.` });
+    }
+    if (r.status === 0) {
+      return json({ ok: false, message: `Couldn't reach ${prov.label}.` }, 502);
+    }
+    return json({ ok: false, message: `${prov.label} returned ${r.status}.` }, 502);
+  }
 
   try {
     const available = await listUsableModels(key);
@@ -876,7 +1135,7 @@ async function handleAIVerify(request, env) {
       return json({ ok: false, message: "That key has no usable text models." }, 401);
     }
     const model = await resolveModel(key, env);
-    return json({ ok: true, model: model.replace(/^models\//, "") });
+    return json({ ok: true, provider: "Gemini", model: model.replace(/^models\//, "") });
   } catch (err) {
     const detail = String(err.detail || err.message || "");
     if (err.status === 400 && detail.includes("API_KEY_INVALID")) {

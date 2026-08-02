@@ -24,6 +24,8 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v29`** | 2026-08-02 | Cerebras / NVIDIA / GitHub / Mistral, first-run fix |
+| **`v28`** | 2026-08-02 | Groq / OpenRouter support, multi-provider pool |
 | **`v27`** | 2026-08-02 | XP/reward split fix, multi-key failover |
 | **`v26`** | 2026-08-02 | Links, editable tags, quest filters, AI 400 fix |
 | **`v25`** | 2026-08-01 | Merged pet+ai into one companion, big perf fix |
@@ -54,6 +56,102 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-02 — `tasksh-v29`**
+
+- **Added: four more free providers.** The pool now routes **Cerebras**
+  (`csk-…`), **NVIDIA NIM** (`nvapi-…`), **GitHub Models** (`ghp_…`,
+  `github_pat_…`) and **Mistral**, on top of v28's Gemini/Groq/OpenRouter.
+  All four speak OpenAI `chat/completions`, so no new request shape was
+  needed — each is one row in `PROVIDERS` (worker) and `KEY_PROVIDERS`
+  (client).
+  - **Cerebras is the one that matters:** 1M tokens/day free, no card. That
+    is far more headroom than everything else here combined.
+  - **Mistral keys have no prefix** — they're bare 32-char alphanumerics,
+    indistinguishable from noise. Rather than guess (and mis-route someone's
+    key to OpenAI, which fails looking exactly like a bad key), they're
+    accepted only as `mistral:YOUR_KEY`. The gate says so when it doesn't
+    recognise what you pasted.
+  - **Per-provider token caps.** Cerebras' free tier caps context at ~8K and
+    GitHub Models at 4K output; asking for v28's 1200 tokens 400s outright.
+    Each provider can now declare `maxTokens`, and the provider's cap always
+    wins over the caller's preference.
+  - **Per-provider model fallback.** If a model 404s or has been
+    decommissioned, the next model for that provider is tried. A 401/429 does
+    *not* trigger this — that's a key problem, so it bails immediately and
+    lets the pool rotate keys instead of burning the model list.
+  - **NVIDIA opts out of JSON mode.** NIM accepts `response_format` on paper
+    but rejects it per-model. Any provider can set `jsonMode: false`; the
+    prompt still demands JSON and the parser already tolerated prose.
+    Separately, a JSON-mode 400 now retries the *same* model bare rather than
+    dropping to a weaker one.
+  - **Quota cooldown is no longer Google-shaped.** v28 parked every
+    rate-limited key until midnight *US Pacific* — correct for Gemini, wrong
+    for everyone else, who reset at midnight UTC. A Groq key was being held
+    offline for up to 8 hours after its quota had already come back.
+    `resets: "utc" | "pacific"` per provider fixes it.
+  - The gate lists each provider's actual free allowance, and names the
+    provider live as you type so a mis-pasted key is obvious before you
+    submit. GitHub tokens get the `models`-scope warning at paste time —
+    without that scope a PAT 401s with no explanation.
+  - New warning when **every** key in the pool is the same provider: one
+    outage takes the assistant down. (The 2+ Gemini warning is separate and
+    stronger — those keys share one quota and add literally nothing.)
+  - Adding a **second** key now keeps the gate open. Building a pool meant
+    reopening the screen once per key.
+
+- **Fixed: a brand-new user was congratulated for a level they never earned.**
+  The starter data ships with 100 XP of logged history, which is exactly
+  level 2, and the level-up check treated "no `seenLevel` recorded" as
+  "started at level 1" — so first launch opened with a full-screen **LEVEL
+  UP** celebration, over the tab bar, before the user had done anything.
+  Importing a backup did the same. Found while writing browser tests for the
+  key gate: the reward overlay was intercepting the clicks.
+  - First run (and any save with no `seenLevel`) now records where you
+    actually are and stays quiet. Only levels crossed *while using the app*
+    are a moment.
+  - Verified both directions: a fresh profile shows no overlay, and a genuine
+    crossing still fires once and never again after dismissal.
+
+- **Verified:** 98 tests. 28 provider-routing (prefix order, explicit
+  `mistral:` tag, client/worker table agreement, reset clocks), 20 request
+  shape against a stubbed fetch (token caps, JSON retry, model fallback,
+  401/429 bail-out), 22 client detection and key masking, 28 browser tests
+  driving the real gate (all 7 providers detected live, first key closes /
+  second key keeps open, pool warnings, key removal, first-run and genuine
+  level-up). No uncaught page errors.
+- Bumped service worker cache to `tasksh-v29`.
+
+**2026-08-02 — `tasksh-v28`**
+
+- **Added: multi-provider AI keys.** The pool now accepts **Groq**,
+  **OpenRouter** and OpenAI-compatible keys alongside Gemini. The provider is
+  detected from the key prefix (`AIza…` / `gsk_…` / `sk-or-…` / `sk-…`), so
+  you just paste a key and it routes itself.
+  - **This is the fix that actually adds capacity.** Several Gemini keys from
+    one Google account share a single *project* quota and give you nothing;
+    a Groq key is a genuinely separate pool. Groq's free tier is also large
+    (~1K requests/day on llama-3.3-70b) and needs no card.
+  - Two request shapes are supported: Gemini's own protocol, and the
+    OpenAI `chat/completions` format that Groq/OpenRouter/OpenAI all speak.
+    `contents[]` is translated to `messages[]` (with `model` → `assistant`)
+    so the same conversation history works everywhere.
+  - Failover is provider-agnostic: `withKeyPool()` doesn't know or care which
+    provider it just tried, so a Gemini key hitting its daily cap falls
+    through to a Groq key automatically.
+  - Model discovery is now **lazy** — a Groq-only user never pays for a
+    Gemini `ListModels` call.
+  - `/ai-verify` validates any provider: Gemini via ListModels (free), the
+    others via a 5-token real call.
+  - The key list labels each entry with its provider, and the
+    shared-quota warning now appears **only** when you actually have 2+
+    Gemini keys, instead of always.
+- **Verified:** 17 unit tests on provider detection and request translation
+  (prefix ordering, endpoint, bearer auth, role mapping, JSON mode, 429 and
+  network errors), browser tests for a mixed Groq+Gemini pool, plus the full
+  regression — all 6 tabs, links, tags, XP, export, offline boot and 60fps at
+  every size.
+- Bumped service worker cache to `tasksh-v28`.
 
 **2026-08-02 — `tasksh-v27`**
 

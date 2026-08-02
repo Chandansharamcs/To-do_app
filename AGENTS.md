@@ -117,18 +117,19 @@ reason and the user agrees.
 
 These have each cost real debugging time. Check them *before* going deep.
 
-### ⚠ The build script doesn't match the repo layout
+### ✓ The build script layout mismatch (fixed in v29)
 
-`package.json` says:
+`package.json` used to say `esbuild src/app.jsx …` while the repo is **flat**
+— `app.jsx` lives at the root, there is no `src/`. A clean clone could not
+build. The scripts now point at `app.jsx`.
 
-```json
-"build": "esbuild src/app.jsx --bundle ... --outfile=bundle.js"
-```
+Kept here because the *lesson* outlives the bug: it survived twelve releases
+because nobody ran `npm run build` — everyone invoked esbuild by hand with the
+right path. **A command nobody runs is a command that is broken.** If you
+touch build config, run it the way a stranger would.
 
-…but the repo is **flat** — `app.jsx` lives at the root, there is no `src/`.
-A clean clone cannot build. Either move the file or fix the script; do not
-"fix" it by creating a duplicate copy in `src/`, which is how the two drifted
-apart once already.
+Never reconcile a path mismatch by duplicating the file into `src/`; that is
+how the two copies drifted apart once already.
 
 ### ⚠ Don't "fix" the timeline by making it fit the screen
 
@@ -406,11 +407,14 @@ Practical notes, learned the hard way:
       Fix: sendNotification(sub, payload, { urgency: "high", TTL: 300 })
       Worker-side only: no rebuild, no cache bump, no reinstall.
 
-  [!] package.json build script points at src/app.jsx; repo is flat.
+  [x] package.json build script pointed at src/app.jsx; repo is flat.
+      Fixed in v29 -- `npm run build` now works from a clean clone.
 
   [ ] HANDOFF.md drifts behind reality if not updated per release.
 
-  [ ] No tests/ directory despite package.json referencing tests/run.js.
+  [x] package.json referenced a tests/run.js that never existed.
+      `npm test` now runs the three unit suites (70 tests, no browser);
+      `npm run test:browser` drives the real UI via playwright.
 
   [?] Unconfirmed iOS Safari scroll bug in Routines. Axis-lock fix is in
       (RoutineRow, search axisRef) but was never reproducible — only

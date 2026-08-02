@@ -38,10 +38,11 @@ npm run watch      # rebuild on save, sourcemaps on
 npm run serve      # http://localhost:8080
 ```
 
-> [!WARNING]
-> `npm run build` currently points at `src/app.jsx`, but the repo is flat —
-> `app.jsx` is at the root. Reconcile this before your first build, and don't
-> fix it by duplicating the file into `src/`.
+> [!NOTE]
+> The repo is flat: `app.jsx` is at the root, there is no `src/`. The build
+> scripts pointed at `src/app.jsx` until v29 and could not run from a clean
+> clone. Fixed — but never "fix" a path mismatch by duplicating the file into
+> `src/`, which is how the two drifted apart once already.
 
 
 ## The loop

@@ -4289,6 +4289,47 @@ async function syncRoutinesToWorker(routines) {
 // IMPORTANT CAVEAT, surfaced in the UI: Gemini enforces quota per Google
 // *project*, not per key. Two keys made in the same account share one pool
 // and add nothing. Extra capacity requires keys from different accounts.
+// Provider detection, mirrored from the worker so the UI can label keys and
+// explain quotas without a round trip. Keep the prefixes in sync.
+// `free` drives the sign-up list on the key gate; OpenAI is supported but is
+// not free, so it's detected without being advertised.
+const KEY_PROVIDERS = [
+  { id: "gemini",     label: "Gemini",     test: (k) => /^AIza/.test(k),
+    where: "aistudio.google.com/apikey", free: "~1000 req/day", shared: true },
+  { id: "groq",       label: "Groq",       test: (k) => /^gsk_/.test(k),
+    where: "console.groq.com", free: "~1000 req/day, fastest" },
+  { id: "cerebras",   label: "Cerebras",   test: (k) => /^csk-/.test(k),
+    where: "cloud.cerebras.ai", free: "1M tokens/day" },
+  { id: "nvidia",     label: "NVIDIA NIM", test: (k) => /^nvapi-/.test(k),
+    where: "build.nvidia.com", free: "40 req/min, 1000 credits" },
+  { id: "github",     label: "GitHub Models",
+    test: (k) => /^(ghp_|github_pat_|gho_|ghu_|ghs_)/.test(k),
+    where: "github.com/settings/tokens", free: "~150 req/day",
+    // a PAT without this scope 401s with no clue why, so say it at paste time
+    note: "the token needs the \u201cmodels\u201d scope ticked" },
+  { id: "mistral",    label: "Mistral",
+    // Mistral keys have no prefix to sniff, so they're only recognised via
+    // the explicit "mistral:KEY" form.
+    test: () => false, prefixed: true,
+    where: "console.mistral.ai", free: "paste as mistral:YOUR_KEY" },
+  { id: "openrouter", label: "OpenRouter", test: (k) => /^sk-or-/.test(k),
+    where: "openrouter.ai/keys", free: "50 req/day" },
+  { id: "openai",     label: "OpenAI",     test: (k) => /^sk-/.test(k),
+    where: "platform.openai.com" },
+];
+
+// Mirrors the worker: accepts either a sniffable key or an explicit
+// "<provider>:<key>" tag for providers whose keys carry no prefix.
+function providerOf(key) {
+  const raw = String(key || "").trim();
+  const m = raw.match(/^([a-z][a-z0-9]*):(.+)$/i);
+  if (m) {
+    const tagged = KEY_PROVIDERS.find((p) => p.id === m[1].toLowerCase());
+    if (tagged) return tagged;
+  }
+  return KEY_PROVIDERS.find((p) => p.test(raw)) || null;
+}
+
 const STORAGE_KEY_AI_KEYS = "tasksh.aikeys.v1";
 
 /** All stored keys, newest last. Migrates the old single-key value. */
@@ -4336,6 +4377,12 @@ function setAIKey(key) {
 // which key is saved without putting the whole secret back on screen
 function maskAIKey(key) {
   if (!key) return "";
+  // a "mistral:xxx" tag isn't secret; mask only the part after it so the row
+  // doesn't read as four bullet points of the word "mistral"
+  const m = String(key).match(/^([a-z][a-z0-9]*:)(.+)$/i);
+  if (m && KEY_PROVIDERS.some((p) => p.id === m[1].slice(0, -1).toLowerCase())) {
+    return m[1] + maskAIKey(m[2]);
+  }
   if (key.length <= 10) return "•".repeat(key.length);
   return `${key.slice(0, 4)}${"•".repeat(8)}${key.slice(-4)}`;
 }
@@ -4655,8 +4702,9 @@ function CompanionView({ petCtl, state, setters, ctx, showDataMsg }) {
       <AIKeyGate
         initialError={keyError}
         onCancel={() => setShowKeyGate(false)}
-        onSaved={(k, warning) => {
-          setApiKeyState(k); setKeyError(null); setShowKeyGate(false);
+        onSaved={(k, warning, opts = {}) => {
+          setApiKeyState(k); setKeyError(null);
+          if (!opts.keepOpen) setShowKeyGate(false);
           showDataMsg("success", warning || "connected");
         }}
       />
@@ -4818,7 +4866,12 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
       setExisting(pool);
       setKey("");
       sound.success();
-      onSaved(k, warning || (pool.length > 1 ? `${pool.length} keys connected` : null));
+      // Adding a SECOND key means the user is deliberately building a pool --
+      // closing the screen under them would make them reopen it for every
+      // key. The first key is different: they came here to get talking, so
+      // get out of the way.
+      onSaved(k, warning || (pool.length > 1 ? `${pool.length} keys connected` : null),
+              { keepOpen: pool.length > 1 });
     } catch (err) {
       setError(err.message || "Couldn't verify that key.");
       sound.error();
@@ -4833,20 +4886,25 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
         <div className="ai-gate-icon">✦</div>
         <div className="ai-gate-title">connect an AI key</div>
         <div className="ai-gate-sub">
-          the assistant runs on Google&apos;s Gemini. it&apos;s free — you just need your
-          own key. takes about a minute.
+          the assistant needs an AI key. all of these have a free tier — pick
+          whichever you like, or add several so it keeps working when one runs out.
         </div>
 
-        <ol className="ai-gate-steps">
-          <li>
-            open{" "}
-            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">
-              aistudio.google.com/apikey
+        <div className="prov-list">
+          {KEY_PROVIDERS.filter((p) => p.free).map((p) => (
+            <a key={p.id} className="prov-chip" href={`https://${p.where}`} target="_blank" rel="noopener noreferrer">
+              <span className="prov-chip-main">
+                <span className="prov-name">{p.label}</span>
+                <span className="prov-where">{p.where}</span>
+              </span>
+              <span className="prov-free">{p.free}</span>
             </a>
-          </li>
-          <li>sign in and hit “create API key”</li>
-          <li>copy it and paste it below</li>
-        </ol>
+          ))}
+        </div>
+        <div className="ai-gate-steps-note">
+          sign in, create a key, paste it below. no card needed for any of them.
+          adding two from <i>different</i> providers is what actually buys you headroom.
+        </div>
 
         <input
           ref={inputRef}
@@ -4854,12 +4912,23 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
           type="password"
           autoComplete="off"
           spellCheck={false}
-          placeholder="AIza…"
+          placeholder="AIza… · gsk_… · csk-… · nvapi-… · ghp_…"
           value={key}
           onChange={(e) => setKey(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           disabled={busy}
         />
+        {(() => {
+          const pr = providerOf(key);
+          if (!key.trim()) return null;
+          return pr
+            ? <div className="prov-detected">
+                detected: {pr.label}{pr.note ? ` — ${pr.note}` : ""}
+              </div>
+            : <div className="prov-detected prov-detected-warn">
+                unknown prefix — if it&apos;s a Mistral key, paste it as mistral:YOUR_KEY
+              </div>;
+        })()}
 
         {error && <div className="ai-error ai-gate-error">{error}</div>}
 
@@ -4878,19 +4947,34 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
               <span>{existing.length} key{existing.length === 1 ? "" : "s"} connected</span>
               <span className="keypool-hint">tried in order</span>
             </div>
-            {existing.map((k, i) => (
-              <div className="keypool-row" key={k}>
-                <span className="keypool-num">{i + 1}</span>
-                <span className="keypool-val">{maskAIKey(k)}</span>
-                <button className="keypool-del" onClick={() => { setExisting(removeAIKey(k)); sound.delete(); }}>
-                  remove
-                </button>
-              </div>
-            ))}
+            {existing.map((k, i) => {
+              const pr = providerOf(k);
+              return (
+                <div className="keypool-row" key={k}>
+                  <span className="keypool-num">{i + 1}</span>
+                  <span className="keypool-prov">{pr ? pr.label : "?"}</span>
+                  <span className="keypool-val">{maskAIKey(k)}</span>
+                  <button className="keypool-del" onClick={() => { setExisting(removeAIKey(k)); sound.delete(); }}>
+                    remove
+                  </button>
+                </div>
+              );
+            })}
             <div className="keypool-note">
-              if one key hits its daily limit the next is used automatically.
-              note that keys from the <b>same google account</b> share one quota —
-              for real extra capacity use a different account.
+              tried top to bottom; a rate-limited key is skipped automatically.
+              {existing.filter((k) => providerOf(k)?.id === "gemini").length > 1 && (
+                <> <b>heads up:</b> several Gemini keys from the same google account
+                share one quota and add no capacity — mix in a different provider instead.</>
+              )}
+              {(() => {
+                // Two keys from one provider is usually two accounts and is
+                // fine; worth saying only when the whole pool is one provider,
+                // because then a provider-wide outage takes the pet offline.
+                const ids = new Set(existing.map((k) => providerOf(k)?.id).filter(Boolean));
+                if (existing.length < 2 || ids.size !== 1 || ids.has("gemini")) return null;
+                return <> <b>heads up:</b> every key is {providerOf(existing[0]).label} —
+                  one outage takes the assistant down. add a second provider.</>;
+              })()}
             </div>
           </div>
         )}
@@ -5171,8 +5255,19 @@ function TodoApp() {
   // once per level crossed, even if the app was closed when it happened.
   const [levelReward, setLevelReward] = useState(null);
   useEffect(() => {
-    const meta = loadStored(STORAGE_KEY_META, {});
-    const seen = meta.seenLevel || 1;
+    const meta = loadStored(STORAGE_KEY_META, null);
+
+    // FIRST RUN: the starter data ships with enough logged history to put a
+    // brand-new profile at level 2, so the old `seen || 1` fallback fired a
+    // "LEVEL UP" celebration at the user before they had done anything. The
+    // same applies to importing a backup. Record where they actually are and
+    // stay quiet -- only levels crossed *while using the app* are a moment.
+    if (!meta || meta.seenLevel === undefined) {
+      saveMeta({ seenLevel: currentLevel });
+      return;
+    }
+
+    const seen = meta.seenLevel;
     if (currentLevel > seen) {
       const coins = LEVEL_COIN_REWARD(currentLevel);
       achCtl.addCoins(coins);
@@ -6758,6 +6853,45 @@ function TodoApp() {
           margin-top: 4px; padding-top: 6px;
           border-top: 1px solid var(--track);
           color: var(--muted);
+        }
+
+        .keypool-prov {
+          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          letter-spacing: 0.06em; text-transform: uppercase;
+          color: var(--accent); flex-shrink: 0; width: 76px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .prov-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+        .prov-chip {
+          display: flex; align-items: center; justify-content: space-between; gap: 10px;
+          padding: 8px 11px; border-radius: 9px; text-decoration: none;
+          background: var(--bg); border: 1px solid var(--border);
+          transition: border-color 150ms ease;
+        }
+        .prov-chip-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+        .prov-name {
+          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          font-weight: 600; color: var(--accent);
+        }
+        .prov-where {
+          font-size: 9.5px; color: var(--muted);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .prov-free {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--accent2); text-align: right; flex-shrink: 0; max-width: 44%;
+          line-height: 1.35;
+        }
+        .prov-detected {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          color: var(--accent); margin: 6px 0 0; letter-spacing: 0.04em;
+        }
+        .prov-detected-warn { color: var(--accent2); letter-spacing: 0; line-height: 1.5; }
+        .ai-gate-steps-note { font-size: 10.5px; color: var(--muted); margin-bottom: 14px; line-height: 1.55; }
+        .ai-gate-steps-note i { color: var(--text); font-style: normal; text-decoration: underline; }
+
+        @media (hover: hover) and (pointer: fine) {
+          .prov-chip:hover { border-color: var(--accent); }
         }
 
         /* ---- api key pool (v27) ---- */

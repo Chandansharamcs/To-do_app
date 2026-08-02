@@ -41,7 +41,7 @@ a routine starts — see [`worker/`](worker/README.md).
 
 ---
 
-## The five tabs
+## The six tabs
 
 | | Tab | What it does |
 |:--:|---|---|
@@ -49,7 +49,8 @@ a routine starts — see [`worker/`](worker/README.md).
 | `▸` | **tasks** | Add / complete / delete, priority tags (low·mid·high), filters, animated progress bar, relative timestamps |
 | `▸` | **routines** | The quest log. Permanent recurring routines, lane-packed 24h timeline, streaks with freeze logic, 7-day dot strips + aggregate bar chart, optional alternatives per slot |
 | `▸` | **vault** | Weekly-goal habit cards with a monthly calendar grid + rolling 7-day progress, plus a lightweight project manager (due dates, inline task lists) |
-| `▸` | **quest** | XP/level system. Good & bad habits tagged to life areas, radar chart, 20 level titles with roman-numeral overflow, and a reward center gated on current XP |
+| `▸` | **quest** | XP/level system. Good & bad habits tagged to life areas, radar chart, 20 level titles with roman-numeral overflow, and a reward center gated on your spendable balance |
+| `▸` | **pip** | The companion. A creature that evolves through 7 forms as you level, reacts to what you complete, and — with an AI key — talks and proposes edits you approve before they apply |
 
 Every card on every tab is editable in place — tap the pencil icon or the row
 itself. Everything is deletable. Everything persists to `localStorage`.
@@ -60,8 +61,9 @@ itself. Everything is deletable. Everything persists to `localStorage`.
 
 ```bash
 npm install
-npm run build      # src/app.jsx ──esbuild──▶ bundle.js
+npm run build      # app.jsx ──esbuild──▶ bundle.js
 npm run serve      # python http.server on :8080
+npm test           # 70 unit tests, no browser needed
 ```
 
 Then open <http://localhost:8080>.
@@ -72,11 +74,11 @@ For active development:
 npm run watch      # rebuild on save, with sourcemaps
 ```
 
-> [!IMPORTANT]
-> The repo currently uses a **flat layout** — `app.jsx` sits at the root, not
-> in `src/`. The `build` script still points at `src/app.jsx`, so it will fail
-> from a clean clone until either the file moves or the script is updated.
-> See [AGENTS.md](AGENTS.md#2--known-traps) before running a build.
+> [!NOTE]
+> The repo uses a **flat layout** — `app.jsx` sits at the root, not in `src/`.
+> The build scripts were pointed at `src/app.jsx` until v29 and could not run
+> from a clean clone; they now match the layout. If you're resurrecting an
+> older checkout, that's the first thing to fix.
 
 ---
 

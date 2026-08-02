@@ -1,14 +1,15 @@
 {
   "name": "tasks-sh",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "description": "Terminal-styled task manager PWA with a routines quest-log timeline synced to IST",
   "scripts": {
-    "build": "esbuild src/app.jsx --bundle --format=iife --loader:.jsx=jsx --minify --define:process.env.NODE_ENV='\"production\"' --outfile=bundle.js",
-    "build:dev": "esbuild src/app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap",
-    "watch": "esbuild src/app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap --watch",
+    "build": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --minify --define:process.env.NODE_ENV='\"production\"' --outfile=bundle.js",
+    "build:dev": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap",
+    "watch": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap --watch",
     "serve": "python3 -m http.server 8080",
-    "test": "node tests/run.js"
+    "test": "node keydetect.test.mjs && node worker/providers.test.mjs && node worker/callshape.test.mjs",
+    "test:browser": "node gate.spec.mjs && node regress.spec.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

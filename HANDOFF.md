@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v27   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v28   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -45,7 +45,7 @@ acts as a gamified recurring quest log, synced to IST (India Standard Time).
 ## Stack
 
 - React 18, plain JSX (no TypeScript)
-- No framework/router — single component tree in `src/app.jsx`
+- No framework/router — single component tree in `app.jsx` (repo is flat)
 - Bundled with **esbuild** into one dependency-free `bundle.js`
 - No backend. All state is client-side, persisted to `localStorage`.
 - Deployed as a static site (currently GitHub Pages)
@@ -54,7 +54,7 @@ acts as a gamified recurring quest log, synced to IST (India Standard Time).
 
 ```bash
 npm install
-npm run build      # compiles src/app.jsx -> bundle.js
+npm run build      # compiles app.jsx -> bundle.js
 npm run serve       # python http.server on :8080, or use `npx serve .`
 ```
 
@@ -81,7 +81,7 @@ add other libraries, prefer bundling them too rather than `<script src="cdn...">
 ## File map
 
 ```
-src/app.jsx       - all source. Single file, ~5200 lines, organized as:
+app.jsx           - all source. Single file, ~8500 lines, organized as:
                     - date/time helpers (IST-aware)
                     - Tasks tab: TaskRow, Checkbox, useNow
                     - Routines tab: RoutineRow, WeekDots, WeekChart,
@@ -113,10 +113,10 @@ AGENTS.md          - conventions, traps, workflow for agents/contributors
 CHANGELOG.md       - version history (moved out of this file at v15)
 ```
 
-**Layout note:** the repo is currently *flat* — `app.jsx` sits at the root,
-not in `src/`. The `build` script in `package.json` still points at
-`src/app.jsx`, so a clean clone cannot build until one or the other is
-reconciled. See AGENTS.md [Known traps](AGENTS.md#2--known-traps).
+**Layout note:** the repo is *flat* — `app.jsx` sits at the root, not in
+`src/`. The `build` script pointed at `src/app.jsx` until v29 and could not
+run from a clean clone; it now matches. Never reconcile such a mismatch by
+duplicating the file into `src/`.
 
 ## Achievements & coins (v24)
 
@@ -133,6 +133,12 @@ something worth balancing them against.
 Level-ups fire from `seenLevel`, not from XP directly, so they survive the app
 being closed.
 
+**A missing `seenLevel` means "first run", not "level 1".** The starter data
+is worth 100 XP, which is exactly level 2 — treating absent as 1 fired a
+full-screen LEVEL UP at people who had done nothing, and did the same after
+importing a backup (v29 fix). First run records the current level silently.
+Only levels crossed *while using the app* are a moment.
+
 ## XP model (v27)
 
 Two separate numbers, deliberately:
@@ -144,12 +150,55 @@ Two separate numbers, deliberately:
 
 Never merge these back together.
 
+## AI providers (v29)
+
+`PROVIDERS` in the worker maps a key prefix to an endpoint. Two request kinds:
+`gemini` (its own protocol) and `openai` (chat/completions — everyone else).
+`callGemini()` and `callOpenAICompatible()` both return the same
+`{ ok, text, usage }`, which is why `withKeyPool()` is provider-agnostic.
+
+| Provider | Prefix | Free tier | Sign-up |
+|---|---|---|---|
+| Gemini | `AIza…` | ~1000 req/day | aistudio.google.com/apikey |
+| Groq | `gsk_…` | ~1000 req/day, fastest | console.groq.com |
+| Cerebras | `csk-…` | **1M tokens/day** | cloud.cerebras.ai |
+| NVIDIA NIM | `nvapi-…` | 40 req/min, 1000 credits | build.nvidia.com |
+| GitHub Models | `ghp_…`, `github_pat_…` | ~150 req/day | github.com/settings/tokens |
+| Mistral | *(none — see below)* | generous | console.mistral.ai |
+| OpenRouter | `sk-or-…` | 50 req/day | openrouter.ai/keys |
+| OpenAI | `sk-…` | paid | platform.openai.com |
+
+Adding a provider = one entry in `PROVIDERS` plus a matching row in
+`KEY_PROVIDERS` on the client. **Keep them in sync** — `keydetect.test.mjs`
+fails the build if the two tables drift on ids or sign-up hosts.
+
+Per-provider knobs, each of which exists because something 400'd:
+
+- `maxTokens` — a hard ceiling that wins over the caller's request. Cerebras
+  caps context at ~8K on the free tier, GitHub Models at 4K output.
+- `jsonMode: false` — opt out of `response_format`. NVIDIA NIM advertises it
+  but rejects it per-model.
+- `resets: "utc" | "pacific"` — when the daily quota comes back. Only Google
+  is Pacific. Getting this wrong parks a healthy key for up to 8 extra hours.
+- `models: []` — tried in order, but **only** on 404 / "decommissioned". A
+  401 or 429 bails out so the pool rotates *keys* instead of chewing through
+  the model list with a key that was never going to work.
+
+**Mistral has no key prefix.** Its keys are bare 32-char alphanumerics, so
+sniffing them is impossible without mis-routing other providers' keys. They
+are accepted only as `mistral:YOUR_KEY`; `providerFor()` strips the tag and
+returns `{ provider, key }`. The tag form works for any provider.
+
+**Why any of this matters:** multiple Gemini keys from one Google account
+share a project quota and add nothing. A different provider is real extra
+capacity — and Cerebras alone is worth more than the rest combined.
+
 ## API key pool (v27)
 
 `getAIKeys()` / `addAIKey()` / `removeAIKey()`, stored in `tasksh.aikeys.v1`.
 The worker's `withKeyPool()` tries each in turn, cools exhausted ones in KV
-(daily quota → until midnight Pacific, per-minute → 90s) and skips them on
-later requests. Quota is per Google *project*, so multiple keys from one
+(daily quota → until that provider's reset, per-minute → 90s) and skips them
+on later requests. Quota is per Google *project*, so multiple keys from one
 account share a pool — the UI says so.
 
 ## Links (v26)
@@ -450,26 +499,47 @@ v6 onward is preserved there, unedited.
    create OS-level widgets on iOS or Android at all. Would require a native
    app wrapper (e.g. Capacitor) to ever be possible.
 
-5. **`package.json` build script doesn't match the repo layout.** It points
-   at `src/app.jsx`, but the repo is flat — `app.jsx` is at the root. A
-   clean clone cannot run `npm run build` until this is reconciled. Do not
-   fix it by creating a duplicate copy in `src/`; the two have already
-   drifted apart once, which cost a debugging session (see CHANGELOG,
-   2026-07-28).
+5. ~~`package.json` build script doesn't match the repo layout.~~ **Fixed in
+   v29.** It pointed at `src/app.jsx` for twelve releases while the repo was
+   flat, and survived that long only because nobody ever ran `npm run build`
+   — everyone called esbuild by hand with the correct path. A command nobody
+   runs is a command that is broken.
 
-6. **`npm test` references `tests/run.js`, which doesn't exist.** No test
-   suite is checked in — see below.
+6. ~~`npm test` references a `tests/run.js` that doesn't exist.~~ **Fixed in
+   v29.** `npm test` runs the three unit suites (70 tests, no browser);
+   `npm run test:browser` drives the real UI through playwright.
 
-## Testing approach used so far
+## Testing
 
-No formal test suite is checked in yet. Development so far used ad-hoc
-Playwright scripts (headless Chromium) run manually, covering: task
-CRUD/filters, routine CRUD/streaks/editing, swipe-to-delete via both
-synthetic pointer events and CDP-level touch simulation, and offline-mode
-verification (all external requests blocked, confirms the app still boots).
-None of those scripts are included here since they were throwaway/manual —
-worth setting up a real `tests/` directory with Playwright if this project
-grows.
+Checked in as of v29. Four suites, 98 tests, no test framework — plain
+`node:assert` and a hand-rolled `t()`, because adding jest/vitest to a
+zero-runtime-dependency project to run assertions isn't worth it.
+
+```bash
+npm test              # 70 unit tests, ~1s, no browser
+npm run test:browser  # 28 browser tests, needs playwright chromium
+```
+
+| File | Covers |
+|---|---|
+| `worker/providers.test.mjs` | key→provider routing, `mistral:` tag, table integrity, quota reset clocks |
+| `worker/callshape.test.mjs` | request shape against a stubbed fetch: token caps, JSON retry, model fallback, when *not* to fall back |
+| `keydetect.test.mjs` | client detection, key masking, **client↔worker table agreement** |
+| `gate.spec.mjs` | the real UI in headless Chromium: live detection while typing, pool building, warnings, first-run level bug |
+
+Two things worth copying if you add more:
+
+- **The unit suites read the source and evaluate a slice of it** rather than
+  importing it, because the worker file references Cloudflare globals and the
+  app is JSX. `lift(startMarker, endMarker)` pulls out a region and imports it
+  as a `data:` URL. Brittle to renames — deliberately so; it fails loudly.
+- **`keydetect.test.mjs` asserts the two provider tables match.** The client
+  duplicates the worker's routing so it can label a key without a round trip.
+  Duplication that can silently drift is worth a test that can't.
+
+Earlier development used throwaway Playwright scripts (task CRUD, routine
+streaks, swipe-to-delete via CDP touch, offline boot). Those weren't kept;
+re-create them here rather than as scratch files if you touch those areas.
 
 ## Deploying
 

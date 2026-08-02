@@ -257,10 +257,45 @@ and applies nothing until you tap Apply.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/ai` | `{prompt, data, apiKey}` → `{reply, actions}` |
-| `POST` | `/ai-verify` | `{apiKey}` → `{ok}` — used by the setup screen |
+| `POST` | `/companion` | `{message, data, context, log, apiKeys}` → `{reply, actions, model}` — current |
+| `POST` | `/ai` | `{prompt, data, apiKey}` → `{reply, actions}` — legacy, Gemini only |
+| `POST` | `/ai-verify` | `{apiKey}` → `{ok, provider, model}` — used by the setup screen |
+| `GET` | `/ai-models` | `?key=…` → what a Gemini key can actually call. Diagnostic |
+
+### Providers
+
+`/companion` takes a **pool** of keys and tries them in order, skipping any
+that are cooling off. Eight providers are routed by key prefix:
+
+| Provider | Prefix | Free tier |
+|---|---|---|
+| Gemini | `AIza…` | ~1000 req/day |
+| Groq | `gsk_…` | ~1000 req/day, fastest |
+| Cerebras | `csk-…` | **1M tokens/day** |
+| NVIDIA NIM | `nvapi-…` | 40 req/min |
+| GitHub Models | `ghp_…`, `github_pat_…` | ~150 req/day (needs `models` scope) |
+| Mistral | *none* — pass as `mistral:KEY` | generous |
+| OpenRouter | `sk-or-…` | 50 req/day |
+| OpenAI | `sk-…` | paid |
+
+Everything except Gemini speaks OpenAI `chat/completions`, so there are only
+two request shapes in the worker. Adding a ninth provider is one entry in
+`PROVIDERS` — plus the matching client row, which `keydetect.test.mjs`
+enforces.
+
+The worker **never stores a key**. They live in the caller's `localStorage`
+and are forwarded per request; only an 8-char suffix is used as a KV cooldown
+key. A single deployed worker can therefore serve several people on their own
+quota without the operator holding anyone's credentials.
 
 ## Testing
+
+```bash
+node providers.test.mjs   # routing, table integrity, reset clocks
+node callshape.test.mjs   # request shape against a stubbed fetch
+```
+
+Neither hits the network. Run both before `wrangler deploy`.
 
 Fire a check immediately instead of waiting:
 
