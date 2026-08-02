@@ -2995,11 +2995,26 @@ const LEVEL_TITLES = [
   "Ascendant", "Legend", "Mythic", "Immortal", "Transcendent", "Eternal",
 ];
 
-function computeTotalXP(goodHabits, badHabits, rewards) {
+// LEVEL XP -- lifetime progress. Deliberately does NOT subtract reward
+// spending: claiming a reward you earned should never demote you or push you
+// negative. Before v27 it did both (155 earned - 40 lost - 150 spent = -35 XP
+// and a drop from level 2 to level 1), which punished the user for using the
+// feature. Bad habits still count against you; that's the point of them.
+function computeTotalXP(goodHabits, badHabits) {
+  const earned = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  const lost = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  return Math.max(0, earned - lost);
+}
+
+// SPENDABLE BALANCE -- what rewards actually cost against. This is the number
+// that goes down when you claim something.
+function computeSpendableXP(goodHabits, badHabits, rewards) {
   const earned = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
   const lost = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
   const spent = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
-  return earned - lost - spent;
+  // floor at 0: pre-v27 data could go negative because claims weren't checked
+  // against a separate balance. Never show the user a negative wallet.
+  return Math.max(0, earned - lost - spent);
 }
 
 function computeAreaXP(area, goodHabits, badHabits) {
@@ -3392,7 +3407,9 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
   const subs = tagCtl.subs;
-  const totalXP = useMemo(() => computeTotalXP(goodHabits, badHabits, rewards), [goodHabits, badHabits, rewards]);
+  const totalXP = useMemo(() => computeTotalXP(goodHabits, badHabits), [goodHabits, badHabits]);
+  // separate pot: what rewards are actually paid from
+  const spendableXP = useMemo(() => computeSpendableXP(goodHabits, badHabits, rewards), [goodHabits, badHabits, rewards]);
   const { level, into, span } = levelFromXP(totalXP);
   const levelPct = Math.round((into / span) * 100);
 
@@ -3499,6 +3516,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   const visibleBad  = areaFilter === "all" ? badHabits  : badHabits.filter((h) => h.area === areaFilter);
   const earnedXP = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
   const lostXP = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  const spentXP = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
 
   return (
     <div className="task-list vault-scroll">
@@ -3514,6 +3532,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
           />
           <div className="hero-viz-stats">
             <span className="hero-xp-total"><AnimatedNumber value={totalXP} /> <small>XP</small></span>
+            {spentXP > 0 && <span className="hero-xp-spend">◉ {spendableXP} to spend</span>}
             <span className="hero-xp-sub">{into}/{span} to next level</span>
             <div className="hero-xp-split">
               <span className="hero-xp-earned">+<AnimatedNumber value={earnedXP} /></span>
@@ -3537,18 +3556,19 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
         <RadarChart axes={areaAxes} size={252} />
       </div>
 
-      {(earnedXP > 0 || lostXP > 0) && (
+      {(earnedXP > 0 || lostXP > 0 || spentXP > 0) && (
         <>
           <div className="section-header"><span>XP SOURCE</span></div>
           <div className="donut-card">
             <DonutChart
               size={120}
               stroke={16}
-              centerLabel={totalXP}
+              centerLabel={spendableXP}
               centerSublabel="net XP"
               segments={[
                 { key: "earned", label: "Earned", value: earnedXP, color: "#5EEAD4" },
                 { key: "lost", label: "Lost", value: lostXP, color: "#F0576B" },
+                { key: "spent", label: "Spent", value: spentXP, color: "#F5A623" },
               ]}
             />
             <div className="donut-legend">
@@ -3561,6 +3581,16 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
                 <span className="donut-legend-dot" style={{ background: "#F0576B" }} />
                 <span>Lost to bad habits</span>
                 <span className="donut-legend-val"><AnimatedNumber value={lostXP} /></span>
+              </div>
+              <div className="donut-legend-row">
+                <span className="donut-legend-dot" style={{ background: "#F5A623" }} />
+                <span>Spent on rewards</span>
+                <span className="donut-legend-val"><AnimatedNumber value={spentXP} /></span>
+              </div>
+              <div className="donut-legend-row donut-legend-total">
+                <span className="donut-legend-dot" style={{ background: "transparent" }} />
+                <span>Level progress (spending doesn&apos;t count)</span>
+                <span className="donut-legend-val"><AnimatedNumber value={totalXP} /></span>
               </div>
             </div>
           </div>
@@ -3659,7 +3689,7 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
           </div>
         ) : (
           rewards.map((r) => (
-            <RewardCard key={r.id} reward={r} canClaim={totalXP >= r.cost} onClaim={claimReward} onDelete={delReward} onSave={saveReward} />
+            <RewardCard key={r.id} reward={r} canClaim={spendableXP >= r.cost} onClaim={claimReward} onDelete={delReward} onSave={saveReward} />
           ))
         )}
       </div>
@@ -4251,14 +4281,56 @@ async function syncRoutinesToWorker(routines) {
 // model and returns a validated ACTION LIST. Nothing is applied until the
 // user taps Apply on the diff preview -- see CompanionView / applyAIActions.
 
-function getAIKey() {
-  try { return localStorage.getItem(STORAGE_KEY_AI_KEY) || ""; } catch { return ""; }
-}
-function setAIKey(key) {
+// ---- API key pool (v27) --------------------------------------------------
+// Several keys can be stored; the worker tries them in order and skips ones
+// that are rate-limited, so hitting a daily cap on one key doesn't take the
+// assistant offline.
+//
+// IMPORTANT CAVEAT, surfaced in the UI: Gemini enforces quota per Google
+// *project*, not per key. Two keys made in the same account share one pool
+// and add nothing. Extra capacity requires keys from different accounts.
+const STORAGE_KEY_AI_KEYS = "tasksh.aikeys.v1";
+
+/** All stored keys, newest last. Migrates the old single-key value. */
+function getAIKeys() {
   try {
-    if (key) localStorage.setItem(STORAGE_KEY_AI_KEY, key);
+    const many = JSON.parse(localStorage.getItem(STORAGE_KEY_AI_KEYS) || "null");
+    if (Array.isArray(many) && many.length) return many.filter(Boolean);
+    const one = localStorage.getItem(STORAGE_KEY_AI_KEY);
+    return one ? [one] : [];
+  } catch { return []; }
+}
+
+function setAIKeys(keys) {
+  const clean = [...new Set(keys.map((k) => String(k).trim()).filter(Boolean))].slice(0, 10);
+  try {
+    localStorage.setItem(STORAGE_KEY_AI_KEYS, JSON.stringify(clean));
+    // keep the legacy key in sync so an older cached bundle still works
+    if (clean.length) localStorage.setItem(STORAGE_KEY_AI_KEY, clean[0]);
     else localStorage.removeItem(STORAGE_KEY_AI_KEY);
   } catch {}
+}
+
+function addAIKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return getAIKeys();
+  const next = [...getAIKeys(), k];
+  setAIKeys(next);
+  return getAIKeys();
+}
+
+function removeAIKey(key) {
+  const next = getAIKeys().filter((k) => k !== key);
+  setAIKeys(next);
+  return next;
+}
+
+function getAIKey() {
+  return getAIKeys()[0] || "";
+}
+function setAIKey(key) {
+  // legacy entry point: replaces the whole pool, or clears it
+  setAIKeys(key ? [key] : []);
 }
 // "AIza...abcd" -> "AIza••••••••abcd", so the settings screen can confirm
 // which key is saved without putting the whole secret back on screen
@@ -4296,7 +4368,7 @@ async function requestCompanion(message, data, context, log, apiKey) {
   const res = await fetch(`${NOTIFY_WORKER_URL}/companion`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, data, context, log, apiKey }),
+    body: JSON.stringify({ message, data, context, log, apiKey, apiKeys: getAIKeys() }),
   });
   let payload = null;
   try { payload = await res.json(); } catch {}
@@ -4729,6 +4801,7 @@ const AI_SUGGESTIONS = [
 // Shown when no key is saved yet, or when the saved one gets rejected.
 function AIKeyGate({ onSaved, initialError, onCancel }) {
   const [key, setKey] = useState("");
+  const [existing, setExisting] = useState(() => getAIKeys());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(initialError || null);
   const inputRef = useRef(null);
@@ -4741,9 +4814,11 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
     setBusy(true); setError(null);
     try {
       const warning = await verifyAIKey(k);
-      setAIKey(k);
+      const pool = addAIKey(k);          // append rather than replace
+      setExisting(pool);
+      setKey("");
       sound.success();
-      onSaved(k, warning);
+      onSaved(k, warning || (pool.length > 1 ? `${pool.length} keys connected` : null));
     } catch (err) {
       setError(err.message || "Couldn't verify that key.");
       sound.error();
@@ -4790,12 +4865,35 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
 
         <div className="ai-gate-actions">
           <button className="ai-apply" onClick={save} disabled={busy || !key.trim()}>
-            {busy ? "checking…" : "save key"}
+            {busy ? "checking…" : existing.length ? "add key" : "save key"}
           </button>
           {onCancel && (
             <button className="ai-discard" onClick={onCancel}>cancel</button>
           )}
         </div>
+
+        {existing.length > 0 && (
+          <div className="keypool">
+            <div className="keypool-head">
+              <span>{existing.length} key{existing.length === 1 ? "" : "s"} connected</span>
+              <span className="keypool-hint">tried in order</span>
+            </div>
+            {existing.map((k, i) => (
+              <div className="keypool-row" key={k}>
+                <span className="keypool-num">{i + 1}</span>
+                <span className="keypool-val">{maskAIKey(k)}</span>
+                <button className="keypool-del" onClick={() => { setExisting(removeAIKey(k)); sound.delete(); }}>
+                  remove
+                </button>
+              </div>
+            ))}
+            <div className="keypool-note">
+              if one key hits its daily limit the next is used automatically.
+              note that keys from the <b>same google account</b> share one quota —
+              for real extra capacity use a different account.
+            </div>
+          </div>
+        )}
 
         <div className="ai-gate-note">
           stored only on this device. it isn&apos;t included in your backup exports,
@@ -4847,7 +4945,8 @@ function collectMaxId(data) {
 // combined "today" dashboard: next/current routine, top open tasks, and
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
-function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHabits, rewards, setRewards, totalXP, setTab }) {
+function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHabits, badHabits, rewards, setRewards, totalXP, setTab }) {
+  const spendableXP = useMemo(() => computeSpendableXP(goodHabits, badHabits || [], rewards), [goodHabits, badHabits, rewards]);
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
   const { sorted, currentId, nextId } = useRoutineStatus(routines, nowMinutes);
@@ -4879,7 +4978,7 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHa
     sound.success();
   };
 
-  const affordable = useMemo(() => rewards.filter((r) => totalXP >= r.cost), [rewards, totalXP]);
+  const affordable = useMemo(() => rewards.filter((r) => spendableXP >= r.cost), [rewards, spendableXP]);
 
   const claimReward = (id) => {
     setRewards((prev) =>
@@ -5017,7 +5116,7 @@ function TodoApp() {
   const [badHabits, setBadHabits] = useState(() => loadStored(STORAGE_KEY_BAD_HABITS, seedBadHabits));
   const [rewards, setRewards] = useState(() => loadStored(STORAGE_KEY_REWARDS, seedRewards));
   const totalXP = useMemo(
-    () => computeTotalXP(goodHabits, badHabits, rewards),
+    () => computeTotalXP(goodHabits, badHabits),
     [goodHabits, badHabits, rewards]
   );
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
@@ -6650,6 +6749,47 @@ function TodoApp() {
         .no-ambience .calm-breath { display: none !important; }
         .no-ambience .app-root::before { background: none !important; }
 
+
+        .hero-xp-spend {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          color: var(--accent2); margin-left: 10px;
+        }
+        .donut-legend-total {
+          margin-top: 4px; padding-top: 6px;
+          border-top: 1px solid var(--track);
+          color: var(--muted);
+        }
+
+        /* ---- api key pool (v27) ---- */
+        .keypool { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--track); }
+        .keypool-head {
+          display: flex; justify-content: space-between; align-items: baseline;
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          color: var(--text); margin-bottom: 8px;
+        }
+        .keypool-hint { color: var(--muted); font-size: 8.5px; }
+        .keypool-row {
+          display: flex; align-items: center; gap: 9px;
+          padding: 7px 10px; margin-bottom: 5px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+        }
+        .keypool-num {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--accent); width: 12px; flex-shrink: 0;
+        }
+        .keypool-val {
+          flex: 1; font-family: 'JetBrains Mono', monospace;
+          font-size: 10.5px; color: var(--muted); letter-spacing: 0.04em;
+        }
+        .keypool-del {
+          background: transparent; border: none; cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--danger); flex-shrink: 0;
+        }
+        .keypool-note {
+          font-size: 9.5px; color: var(--muted); line-height: 1.5; margin-top: 9px;
+        }
+        .keypool-note b { color: var(--accent2); }
 
         /* ---- links + tags (v26) ---- */
         .link-btn {
@@ -8867,6 +9007,7 @@ function TodoApp() {
             setTasks={setTasks}
             vaultHabits={vaultHabits}
             goodHabits={goodHabits}
+            badHabits={badHabits}
             rewards={rewards}
             setRewards={setRewards}
             totalXP={totalXP}

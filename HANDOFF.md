@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v26   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v27   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-07-31
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -132,6 +132,25 @@ something worth balancing them against.
 `tasksh.meta.v1` holds one-off flags (`seenLevel`, hidden triggers, counters).
 Level-ups fire from `seenLevel`, not from XP directly, so they survive the app
 being closed.
+
+## XP model (v27)
+
+Two separate numbers, deliberately:
+- `computeTotalXP(good, bad)` — **level XP**. Lifetime progress, floored at 0.
+  Reward spending is NOT subtracted; claiming something you earned must never
+  demote you.
+- `computeSpendableXP(good, bad, rewards)` — the **wallet** rewards are paid
+  from. Also floored at 0 for pre-v27 saves that went negative.
+
+Never merge these back together.
+
+## API key pool (v27)
+
+`getAIKeys()` / `addAIKey()` / `removeAIKey()`, stored in `tasksh.aikeys.v1`.
+The worker's `withKeyPool()` tries each in turn, cools exhausted ones in KV
+(daily quota → until midnight Pacific, per-minute → 90s) and skips them on
+later requests. Quota is per Google *project*, so multiple keys from one
+account share a pool — the UI says so.
 
 ## Links (v26)
 

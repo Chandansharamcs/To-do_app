@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v27`** | 2026-08-02 | XP/reward split fix, multi-key failover |
 | **`v26`** | 2026-08-02 | Links, editable tags, quest filters, AI 400 fix |
 | **`v25`** | 2026-08-01 | Merged pet+ai into one companion, big perf fix |
 | **`v24`** | 2026-08-01 | Achievements, coins, level rewards, ambience fix |
@@ -53,6 +54,45 @@ later the *why* is the only part that still matters.
 ---
 
 ## Changelog
+
+**2026-08-02 — `tasksh-v27`**
+
+- **Fixed: claiming a reward could push your XP negative and demote you.**
+  Reported from a live screenshot showing **−35 XP at level 1** with 155
+  earned and 40 lost. `computeTotalXP` subtracted reward spending from the
+  same number that drives your level, so spending 150 XP on rewards you had
+  legitimately earned knocked you from level 2 back to level 1 — and the
+  donut showed "earned 155 / lost 40" while silently hiding the 150 spent.
+  - Split into two values: **level XP** (lifetime, `earned − lost`, floored
+    at 0, never touched by spending) and **spendable balance**
+    (`earned − lost − spent`) which is what rewards are paid from.
+  - The donut now shows a Spent segment and a "level progress" row, so the
+    numbers add up on screen.
+  - Balance floors at 0 for pre-v27 saves that were already overspent.
+  - Bad habits still reduce level XP — that is the point of them.
+
+- **Added: multiple API keys.** Store up to 10; the worker tries them in
+  order and skips any that are rate-limited, so one key hitting its daily
+  cap no longer takes the assistant offline.
+  - Exhausted keys are **remembered**, not re-probed on every request —
+    repeatedly retrying dead keys is a known way to make a large pool
+    *slower* than a single key. Cooldown is quota-aware: a per-minute limit
+    clears in 90s, a daily one parks until Google's midnight-Pacific reset.
+  - An invalid key is skipped, not cooled. A genuine server error stops
+    immediately rather than burning the whole pool.
+  - **The UI states the real caveat:** Gemini enforces quota per Google
+    *project*, not per key, so several keys from the same account share one
+    pool and add nothing. Extra capacity needs keys from different accounts.
+  - Migrates the old single-key value automatically and keeps it in sync, so
+    a phone on a cached pre-v27 bundle still works.
+
+- **Verified:** 8 unit tests on pool failover (fallthrough, cooldown, skip-
+  on-next-request, invalid keys, all-exhausted, server errors, all-cooling
+  fallback, reset window), the exact XP scenario from the screenshot, claim
+  behaviour at sufficient and insufficient balance, plus the full regression
+  — all 6 tabs, links, tags, companion, export, offline boot, reduced motion
+  and **60fps at phone, laptop and desktop sizes**.
+- Bumped service worker cache to `tasksh-v27`.
 
 **2026-08-02 — `tasksh-v26`**
 

@@ -497,6 +497,69 @@ async function handlePet(request, env) {
   return json({ reply });
 }
 
+// ---- key pool ------------------------------------------------------------
+// Tries each key in turn and remembers which are exhausted, so a key that has
+// burned its daily quota isn't probed again on every request (a known way to
+// make large pools SLOWER than a single key).
+//
+// Cooldown is quota-aware: a per-minute limit clears in a minute, a daily one
+// does not clear until Google's midnight-Pacific reset, so we park it for
+// hours rather than re-probing every few minutes.
+
+function keyId(k) { return k.slice(-8); }
+
+async function isKeyCooling(env, k) {
+  try { return !!(await env.TASKSH_KV.get(`cool:${keyId(k)}`)); } catch { return false; }
+}
+
+async function coolKey(env, k, seconds) {
+  try { await env.TASKSH_KV.put(`cool:${keyId(k)}`, "1", { expirationTtl: Math.max(60, seconds) }); } catch {}
+}
+
+/** Seconds until Google's daily quota reset (midnight US Pacific). */
+function secondsUntilQuotaReset() {
+  const now = new Date();
+  // Pacific is UTC-8/-7; use -8 so we never re-probe too early
+  const pac = new Date(now.getTime() - 8 * 3600000);
+  const next = Date.UTC(pac.getUTCFullYear(), pac.getUTCMonth(), pac.getUTCDate() + 1) + 8 * 3600000;
+  return Math.max(300, Math.round((next - now.getTime()) / 1000));
+}
+
+/**
+ * Runs `attempt(key)` against each usable key until one succeeds.
+ * `attempt` resolves { ok, response } or throws for a hard failure.
+ */
+async function withKeyPool(env, keys, attempt) {
+  const usable = [];
+  for (const k of keys) if (!(await isKeyCooling(env, k))) usable.push(k);
+  // every key cooling: fall back to trying them anyway rather than refusing
+  const order = usable.length ? usable : keys;
+
+  let lastErr = null;
+  for (let i = 0; i < order.length; i++) {
+    const key = order[i];
+    const res = await attempt(key);
+    if (res.ok) {
+      if (i > 0) console.log(`[pool] key ${i + 1}/${order.length} succeeded after ${i} exhausted`);
+      return res;
+    }
+    lastErr = res;
+    if (res.status === 429) {
+      const daily = /per_day|PerDay|free_tier_requests/i.test(res.detail || "");
+      await coolKey(env, key, daily ? secondsUntilQuotaReset() : 90);
+      console.log(`[pool] key ${keyId(key)} rate-limited (${daily ? "daily" : "per-minute"}), trying next`);
+      continue;
+    }
+    if (res.status === 401 || res.status === 403 ||
+        (res.status === 400 && /API_KEY_INVALID/.test(res.detail || ""))) {
+      console.log(`[pool] key ${keyId(key)} invalid, trying next`);
+      continue;
+    }
+    return res;   // a real error, not a key problem -- don't burn the pool
+  }
+  return lastErr || { ok: false, status: 502, detail: "no usable keys" };
+}
+
 // ---- companion: personality + actions in one call -------------------------
 // v25 merged the separate /pet (prose) and /ai (actions) endpoints. Two calls
 // meant two models, two personalities and two chat boxes for what is
@@ -548,8 +611,12 @@ When you do propose actions, your "reply" should say what you're suggesting in o
 
 async function handleCompanion(request, env) {
   const body = await request.json();
-  const apiKey = (typeof body.apiKey === "string" && body.apiKey.trim()) || env.GEMINI_API_KEY || "";
-  if (!apiKey) return json({ error: "no_key", message: "No API key. Add one to talk." }, 401);
+  // pool first, single key second, worker secret last
+  const pool = Array.isArray(body.apiKeys) ? body.apiKeys.filter((k) => typeof k === "string" && k.trim()) : [];
+  const single = (typeof body.apiKey === "string" && body.apiKey.trim()) || env.GEMINI_API_KEY || "";
+  const keys = pool.length ? pool : (single ? [single] : []);
+  if (!keys.length) return json({ error: "no_key", message: "No API key. Add one to talk." }, 401);
+  const apiKey = keys[0];
 
   const message = typeof body.message === "string" ? body.message.trim().slice(0, 800) : "";
   if (!message) return json({ error: "empty message" }, 400);
@@ -603,42 +670,52 @@ async function handleCompanion(request, env) {
   if (tc) generationConfig.thinkingConfig = tc;
 
   const started = Date.now();
-  const call = (cfg) => fetch(AI_ENDPOINT(model, apiKey), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ systemInstruction: { parts: [{ text: COMPANION_PROMPT }] }, contents, generationConfig: cfg }),
-  });
 
-  let res;
-  try {
-    res = await call(generationConfig);
-    if (res.status === 400) {
-      const peek = await res.clone().text();
+  const attempt = async (key) => {
+    const send = (cfg) => fetch(AI_ENDPOINT(model, key), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: COMPANION_PROMPT }] }, contents, generationConfig: cfg }),
+    });
+    let r;
+    try { r = await send(generationConfig); }
+    catch { return { ok: false, status: 0, detail: "network" }; }
+
+    if (r.status === 400) {
+      const peek = await r.clone().text();
       if (/thinking/i.test(peek)) {
         const bare = { ...generationConfig };
         delete bare.thinkingConfig;
-        res = await call(bare);
+        try { r = await send(bare); } catch { return { ok: false, status: 0, detail: "network" }; }
       }
     }
-  } catch (err) {
-    return json({ error: "net", message: "Couldn't reach the AI service." }, 502);
-  }
+    if (r.ok) return { ok: true, response: r };
+    return { ok: false, status: r.status, detail: await r.text() };
+  };
 
-  if (!res.ok) {
-    const detail = await res.text();
-    if (res.status === 403 || (res.status === 400 && detail.includes("API_KEY_INVALID"))) {
-      return json({ error: "bad_key", message: "That API key was rejected." }, 401);
+  const result = await withKeyPool(env, keys, attempt);
+
+  if (!result.ok) {
+    const { status, detail = "" } = result;
+    if (status === 0) return json({ error: "net", message: "Couldn't reach the AI service." }, 502);
+    if (status === 403 || (status === 400 && detail.includes("API_KEY_INVALID"))) {
+      return json({ error: "bad_key", message: keys.length > 1
+        ? "All of your API keys were rejected."
+        : "That API key was rejected." }, 401);
     }
-    if (res.status === 429) return json({ error: "quota", message: "Daily AI limit reached. It resets at 12:30 PM IST." }, 429);
-    console.log(`[cmp] upstream ${res.status}: ${detail.slice(0, 400)}`);
+    if (status === 429) {
+      return json({ error: "quota", message: keys.length > 1
+        ? `All ${keys.length} keys are rate-limited. Daily quotas reset at 12:30 PM IST.`
+        : "Daily AI limit reached. It resets at 12:30 PM IST." }, 429);
+    }
+    console.log(`[cmp] upstream ${status}: ${detail.slice(0, 400)}`);
     let reason = "";
     try { reason = JSON.parse(detail)?.error?.message || ""; } catch {}
-    return json({
-      error: "upstream",
-      message: reason ? `AI error: ${reason.slice(0, 160)}` : `AI error (${res.status}).`,
-    }, 502);
+    return json({ error: "upstream",
+      message: reason ? `AI error: ${reason.slice(0, 160)}` : `AI error (${status}).` }, 502);
   }
 
+  const res = result.response;
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
