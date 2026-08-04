@@ -131,6 +131,47 @@ touch build config, run it the way a stranger would.
 Never reconcile a path mismatch by duplicating the file into `src/`; that is
 how the two copies drifted apart once already.
 
+### ✓ 410 is not a transport error (fixed in v30)
+
+GitHub Models retired on 2026-07-30 and answered everything with `410 Gone`.
+`withKeyPool` rotates on 429 and 401/403 and returns on anything else, so a
+single retired provider **halted the whole pool** — seven working keys never
+tried. `callOpenAICompatible`'s model fallback missed it too: `modelGone` only
+matched 404.
+
+Both now match 404 **and** 410. The general rule: a status that means
+*permanently gone* must be handled as a dead endpoint, never as a transport
+error. When adding a provider, ask what it returns after it dies.
+
+### ✓ Don't clamp a value you are about to visualise (fixed in v30)
+
+The life-areas radar ran every axis through `Math.max(0, …)`, so a net **−280**
+area rendered identically to one never touched. Clamping is right for a wallet
+(never show a negative balance) and wrong for a diagnostic (the deficit *is*
+the finding). Negative axes now plot inside a dashed zero ring.
+
+Related: never let a chart self-normalise to its own maximum unless you mean
+"relative shape only". The radar's biggest axis always touched the rim, so
+logging more of your strongest habit visually shrank everything else — growth
+read as regression.
+
+### ⚠ First-run celebrations need a first-run guard — all of them
+
+v29 fixed the LEVEL UP overlay congratulating a brand-new user. v30 fixed the
+**pet evolution** overlay doing exactly the same thing, missed because only the
+level path was audited. Both come from the same shape: a "last seen" field
+defaults to a value below what the starter data or a restored backup implies,
+so the first render looks like a transition.
+
+Both were found the same way — a full-screen backdrop intercepting automated
+clicks. **If you add any "you reached X" moment, record the starting value
+silently on first run**, and check it against a *restored backup*, not just the
+seed profile. The seed often doesn't trigger it; a real user's import does.
+
+Note also: you cannot detect first-run by re-reading `localStorage` inside an
+effect, because the persist effect has already written by then. Capture it in a
+ref at init.
+
 ### ⚠ Don't "fix" the timeline by making it fit the screen
 
 Compressing 24h into a phone's width is what made it unreadable in the first

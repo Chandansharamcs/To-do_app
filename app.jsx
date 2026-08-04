@@ -641,6 +641,10 @@ function petContextSummary(ctx) {
  * and restoring an old backup can't replay evolutions the user already saw.
  */
 function usePet(level, deps) {
+  // Captured at init: by the time any effect runs, the persist effect below has
+  // already written the pet to storage, so re-reading it there always looks
+  // like a returning user.
+  const freshPet = useRef(loadStored(STORAGE_KEY_PET, null) === null);
   const [pet, setPet] = useState(() => {
     const stored = loadStored(STORAGE_KEY_PET, null);
     const base = stored ? { ...PET_DEFAULTS, ...stored } : { ...PET_DEFAULTS, born: Date.now(), lastTick: Date.now() };
@@ -662,6 +666,18 @@ function usePet(level, deps) {
   // evolution check
   const form = useMemo(() => formForLevel(level), [level]);
   useEffect(() => {
+    // FIRST RUN / IMPORT: same trap the level-up overlay hit in v29. Starter
+    // data is already level 2, and a fresh pet records stage 0, so the very
+    // first render looked like an evolution and threw a full-screen backdrop
+    // over the tab bar before the user had done anything. Importing a backup
+    // did it too. Adopt the current stage silently; only transitions that
+    // happen *while using the app* are a moment worth celebrating.
+    if (freshPet.current) {
+      freshPet.current = false;
+      if (form.stage !== pet.stage) setPet((p) => ({ ...p, stage: form.stage }));
+      return;
+    }
+
     if (form.stage > pet.stage) {
       const from = pet.stage;
       setEvolution({ from, to: form.stage });
@@ -1369,6 +1385,16 @@ function AnimatedNumber({ value, className, suffix = "" }) {
 // ============================================================
 
 // radar/spider chart across N axes, e.g. life-areas by XP
+//
+// Scale: `maxValue` fixes the outer ring. Without it the chart self-normalises
+// to its own largest axis, which makes the biggest area permanently touch the
+// rim and every other axis shrink as that one grows -- so real progress reads
+// as regression. Callers should pass a stable ceiling.
+//
+// Negatives: an axis can be net-negative (more XP lost to bad habits than
+// earned). Those used to clamp to the same floor as zero, making "-280, your
+// worst area" visually identical to "never started". They now render on a
+// dedicated inner band and are marked, so a deficit reads as a deficit.
 function RadarChart({ axes, size = 220, maxValue }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -1383,6 +1409,20 @@ function RadarChart({ axes, size = 220, maxValue }) {
   const max = maxValue ?? Math.max(1, ...axes.map((a) => a.value));
   const angleFor = (i) => (Math.PI * 2 * i) / n - Math.PI / 2;
 
+  // Three bands, so sign is legible from the SHAPE and not only from the
+  // label: deficits fall inside the zero ring, zero sits on it, gains grow
+  // outward. Marking a negative axis red while still plotting it at the zero
+  // radius would leave the polygon itself lying about the data.
+  const ZERO_FRAC = 0.16;
+  const worst = Math.min(0, ...axes.map((a) => a.value));
+  const fracFor = (value) => {
+    if (value > 0) return ZERO_FRAC + (1 - ZERO_FRAC) * Math.min(1, value / max);
+    if (value === 0 || !worst) return ZERO_FRAC;
+    // scale deficits across the inner disc, leaving a small floor so the
+    // deepest one stays visible rather than collapsing onto the centre
+    return ZERO_FRAC * (1 - 0.8 * Math.min(1, value / worst));
+  };
+
   const pointFor = (i, frac) => {
     const a = angleFor(i);
     return [cx + Math.cos(a) * r * frac, cy + Math.sin(a) * r * frac];
@@ -1394,7 +1434,7 @@ function RadarChart({ axes, size = 220, maxValue }) {
   const padX = n > 6 ? 46 : 22;
 
   const rings = [0.25, 0.5, 0.75, 1];
-  const dataPoints = axes.map((ax, i) => pointFor(i, mounted ? Math.max(0.04, ax.value / max) : 0.02));
+  const dataPoints = axes.map((ax, i) => pointFor(i, mounted ? fracFor(ax.value) : 0.02));
   const dataPath = dataPoints.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + "Z";
 
   return (
@@ -1406,10 +1446,18 @@ function RadarChart({ axes, size = 220, maxValue }) {
       preserveAspectRatio="xMidYMid meet"
     >
       {rings.map((frac, ri) => {
-        const pts = axes.map((_, i) => pointFor(i, frac));
+        const pts = axes.map((_, i) => pointFor(i, ZERO_FRAC + (1 - ZERO_FRAC) * frac));
         const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + "Z";
         return <path key={ri} d={d} className="radar-ring" />;
       })}
+      {/* the zero line: anything inside it is a net deficit */}
+      <path
+        d={axes.map((_, i) => {
+          const p = pointFor(i, ZERO_FRAC);
+          return `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+        }).join(" ") + "Z"}
+        className="radar-zero"
+      />
       {axes.map((_, i) => {
         const p = pointFor(i, 1);
         return <line key={i} x1={cx} y1={cy} x2={p[0]} y2={p[1]} className="radar-spoke" />;
@@ -1421,7 +1469,8 @@ function RadarChart({ axes, size = 220, maxValue }) {
       />
       {axes.map((ax, i) => {
         const labelPt = pointFor(i, 1.19);
-        const dotPt = pointFor(i, mounted ? Math.max(0.04, ax.value / max) : 0.02);
+        const dotPt = pointFor(i, mounted ? fracFor(ax.value) : 0.02);
+        const negative = ax.value < 0;
         // With many axes, centre-anchoring every label makes the left and
         // right sides collide with the chart. Anchor by which side of the
         // circle the vertex sits on so labels grow outward instead.
@@ -1433,7 +1482,9 @@ function RadarChart({ axes, size = 220, maxValue }) {
               cx={dotPt[0]}
               cy={dotPt[1]}
               r={n > 6 ? 2.8 : 3.5}
-              fill={ax.color || "#5EEAD4"}
+              fill={negative ? "none" : (ax.color || "#5EEAD4")}
+              stroke={negative ? "var(--danger)" : "none"}
+              strokeWidth={negative ? 1.4 : 0}
               style={{ transition: "cx 700ms cubic-bezier(0.22,1,0.36,1), cy 700ms cubic-bezier(0.22,1,0.36,1)" }}
             />
             <text
@@ -1441,9 +1492,9 @@ function RadarChart({ axes, size = 220, maxValue }) {
               y={labelPt[1]}
               textAnchor={anchor}
               dominantBaseline="middle"
-              className="radar-label"
+              className={`radar-label ${negative ? "radar-label-neg" : ""}`}
             >
-              {ax.label}
+              {negative ? `${ax.label} ↓` : ax.label}
             </text>
           </g>
         );
@@ -1849,6 +1900,92 @@ const seedRoutines = [
   { id: 9, time: "23:00", label: "Sleep", duration: 450, history: [] },
 ];
 
+// Reports which build is ACTUALLY running, read from the live service worker
+// cache rather than a constant compiled into this bundle.
+//
+// A constant would be worse than nothing here: a stale bundle carries its own
+// stale constant, so it would confidently display the wrong version at exactly
+// the moment you need the truth. Two real diagnoses in this project were spent
+// establishing "which build is this phone on" from screenshots. This answers it
+// in one glance.
+//
+// `caches` is unavailable on insecure origins and in some private modes, so
+// every path is guarded and the badge simply hides rather than throwing.
+function useRunningVersion() {
+  const [tag, setTag] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const read = async () => {
+      try {
+        if (typeof caches === "undefined" || !caches.keys) return;
+        const keys = await caches.keys();
+        const match = keys
+          .filter((k) => /^tasksh-v\d+$/.test(k))
+          .sort((a, b) => parseInt(b.slice(8), 10) - parseInt(a.slice(8), 10))[0];
+        if (!cancelled && match) setTag(match.replace("tasksh-", ""));
+      } catch {
+        /* no cache access — badge stays hidden */
+      }
+    };
+
+    read();
+
+    // An update installs in the background; re-read when it takes over so the
+    // badge doesn't keep claiming the version it booted with.
+    const sw = navigator.serviceWorker;
+    sw?.addEventListener?.("controllerchange", read);
+    return () => {
+      cancelled = true;
+      sw?.removeEventListener?.("controllerchange", read);
+    };
+  }, []);
+
+  return tag;
+}
+
+function VersionBadge() {
+  const version = useRunningVersion();
+  if (!version) return null;
+  return (
+    <span className="version-badge" title={`running build ${version}`}>
+      {version}
+    </span>
+  );
+}
+
+/**
+ * One-shot "shake the composer" flag that cleans up after itself.
+ *
+ * The three composers each open-coded this as
+ *   setFlash(true); setTimeout(() => setFlash(false), 420);
+ * with no clearTimeout, so unmounting mid-animation (switch tabs right after a
+ * failed submit) left a timer holding a setState on a dead component. Rapid
+ * repeat submits also stacked overlapping timers, and the earliest one cut the
+ * animation short.
+ *
+ * Returns [flash, trigger]. The pending timer is cleared on re-trigger and on
+ * unmount, so the animation always runs its full duration exactly once.
+ */
+function useFlash(duration = 420) {
+  const [flash, setFlash] = useState(false);
+  const timer = useRef(null);
+
+  const trigger = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    setFlash(true);
+    timer.current = setTimeout(() => {
+      setFlash(false);
+      timer.current = null;
+    }, duration);
+  }, [duration]);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  return [flash, trigger];
+}
+
 function useISTClock() {
   const [now, setNow] = useState(getISTParts());
   useEffect(() => {
@@ -1896,6 +2033,10 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
   const axisRef = useRef(null); // 'x' | 'y' | null (undecided)
   const movedRef = useRef(false);
   const [removing, setRemoving] = useState(false);
+  const exitTimer = useRef(null);
+  // swipe-to-delete defers onDelete for the exit animation; drop the timer if
+  // this row unmounts first so it can't fire against a stale id
+  useEffect(() => () => { if (exitTimer.current) clearTimeout(exitTimer.current); }, []);
 
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(routine.label);
@@ -1957,7 +2098,7 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
     draggingRef.current = false;
     if (dragX < -70) {
       setRemoving(true);
-      setTimeout(() => onDelete(routine.id), 200);
+      if (!exitTimer.current) exitTimer.current = setTimeout(() => onDelete(routine.id), 200);
     } else {
       setDragX(0);
       if (!movedRef.current) openEdit();
@@ -2105,15 +2246,14 @@ function RoutinesView({ routines, setRoutines }) {
   const [label, setLabel] = useState("");
   const [time, setTime] = useState(() => minutesToInputValue(nowMinutes));
   const [duration, setDuration] = useState(30);
-  const [flash, setFlash] = useState(false);
+  const [flash, triggerFlash] = useFlash();
   const [alts, setAlts] = useState([]);
   const [showAlts, setShowAlts] = useState(false);
 
   const addRoutine = () => {
     const text = label.trim();
     if (!text) {
-      setFlash(true);
-      setTimeout(() => setFlash(false), 420);
+      triggerFlash();
       sound.error();
       return;
     }
@@ -2511,13 +2651,12 @@ function VaultHabitCard({ habit, onToggleToday, onDelete, onSave }) {
 function VaultHabitsSection({ habits, setHabits }) {
   const [label, setLabel] = useState("");
   const [goal, setGoal] = useState(7);
-  const [flash, setFlash] = useState(false);
+  const [flash, triggerFlash] = useFlash();
 
   const add = () => {
     const text = label.trim();
     if (!text) {
-      setFlash(true);
-      setTimeout(() => setFlash(false), 420);
+      triggerFlash();
       sound.error();
       return;
     }
@@ -2726,13 +2865,12 @@ function ProjectCard({ project, onDelete, onAddTask, onToggleTask, onDeleteTask,
 function VaultProjectsSection({ projects, setProjects }) {
   const [name, setName] = useState("");
   const [due, setDue] = useState("");
-  const [flash, setFlash] = useState(false);
+  const [flash, triggerFlash] = useFlash();
 
   const add = () => {
     const text = name.trim();
     if (!text) {
-      setFlash(true);
-      setTimeout(() => setFlash(false), 420);
+      triggerFlash();
       sound.error();
       return;
     }
@@ -3499,18 +3637,45 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   // visually legible around the ring.
   // Radar plots either the 4 broad areas or the finer user-editable tags.
   // Both read from the same habit data -- switching is a view change only.
+  // Values are NOT clamped at zero. A net-negative area is real information --
+  // clamping made "-280, your worst area by far" render identically to "never
+  // started", which is the opposite of what a diagnostic chart is for.
   const areaAxes = useMemo(() => (
     tagCtl.radarMode === "areas"
       ? AREAS.map((a) => ({
           key: a.key, label: a.label, color: a.color,
-          value: Math.max(0, computeAreaXP(a.key, goodHabits, badHabits)),
+          value: computeAreaXP(a.key, goodHabits, badHabits),
         }))
       : subs.map((sb) => ({
           key: sb.key, label: sb.label,
           color: (AREAS.find((a) => a.key === sb.area) || {}).color,
-          value: Math.max(0, computeSubXPIn(subs, sb.key, goodHabits, badHabits)),
+          value: computeSubXPIn(subs, sb.key, goodHabits, badHabits),
         }))
   ), [tagCtl.radarMode, subs, goodHabits, badHabits]);
+
+  // One ceiling for BOTH modes, so switching view doesn't silently rescale the
+  // shape, and so growth pushes the polygon outward instead of flattening its
+  // neighbours. Recomputed from data, so it still tracks real progress.
+  const radarMax = useMemo(() => {
+    const areaPeak = Math.max(...AREAS.map((a) => computeAreaXP(a.key, goodHabits, badHabits)), 0);
+    const subPeak = Math.max(...subs.map((sb) => computeSubXPIn(subs, sb.key, goodHabits, badHabits)), 0);
+    // round up to a clean step so the rim isn't pinned to an arbitrary value
+    const peak = Math.max(areaPeak, subPeak, 1);
+    const step = peak <= 100 ? 25 : peak <= 500 ? 50 : 100;
+    return Math.ceil(peak / step) * step;
+  }, [subs, goodHabits, badHabits]);
+
+  // Habits with no `sub` tag are counted by the 4-area view but vanish in the
+  // tag view, so the same data appears to total differently depending on which
+  // toggle is active. Surface it rather than letting the number quietly differ.
+  const untaggedXP = useMemo(() => {
+    if (tagCtl.radarMode === "areas") return 0;
+    const known = new Set(subs.map((s) => s.key));
+    const orphan = (h) => !h.sub || !known.has(h.sub);
+    const e = goodHabits.filter(orphan).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+    const l = badHabits.filter(orphan).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+    return e + l;
+  }, [tagCtl.radarMode, subs, goodHabits, badHabits]);
 
   const visibleGood = areaFilter === "all" ? goodHabits : goodHabits.filter((h) => h.area === areaFilter);
   const visibleBad  = areaFilter === "all" ? badHabits  : badHabits.filter((h) => h.area === areaFilter);
@@ -3553,7 +3718,12 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
           </div>
           <button className="radar-edit" onClick={() => setShowTagEditor(true)}>edit tags</button>
         </div>
-        <RadarChart axes={areaAxes} size={252} />
+        <RadarChart axes={areaAxes} size={252} maxValue={radarMax} />
+        {untaggedXP > 0 && (
+          <div className="radar-note">
+            {untaggedXP} XP from untagged habits isn&apos;t plotted — tag them to include it
+          </div>
+        )}
       </div>
 
       {(earnedXP > 0 || lostXP > 0 || spentXP > 0) && (
@@ -3770,11 +3940,18 @@ function Checkbox({ checked, onChange, color }) {
 
 function TaskRow({ task, now, onToggle, onDelete, index }) {
   const [leaving, setLeaving] = useState(false);
+  const exitTimer = useRef(null);
   const prio = PRIORITIES.find((p) => p.key === task.priority) || PRIORITIES[0];
 
+  // Deletion is deferred so the row can animate out. If the list re-renders
+  // this row away first (import, undo, filter change), the pending timer would
+  // otherwise fire onDelete for an id that no longer exists.
+  useEffect(() => () => { if (exitTimer.current) clearTimeout(exitTimer.current); }, []);
+
   const handleDelete = () => {
+    if (exitTimer.current) return;   // ignore double-taps mid-animation
     setLeaving(true);
-    setTimeout(() => onDelete(task.id), 220);
+    exitTimer.current = setTimeout(() => onDelete(task.id), 220);
   };
 
   return (
@@ -4302,11 +4479,6 @@ const KEY_PROVIDERS = [
     where: "cloud.cerebras.ai", free: "1M tokens/day" },
   { id: "nvidia",     label: "NVIDIA NIM", test: (k) => /^nvapi-/.test(k),
     where: "build.nvidia.com", free: "40 req/min, 1000 credits" },
-  { id: "github",     label: "GitHub Models",
-    test: (k) => /^(ghp_|github_pat_|gho_|ghu_|ghs_)/.test(k),
-    where: "github.com/settings/tokens", free: "~150 req/day",
-    // a PAT without this scope 401s with no clue why, so say it at paste time
-    note: "the token needs the \u201cmodels\u201d scope ticked" },
   { id: "mistral",    label: "Mistral",
     // Mistral keys have no prefix to sniff, so they're only recognised via
     // the explicit "mistral:KEY" form.
@@ -4912,7 +5084,7 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
           type="password"
           autoComplete="off"
           spellCheck={false}
-          placeholder="AIza… · gsk_… · csk-… · nvapi-… · ghp_…"
+          placeholder="AIza… · gsk_… · csk-… · nvapi-…"
           value={key}
           onChange={(e) => setKey(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
@@ -5710,6 +5882,19 @@ function TodoApp() {
           text-transform: uppercase;
         }
 
+        /* Which build is actually running. Deliberately quiet -- it is a
+           diagnostic, not a feature, and should never compete with the tabs. */
+        .version-badge {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 0.06em;
+          color: var(--muted);
+          border: 1px solid var(--track);
+          border-radius: 3px;
+          padding: 1px 4px;
+          opacity: 0.75;
+        }
+
         .clock {
           font-family: 'JetBrains Mono', monospace;
           font-size: 11px;
@@ -6309,8 +6494,12 @@ function TodoApp() {
           background: var(--panel);
           border: 1px solid var(--border);
           border-radius: 12px;
+          /* Column, not row: this card stacks a control strip ABOVE the chart.
+             As a row the controls became a narrow squeezed sidebar overlapping
+             the plot, and .radar-controls' space-between had no width to work
+             with. */
           display: flex;
-          justify-content: center;
+          flex-direction: column;
           animation: rowIn 260ms ease backwards;
         }
 
@@ -6322,6 +6511,13 @@ function TodoApp() {
           font-family: 'JetBrains Mono', monospace;
           font-size: 8px;
           letter-spacing: -0.01em;
+        }
+
+        /* A net-negative area is a signal, not a blank. */
+        .radar-label-neg { fill: var(--danger); }
+        .radar-zero {
+          fill: none; stroke: var(--muted); stroke-width: 1;
+          stroke-dasharray: 2 3; opacity: 0.55;
         }
 
         @media (min-width: 900px) {
@@ -7006,6 +7202,15 @@ function TodoApp() {
           display: flex; align-items: center; justify-content: space-between;
           gap: 10px; padding: 0 4px 10px;
         }
+        .radar-note {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 8.5px;
+          line-height: 1.5;
+          color: var(--muted);
+          text-align: center;
+          padding: 8px 6px 2px;
+        }
+
         .radar-mode { display: flex; gap: 4px; }
         .radar-mode button, .radar-edit {
           background: transparent; border: 1px solid var(--border);
@@ -9033,6 +9238,7 @@ function TodoApp() {
               <span className="dot green" />
             </div>
             <span className="titlebar-name">tasks.sh</span>
+            <VersionBadge />
           </div>
           <div className="titlebar-right">
             <input
@@ -9111,28 +9317,39 @@ function TodoApp() {
           <div className={`data-toast ${dataMsg.type}`}>{dataMsg.text}</div>
         )}
 
-        <div className="tabs">
-          <button className={tab === "today" ? "active" : ""} onClick={() => changeTab("today")}>
-            today
-          </button>
-          <button className={tab === "tasks" ? "active" : ""} onClick={() => changeTab("tasks")}>
-            tasks
-          </button>
-          <button className={tab === "routines" ? "active" : ""} onClick={() => changeTab("routines")}>
-            routines
-          </button>
-          <button className={tab === "vault" ? "active" : ""} onClick={() => changeTab("vault")}>
-            vault
-          </button>
-          <button className={tab === "quest" ? "active" : ""} onClick={() => changeTab("quest")}>
-            quest
-          </button>
-          <button className={`tab-pet ${tab === "pet" ? "active" : ""}`} onClick={() => changeTab("pet")}>
-            {petCtl.pet.name.toLowerCase()}
-          </button>
+        {/* A real tablist: screen readers announce "tab 3 of 6, selected"
+            instead of six unrelated buttons. aria-selected also gives the
+            active tab a programmatic state, not just a CSS class. */}
+        <div className="tabs" role="tablist" aria-label="Sections">
+          {[
+            ["today", "today"],
+            ["tasks", "tasks"],
+            ["routines", "routines"],
+            ["vault", "vault"],
+            ["quest", "quest"],
+            ["pet", petCtl.pet.name.toLowerCase()],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              id={`tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls="tab-panel"
+              className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
+              onClick={() => changeTab(id)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
-        <div key={tab} className="tab-content">
+        <div
+          key={tab}
+          className="tab-content"
+          id="tab-panel"
+          role="tabpanel"
+          aria-labelledby={`tab-${tab}`}
+        >
         {tab === "today" ? (
           <TodayView
             routines={routines}

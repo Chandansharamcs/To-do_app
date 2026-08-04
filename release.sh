@@ -160,6 +160,16 @@ copy_one "worker/src/index.js"
 copy_one "worker/README.md"
 copy_one "worker/wrangler.toml"
 
+# Test suites. Added in v30, when `npm test` was found to reference five files
+# that had never been committed on any branch -- a clean clone could not run a
+# single test. Copying them is the whole point of that fix, so a release that
+# silently dropped them would undo it.
+for f in "$SRC"/*.test.mjs; do [ -e "$f" ] && copy_one "$(basename "$f")"; done
+for f in "$SRC"/*.spec.mjs; do [ -e "$f" ] && copy_one "$(basename "$f")"; done
+copy_one "worker/providers.test.mjs"
+copy_one "worker/callshape.test.mjs"
+copy_one "package-lock.json"
+
 [ "$copied" -gt 0 ] || die "nothing was copied — is $SRC empty?"
 ok "$copied file(s) copied"
 

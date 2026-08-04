@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v30`** | 2026-08-02 | GitHub Models removed, 410 pool halt, radar truth, test suite in-repo |
 | **`v29`** | 2026-08-02 | Cerebras / NVIDIA / GitHub / Mistral, first-run fix |
 | **`v28`** | 2026-08-02 | Groq / OpenRouter support, multi-provider pool |
 | **`v27`** | 2026-08-02 | XP/reward split fix, multi-key failover |
@@ -52,6 +53,149 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v30 ───────────────────────────────────────────────────────────┐
+│  2026-08-02 · audit release                                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### GitHub Models removed — it was retired three days before v29 shipped
+
+GitHub retired Models entirely on **2026-07-30**. v29 shipped support for it on
+2026-08-02. Every request now returns:
+
+```
+HTTP/2 410  {"code":"github_models_retirement_brownout"}
+```
+
+This is the cost of the gap flagged in v29's handoff: *no real API call had
+ever been made to the four new providers.* All four were tested against a
+stubbed `fetch`, which proved the routing and proved nothing about the
+endpoints. A single unauthenticated curl would have caught it.
+
+### The 410 halted the entire key pool
+
+Worse than a dead provider. Measured against the live worker before the fix:
+
+```
+pool = [ghp_dead, gsk_fake, AIza_fake]  → 502, stopped at GitHub
+pool = [gsk_fake, AIza_fake]            → 401, tried both keys
+```
+
+`withKeyPool` treats 429 and 401/403 as key problems and rotates. Anything else
+hit `return res` — "a real error, not a key problem, don't burn the pool". 410
+is none of those, so **one retired provider took down seven working ones.**
+`callOpenAICompatible`'s model fallback missed it the same way: `modelGone`
+only matched 404.
+
+Both now treat 404 **and** 410 as "this endpoint is gone" and keep going. The
+lesson is the general one: a status meaning *permanently gone* must never be
+handled as a transport error.
+
+### Life-areas radar told three lies
+
+Found by running real exported data through the chart rather than reading it.
+
+1. **Negative areas were invisible.** `Math.max(0, …)` clamped every axis, so a
+   net **−280** area rendered identically to one never started. Values are no
+   longer clamped; deficits plot *inside* a dashed zero ring, with a red label
+   and a hollow dot. Sign is now readable from the shape, not just the colour.
+2. **The scale self-normalised.** `maxValue` existed but was never passed, so
+   the largest axis always touched the rim — logging more of your strongest
+   habit visually *shrank* everything else. One computed ceiling now covers
+   both modes.
+3. **Untagged XP vanished silently.** Habits with no `sub` are counted by the
+   4-area view and dropped by the tag view, so the same data totalled
+   differently with no explanation. The gap is now stated under the chart.
+
+Plus the reported layout bug: `.radar-card` was `display:flex` with no
+`flex-direction`, so the control strip became a squeezed sidebar overlapping
+the plot instead of a row above it.
+
+### A second first-run overlay, same shape as v29's
+
+v29 fixed the LEVEL UP overlay firing for a level the user never earned. The
+**pet evolution** overlay had the identical bug and was missed because only the
+level path was audited: a fresh pet records `stage: 0`, so restoring a backup
+whose XP implies a later form looked like an evolution and threw a full-screen
+backdrop that intercepted every click.
+
+Found the same way as the v29 one — it blocked an automated click. Note the
+seed profile does *not* trigger it; only a restored backup does, which is
+exactly what a user does after clearing site data to pick up a new build.
+
+The first attempted fix was wrong and the test proved it: re-reading
+`localStorage` inside the effect always looked like a returning user, because
+the persist effect had already written. First-run state is now captured in a
+ref at init.
+
+### Version badge
+
+A quiet `v30` next to the title, read from the **live service worker cache** at
+runtime — never a constant. A stale bundle carries a stale constant and would
+lie at exactly the moment the truth is needed. Two separate diagnoses this
+cycle were spent establishing which build a screenshot came from; a laptop
+turned out to be running v26 while the site served v29.
+
+### The test suite is now actually in the repo
+
+`npm test` referenced five files that had **never been committed on any
+branch** — `--diff-filter=A` across `--all` found nothing. A clean clone could
+not run a single test.
+
+Same shape as the build-path bug v29 fixed. That one was *a command nobody
+runs*; this was *a command nobody could run*.
+
+**84 tests**, all committed, all verified to fail when their fix is reverted:
+
+| Suite | Count | Covers |
+|---|---|---|
+| `keydetect.test.mjs` | 21 | detection, masking, client↔worker agreement, XP/level maths |
+| `worker/providers.test.mjs` | 16 | routing, `mistral:` tag, table integrity, reset clocks |
+| `worker/callshape.test.mjs` | 17 | request shape, token caps, JSON retry, 410 fallback, pool |
+| `gate.spec.mjs` | 11 | first run, both overlays, version badge, key gate |
+| `regress.spec.mjs` | 19 | 6 tabs, CRUD, XP, radar geometry, export, offline, 4 viewports |
+
+The unit suites read the source and eval a brace-matched slice (`lift()`)
+rather than importing, because the worker uses Cloudflare globals and the app
+is JSX. The v29 extractor terminated each match at the first `\n};`, which for
+a one-line declaration swallowed the rest of the file; it now brace-matches and
+skips strings and comments.
+
+Every test above was checked by reverting its fix and confirming it goes red.
+A test that has never failed has never been shown to test anything.
+
+### Also
+
+- **Three `setTimeout`s leaked.** The composer shake in Routines, Vault Habits
+  and Projects each set state 420ms later with no `clearTimeout`, so switching
+  tabs mid-animation set state on an unmounted component, and rapid submits
+  stacked timers that cut each other short. Replaced with one `useFlash()` hook
+  that clears on re-trigger and unmount.
+- **Two delete animations leaked** the same way, and could fire `onDelete`
+  against an id that no longer existed.
+- **Tab bar is a real `role="tablist"`** with `aria-selected`, so a screen
+  reader announces "tab 3 of 6, selected" instead of six unrelated buttons.
+
+### Still not verified
+
+**No real API call has been made to Cerebras, NVIDIA or Mistral.** GitHub was
+the one that got caught because it failed *unauthenticated*. The others need a
+real key to disprove. What was checked this cycle:
+
+- NVIDIA — both model IDs confirmed present in its public `/v1/models` (102
+  models, no auth required)
+- Cerebras — endpoint reachable (`403 Not authenticated`); docs confirm
+  `gpt-oss-120b` is the only production model
+- Mistral — endpoint reachable (`401 Unauthorized`); the **fallback**
+  `open-mistral-nemo` was listed for retirement 2026-07-31, though the primary
+  `mistral-small-latest` is an alias and self-updates
+
+Reachable is not working. A 401 from the right host proves DNS and a path, not
+a successful completion.
 
 ---
 

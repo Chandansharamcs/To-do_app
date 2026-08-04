@@ -265,7 +265,7 @@ and applies nothing until you tap Apply.
 ### Providers
 
 `/companion` takes a **pool** of keys and tries them in order, skipping any
-that are cooling off. Eight providers are routed by key prefix:
+that are cooling off. Seven providers are routed by key prefix:
 
 | Provider | Prefix | Free tier |
 |---|---|---|
@@ -273,7 +273,6 @@ that are cooling off. Eight providers are routed by key prefix:
 | Groq | `gsk_…` | ~1000 req/day, fastest |
 | Cerebras | `csk-…` | **1M tokens/day** |
 | NVIDIA NIM | `nvapi-…` | 40 req/min |
-| GitHub Models | `ghp_…`, `github_pat_…` | ~150 req/day (needs `models` scope) |
 | Mistral | *none* — pass as `mistral:KEY` | generous |
 | OpenRouter | `sk-or-…` | 50 req/day |
 | OpenAI | `sk-…` | paid |

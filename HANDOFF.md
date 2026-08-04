@@ -163,7 +163,6 @@ Never merge these back together.
 | Groq | `gsk_…` | ~1000 req/day, fastest | console.groq.com |
 | Cerebras | `csk-…` | **1M tokens/day** | cloud.cerebras.ai |
 | NVIDIA NIM | `nvapi-…` | 40 req/min, 1000 credits | build.nvidia.com |
-| GitHub Models | `ghp_…`, `github_pat_…` | ~150 req/day | github.com/settings/tokens |
 | Mistral | *(none — see below)* | generous | console.mistral.ai |
 | OpenRouter | `sk-or-…` | 50 req/day | openrouter.ai/keys |
 | OpenAI | `sk-…` | paid | platform.openai.com |
@@ -175,14 +174,20 @@ fails the build if the two tables drift on ids or sign-up hosts.
 Per-provider knobs, each of which exists because something 400'd:
 
 - `maxTokens` — a hard ceiling that wins over the caller's request. Cerebras
-  caps context at ~8K on the free tier, GitHub Models at 4K output.
+  caps context at ~8K on the free tier.
 - `jsonMode: false` — opt out of `response_format`. NVIDIA NIM advertises it
   but rejects it per-model.
 - `resets: "utc" | "pacific"` — when the daily quota comes back. Only Google
   is Pacific. Getting this wrong parks a healthy key for up to 8 extra hours.
-- `models: []` — tried in order, but **only** on 404 / "decommissioned". A
-  401 or 429 bails out so the pool rotates *keys* instead of chewing through
+- `models: []` — tried in order, but **only** on 404 / 410 / "decommissioned".
+  A 401 or 429 bails out so the pool rotates *keys* instead of chewing through
   the model list with a key that was never going to work.
+
+**410 is treated as "this endpoint is gone", in both the model loop and the
+key pool.** GitHub Models answered every request with 410 after its
+2026-07-30 retirement. 410 matched no branch, so it fell through to "a real
+error, not a key problem" and *halted the whole pool* — one dead provider took
+down seven working ones. Covered by `callshape.test.mjs`.
 
 **Mistral has no key prefix.** Its keys are bare 32-char alphanumerics, so
 sniffing them is impossible without mis-routing other providers' keys. They
@@ -520,19 +525,28 @@ npm test              # 70 unit tests, ~1s, no browser
 npm run test:browser  # 28 browser tests, needs playwright chromium
 ```
 
-| File | Covers |
-|---|---|
-| `worker/providers.test.mjs` | key→provider routing, `mistral:` tag, table integrity, quota reset clocks |
-| `worker/callshape.test.mjs` | request shape against a stubbed fetch: token caps, JSON retry, model fallback, when *not* to fall back |
-| `keydetect.test.mjs` | client detection, key masking, **client↔worker table agreement** |
-| `gate.spec.mjs` | the real UI in headless Chromium: live detection while typing, pool building, warnings, first-run level bug |
+| File | Covers | # |
+|---|---|---|
+| `keydetect.test.mjs` | client detection, key masking, **client↔worker table agreement**, XP/level maths | 21 |
+| `worker/providers.test.mjs` | key→provider routing, `mistral:` tag, table integrity, quota reset clocks | 16 |
+| `worker/callshape.test.mjs` | request shape against a stubbed fetch: token caps, JSON retry, model fallback, **410 handling**, key pool rotation | 17 |
+| `gate.spec.mjs` | the real UI in headless Chromium: first run, LEVEL UP *and* pet evolution overlays, version badge, key gate | 11 |
+| `regress.spec.mjs` | all 6 tabs, task CRUD, XP display, radar geometry, export, offline, 4 viewports | 19 |
+
+**84 total.** Every one was verified by reverting its fix and confirming it
+goes red — a test that has never failed has never been shown to test anything.
 
 Two things worth copying if you add more:
 
 - **The unit suites read the source and evaluate a slice of it** rather than
   importing it, because the worker file references Cloudflare globals and the
-  app is JSX. `lift(startMarker, endMarker)` pulls out a region and imports it
-  as a `data:` URL. Brittle to renames — deliberately so; it fails loudly.
+  app is JSX. `lift(names)` brace-matches each named declaration and evaluates
+  it. Brittle to renames — deliberately so; it fails loudly.
+
+  The v29 extractor ended each match at the first `\n};`, which for a one-line
+  declaration swallowed the rest of the file including `export default`. It now
+  brace-matches and skips strings and comments. Parens are ignored on purpose:
+  counting them ends a function at its own parameter list.
 - **`keydetect.test.mjs` asserts the two provider tables match.** The client
   duplicates the worker's routing so it can label a key without a round trip.
   Duplication that can silently drift is worth a test that can't.

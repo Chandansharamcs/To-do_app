@@ -539,14 +539,6 @@ const PROVIDERS = {
     jsonMode: false,
     signup: "build.nvidia.com", resets: "utc",
   },
-  github: {
-    id: "github", label: "GitHub Models", test: (k) => /^(ghp_|github_pat_|gho_|ghu_|ghs_)/.test(k),
-    kind: "openai", base: "https://models.github.ai/inference",
-    models: ["openai/gpt-4.1-mini", "openai/gpt-4o-mini"],
-    // 8k input / 4k output ceiling on the free tier
-    maxTokens: 900,
-    signup: "github.com/settings/tokens", resets: "utc",
-  },
   mistral: {
     id: "mistral", label: "Mistral",
     // Mistral keys are bare 32-char alphanumerics with no prefix, so they
@@ -573,7 +565,7 @@ const PROVIDERS = {
 
 // Prefix sniffing order. sk-or- must be checked before the generic sk-, and
 // csk-/nvapi- are distinct enough to sit anywhere.
-const PROVIDER_ORDER = ["gemini", "groq", "cerebras", "nvidia", "github", "openrouter", "openai"];
+const PROVIDER_ORDER = ["gemini", "groq", "cerebras", "nvidia", "openrouter", "openai"];
 
 /**
  * Works out which provider a key belongs to.
@@ -679,7 +671,14 @@ async function callOpenAICompatible(provider, key, systemPrompt, contents, opts 
 
     // Only a missing/retired/unauthorised MODEL is worth trying the next one
     // for. A 401/429 is about the key, so bail and let the pool rotate keys.
-    const modelGone = res.status === 404 ||
+    //
+    // 410 Gone is included deliberately: GitHub Models answered every request
+    // with 410 after its 2026-07-30 retirement, and because 410 matched none of
+    // these branches it fell through to `return res` and halted the entire key
+    // pool -- one dead provider took down seven working ones. Any status that
+    // means "this endpoint is never coming back" must behave like a dead model,
+    // not like a transport error.
+    const modelGone = res.status === 404 || res.status === 410 ||
       (res.status === 400 && /model|not found|unknown|does not exist|decommission/i.test(res.detail || ""));
     if (!modelGone) return res;
     console.log(`[prov] ${provider.id}/${models[i]} unavailable (${res.status}), trying next model`);
@@ -795,6 +794,13 @@ async function withKeyPool(env, keys, attempt) {
     if (res.status === 401 || res.status === 403 ||
         (res.status === 400 && /API_KEY_INVALID/.test(res.detail || ""))) {
       console.log(`[pool] key ${keyId(key)} invalid, trying next`);
+      continue;
+    }
+    // 404/410 here means the provider itself is gone, not that this key is bad.
+    // Keep going: another key may belong to a provider that still exists. This
+    // is what stops one retired service from taking the whole pool down.
+    if (res.status === 404 || res.status === 410) {
+      console.log(`[pool] key ${keyId(key)} provider unavailable (${res.status}), trying next`);
       continue;
     }
     return res;   // a real error, not a key problem -- don't burn the pool
@@ -1107,7 +1113,7 @@ async function handleAIVerify(request, env) {
   if (!found) {
     return json({ ok: false, message:
       "Unrecognised key. Expected AIza… (Gemini), gsk_… (Groq), csk-… (Cerebras), " +
-      "nvapi-… (NVIDIA), ghp_… (GitHub) or sk-or-… (OpenRouter). " +
+      "nvapi-… (NVIDIA) or sk-or-… (OpenRouter). " +
       "For a Mistral key, prefix it: mistral:YOUR_KEY" }, 400);
   }
   const { provider: prov, key } = found;
