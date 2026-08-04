@@ -19,7 +19,7 @@ import webpush from "web-push";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -61,6 +61,96 @@ async function handleSync(request, env) {
   if (!deviceId || !Array.isArray(routines)) return json({ error: "missing deviceId or routines" }, 400);
   await env.TASKSH_KV.put(`routines:${deviceId}`, JSON.stringify(routines));
   return json({ ok: true });
+}
+
+// ---- widget feed (v32) ----------------------------------------------------
+// GET /next?id=<deviceId>  ->  what the KWGT home-screen widget renders.
+//
+// The widget cannot read the PWA's localStorage: Chrome sandboxes it per
+// origin and no Android app can reach in. So the widget never touches the app
+// at all -- both sides talk to this worker. The routine schedule is already
+// here, pushed by POST /sync for push notifications; this just reads it back.
+//
+// Every field is returned PRE-FORMATTED as a display string. KWGT's free tier
+// has no Flows, so the widget cannot post-process anything -- whatever it gets
+// goes straight on screen. Doing the maths here also keeps IST in one place;
+// the widget must not have to know the timezone.
+function handleNext(request, env) {
+  const url = new URL(request.url);
+  const deviceId = url.searchParams.get("id");
+  if (!deviceId) return json({ error: "pass ?id=YOUR_DEVICE_ID" }, 400);
+  return nextPayload(env, deviceId);
+}
+
+async function nextPayload(env, deviceId) {
+  let routines = [];
+  try {
+    const raw = await env.TASKSH_KV.get(`routines:${deviceId}`);
+    if (raw) routines = JSON.parse(raw);
+  } catch { /* fall through to the empty state */ }
+
+  const { hhmm, dateStr } = istNowParts();
+  const nowMin = toMin(hhmm);
+
+  const valid = (Array.isArray(routines) ? routines : [])
+    .filter((r) => r && typeof r.time === "string" && /^\d{2}:\d{2}$/.test(r.time))
+    .map((r) => ({ ...r, start: toMin(r.time), dur: Math.max(1, +r.duration || 30) }))
+    .sort((a, b) => a.start - b.start);
+
+  if (!valid.length) {
+    return json({
+      ok: true, empty: true, date: dateStr, now: hhmm,
+      time: "--:--", label: "no routines", sub: "open tasks.sh to add one",
+      pct: 0, state: "empty",
+    });
+  }
+
+  // Something running right now takes priority over what is merely next: the
+  // widget should say "you are in School" rather than pointing at dinner.
+  const current = valid.find((r) => nowMin >= r.start && nowMin < r.start + r.dur);
+  if (current) {
+    const elapsed = nowMin - current.start;
+    const left = current.dur - elapsed;
+    return json({
+      ok: true, empty: false, date: dateStr, now: hhmm,
+      time: current.time,
+      label: current.label || "routine",
+      sub: `${fmtGap(left)} left · ${fmtGap(current.dur)} block`,
+      pct: Math.round((elapsed / current.dur) * 100),
+      state: "now",
+      mins: left,
+    });
+  }
+
+  // Otherwise the next one today, or the first one tomorrow if the day is done.
+  const upcoming = valid.find((r) => r.start > nowMin);
+  const target = upcoming || valid[0];
+  const gap = upcoming ? target.start - nowMin : (1440 - nowMin) + target.start;
+
+  return json({
+    ok: true, empty: false, date: dateStr, now: hhmm,
+    time: target.time,
+    label: target.label || "routine",
+    sub: `in ${fmtGap(gap)}${upcoming ? "" : " · tomorrow"} · ${fmtGap(target.dur)} block`,
+    // progress through the WAIT, so the bar fills as the routine approaches
+    pct: gap >= 180 ? 0 : Math.round((1 - gap / 180) * 100),
+    state: upcoming ? "next" : "tomorrow",
+    mins: gap,
+  });
+}
+
+function toMin(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+/** 95 -> "1h 35m", 40 -> "40m". Short enough for a 4x2 widget. */
+function fmtGap(mins) {
+  const m = Math.max(0, Math.round(mins));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
 async function runCheck(env) {
@@ -1199,6 +1289,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/companion") return await handleCompanion(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
+      if (request.method === "GET" && url.pathname === "/next") return await handleNext(request, env);
       // manual trigger for testing: GET /run-check-now
       if (request.method === "GET" && url.pathname === "/run-check-now") {
         await runCheck(env);

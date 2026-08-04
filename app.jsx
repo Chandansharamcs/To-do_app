@@ -3193,12 +3193,64 @@ function VaultNotesSection({ notes, setNotes }) {
   );
 }
 
+// The home-screen widget (KWGT) reads GET /next?id=<deviceId>. That id is
+// generated on first launch and otherwise never surfaced, so without this the
+// widget is impossible to configure. Shown on demand rather than by default:
+// it is not secret, but it is not decoration either.
+function WidgetFeedRow() {
+  const [shown, setShown] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const url = `${NOTIFY_WORKER_URL}/next?id=${getDeviceId()}`;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      sound.click();
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => { setCopied(false); timer.current = null; }, 2000);
+    } catch {
+      // clipboard is blocked in some contexts -- the URL is on screen anyway
+      setShown(true);
+    }
+  };
+
+  return (
+    <>
+      <div className="section-header"><span>WIDGET-FEED</span></div>
+      <div className="note-card widget-feed">
+        <div className="note-head">
+          <span className="note-prompt">~/next</span>
+          <span className="note-when">home screen widget</span>
+        </div>
+        {shown ? (
+          <pre className="note-body widget-url">{url}</pre>
+        ) : (
+          <pre className="note-body">tap reveal to see this device&apos;s feed URL</pre>
+        )}
+        <div className="note-actions">
+          <button className="note-btn" onClick={() => { setShown((v) => !v); sound.click(); }}>
+            {shown ? "hide" : "reveal"}
+          </button>
+          <button className="note-btn save" onClick={copy}>
+            {copied ? "copied" : "copy url"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
   return (
     <div className="task-list vault-scroll">
       <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
       <VaultProjectsSection projects={projects} setProjects={setProjects} />
       <VaultNotesSection notes={notes} setNotes={setNotes} />
+      <WidgetFeedRow />
     </div>
   );
 }
@@ -4690,7 +4742,10 @@ async function syncRoutinesToWorker(routines) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         deviceId,
-        routines: routines.map((r) => ({ id: r.id, time: r.time, label: r.label })),
+        // duration is included for the widget: it needs to know whether a
+        // routine is running *now* and how far through it you are, which the
+        // start time alone cannot tell it
+        routines: routines.map((r) => ({ id: r.id, time: r.time, label: r.label, duration: r.duration })),
       }),
     });
   } catch {}
@@ -5718,9 +5773,16 @@ function TodoApp() {
   const [notifyBusy, setNotifyBusy] = useState(false);
   const [showThemes, setShowThemes] = useState(false);
 
+  // Sync the schedule whenever it changes, regardless of the notification
+  // toggle. Push was the original reason this existed, but the home-screen
+  // widget reads the same KV entry via GET /next -- gating on notifyEnabled
+  // meant a user with notifications off had a widget frozen on whatever the
+  // schedule looked like the last time they were on.
+  //
+  // Only { id, time, label, duration } goes up. No habits, no XP, no tasks.
   useEffect(() => {
-    if (notifyEnabled) syncRoutinesToWorker(routines);
-  }, [routines, notifyEnabled]);
+    syncRoutinesToWorker(routines);
+  }, [routines]);
 
   const toggleNotify = async () => {
     if (notifyBusy) return;
@@ -8815,6 +8877,9 @@ function TodoApp() {
         .note-btn:hover { border-color: var(--accent); color: var(--accent); }
         .note-btn.save { border-color: var(--accent); color: var(--accent); }
         .note-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+        .widget-feed { border-left-color: var(--accent2); }
+        .widget-url { word-break: break-all; white-space: pre-wrap; color: var(--accent); font-size: 10px; }
 
         .note-empty {
           font-family: 'JetBrains Mono', monospace; font-size: 10px;

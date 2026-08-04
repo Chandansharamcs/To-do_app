@@ -276,7 +276,7 @@ await test("editing a note saves the new text", async () => {
   const body = page.locator(".note-body-input");
   const text = `edited-${Date.now()}`;
   await body.fill(text);
-  await page.locator(".note-btn.save").click();
+  await page.locator(".note-card.editing .note-btn.save").click();
   await page.waitForTimeout(400);
   assert.ok((await page.locator("body").innerText()).includes(text), "the edit did not save");
   await ctx.close();
