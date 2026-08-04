@@ -100,6 +100,31 @@ test("the client detects every sniffable provider", () => {
   }
 });
 
+test("the client accepts the new AQ. Gemini key format", () => {
+  // Google moved AI Studio from "Standard" keys (AIza…) to "Auth" keys
+  // (AQ.Ab…) around June 2026; unrestricted AIza keys began being rejected
+  // 2026-06-19 and the format is scheduled to stop working in September 2026.
+  // Accepting only AIza would lock new users out of Gemini entirely.
+  const got = providerOf("AQ." + "Ab" + "FAKE");
+  assert.ok(got, "an AQ. key was not detected at all");
+  assert.equal(got.id, "gemini");
+});
+
+test("the old AIza format still works", () => {
+  // they keep working until September; breaking them early would strand
+  // anyone whose existing key is still valid
+  assert.equal(providerOf(SAMPLES.gemini)?.id, "gemini");
+});
+
+test("AQ. is not mistaken for another provider", () => {
+  const w = providerFor("AQ." + "Ab" + "FAKE");
+  assert.ok(w, "worker does not route AQ. keys");
+  assert.equal(w.provider.id, "gemini");
+  assert.equal(w.provider.kind, "gemini",
+    "AQ. keys are rejected on OpenAI-compatible Bearer paths, so Gemini must " +
+    "stay on the native endpoint");
+});
+
 test("the client understands the mistral: tag", () => {
   const got = providerOf("mistral:abc123");
   assert.ok(got, "mistral: tag not detected");

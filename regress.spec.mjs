@@ -224,6 +224,112 @@ await test("the radar updates immediately when a habit is logged", async () => {
   await ctx.close();
 });
 
+// ------------------------------------------------------------------ notes ---
+
+await test("a note can be added and survives a reload", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  const input = page.locator('input[placeholder="new note..."]');
+  assert.equal(await input.count(), 1, "the notes composer is missing");
+
+  const label = `idea-${Date.now()}`;
+  await input.fill(label);
+  await input.press("Enter");
+  await page.waitForTimeout(400);
+  assert.ok((await page.locator("body").innerText()).includes(label), "note was not added");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  await gotoTab(page, "vault");
+  assert.ok((await page.locator("body").innerText()).includes(label), "note did not persist");
+  await ctx.close();
+});
+
+await test("an empty note is refused", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  const before = await page.locator(".note-card").count();
+  const input = page.locator('input[placeholder="new note..."]');
+  await input.fill("   ");
+  await input.press("Enter");
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator(".note-card").count(), before, "whitespace became a note");
+  await ctx.close();
+});
+
+await test("a note opens inline for editing, with no modal", async () => {
+  // DESIGN.md forbids modals app-wide; editing happens in place
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  await page.locator(".note-card").first().click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".note-card.editing").count(), 1, "no inline editor opened");
+  assert.equal(await page.locator('[role="dialog"], .modal').count(), 0, "a modal appeared");
+  await ctx.close();
+});
+
+await test("editing a note saves the new text", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  await page.locator(".note-card").first().click();
+  await page.waitForTimeout(300);
+  const body = page.locator(".note-body-input");
+  const text = `edited-${Date.now()}`;
+  await body.fill(text);
+  await page.locator(".note-btn.save").click();
+  await page.waitForTimeout(400);
+  assert.ok((await page.locator("body").innerText()).includes(text), "the edit did not save");
+  await ctx.close();
+});
+
+await test("notes are included in the export payload", async () => {
+  // a backup that silently drops a section is worse than no backup
+  const { ctx, page } = await open();
+  const inPayload = await page.evaluate(() =>
+    Object.keys(localStorage).some((k) => k === "tasksh.notes.v1"));
+  assert.ok(inPayload, "notes are not stored under their own key");
+  await ctx.close();
+});
+
+// ------------------------------------------------- double-tap on timeline ---
+
+await test("double-tapping a routine block marks it complete", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const block = page.locator(".timeline-block").first();
+  assert.ok(await block.count(), "no timeline blocks rendered");
+
+  const wasDone = (await block.getAttribute("class")).includes("done");
+  await block.dblclick();
+  await page.waitForTimeout(600);
+  const nowDone = (await page.locator(".timeline-block").first().getAttribute("class")).includes("done");
+  assert.notEqual(nowDone, wasDone, "double-tap did not toggle the routine");
+  await ctx.close();
+});
+
+await test("a single tap does NOT toggle a routine", async () => {
+  // the blocks are small and sit on a horizontally scrolling surface, so one
+  // stray finger must never flip a routine
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const block = page.locator(".timeline-block").first();
+  const before = (await block.getAttribute("class")).includes("done");
+  await block.click();
+  await page.waitForTimeout(700);
+  const after = (await page.locator(".timeline-block").first().getAttribute("class")).includes("done");
+  assert.equal(after, before, "a single tap toggled the routine");
+  await ctx.close();
+});
+
+await test("timeline blocks are keyboard reachable", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const block = page.locator(".timeline-block").first();
+  assert.equal(await block.getAttribute("role"), "button", "block is not a button");
+  assert.ok(await block.getAttribute("aria-label"), "block has no accessible name");
+  await ctx.close();
+});
+
 // ----------------------------------------------------------------- export ---
 
 await test("export produces valid JSON containing the data keys", async () => {

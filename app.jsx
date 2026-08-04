@@ -1676,12 +1676,61 @@ function packTimelineLanes(items) {
   return { placed, laneCount: Math.max(1, laneEnds.length) };
 }
 
-function DayTimeline({ routines, nowMinutes, doneToday = 0 }) {
+function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
   const [mounted, setMounted] = useState(false);
   const [viewportW, setViewportW] = useState(0);
   const [scrollX, setScrollX] = useState(0);
   const scrollRef = useRef(null);
   const didAutoScroll = useRef(false);
+
+  // ---- double-tap to complete -------------------------------------------
+  //
+  // Hand-rolled rather than using ondblclick, for two reasons:
+  //   * the track scrolls horizontally, so a swipe that starts on a block
+  //     must NOT count as a tap. We record the pointer position on down and
+  //     reject the tap if it moved more than a few pixels.
+  //   * ondblclick does not fire reliably on touch in every mobile browser.
+  //
+  // Single taps are deliberately inert -- the blocks are small and sit on a
+  // scrolling surface, so one stray finger should never flip a routine.
+  const tapRef = useRef({ id: null, at: 0, x: 0, y: 0, moved: false });
+  const [pulseId, setPulseId] = useState(null);
+  const pulseTimer = useRef(null);
+
+  useEffect(() => () => { if (pulseTimer.current) clearTimeout(pulseTimer.current); }, []);
+
+  const fireToggle = (id) => {
+    onToggleToday?.(id);
+    setPulseId(id);
+    if (pulseTimer.current) clearTimeout(pulseTimer.current);
+    pulseTimer.current = setTimeout(() => { setPulseId(null); pulseTimer.current = null; }, 420);
+  };
+
+  const beginTap = (e, id) => {
+    tapRef.current.x = e.clientX;
+    tapRef.current.y = e.clientY;
+    tapRef.current.moved = false;
+  };
+
+  const cancelTap = () => { tapRef.current.moved = true; };
+
+  const endTap = (e, id) => {
+    const t = tapRef.current;
+    // treat anything with real travel as a scroll, not a tap
+    if (Math.abs(e.clientX - t.x) > 8 || Math.abs(e.clientY - t.y) > 8) {
+      t.id = null;
+      return;
+    }
+    const now = Date.now();
+    if (t.id === id && now - t.at < 400) {
+      fireToggle(id);
+      t.id = null;            // consume, so a third tap starts fresh
+      t.at = 0;
+    } else {
+      t.id = id;
+      t.at = now;
+    }
+  };
 
   useEffect(() => {
     const t = requestAnimationFrame(() => setMounted(true));
@@ -1851,7 +1900,21 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0 }) {
               return (
                 <div
                   key={r.id}
-                  className={`timeline-block ${done ? "done" : ""} ${isNow ? "active" : ""}`}
+                  role={onToggleToday ? "button" : undefined}
+                  tabIndex={onToggleToday ? 0 : undefined}
+                  aria-pressed={onToggleToday ? done : undefined}
+                  aria-label={onToggleToday
+                    ? `${r.label}, ${minutesToLabel(start)}${done ? ", done" : ""}. Double-tap to toggle.`
+                    : undefined}
+                  onPointerDown={onToggleToday ? (e) => beginTap(e, r.id) : undefined}
+                  onPointerUp={onToggleToday ? (e) => endTap(e, r.id) : undefined}
+                  onPointerCancel={onToggleToday ? cancelTap : undefined}
+                  onKeyDown={onToggleToday ? (e) => {
+                    // keyboard has no "double press" convention -- Enter/Space
+                    // toggles directly, which is what a screen reader expects
+                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fireToggle(r.id); }
+                  } : undefined}
+                  className={`timeline-block ${done ? "done" : ""} ${isNow ? "active" : ""} ${onToggleToday ? "tappable" : ""} ${pulseId === r.id ? "pulse" : ""}`}
                   style={{
                     left,
                     top: TOP_PAD + lane * (LANE_H + LANE_GAP),
@@ -2331,7 +2394,8 @@ function RoutinesView({ routines, setRoutines }) {
         )}
       </div>
 
-      <DayTimeline routines={sorted} nowMinutes={nowMinutes} doneToday={doneToday} />
+      <DayTimeline routines={sorted} nowMinutes={nowMinutes} doneToday={doneToday}
+                   onToggleToday={toggleToday} />
 
       <div className={`composer ${flash ? "shake" : ""}`}>
         <input
@@ -2951,11 +3015,190 @@ function VaultProjectsSection({ projects, setProjects }) {
   );
 }
 
-function VaultView({ vaultHabits, setVaultHabits, projects, setProjects }) {
+// ---- notes -----------------------------------------------------------------
+// Somewhere to dump an idea before it evaporates. Deliberately the least
+// structured thing in the app: a title, a body, nothing else. No tags, no
+// folders, no due dates -- the moment capture has friction it stops happening.
+//
+// Styled as a terminal buffer to match the rest of the app: monospace, a
+// `~/notes/` path header, a block cursor on the empty state. Editing is inline
+// per DESIGN.md (no modals anywhere in this app).
+
+const STORAGE_KEY_NOTES = "tasksh.notes.v1";
+
+const seedNotes = [
+  {
+    id: 1,
+    title: "ideas.md",
+    body: "things to build next:\n- undo toast on delete\n- keyboard shortcuts (ctrl+k)\n- xp sparkline over time",
+    updated: Date.now(),
+  },
+];
+
+/** Relative "when", coarse on purpose -- exact timestamps are noise here. */
+function relativeWhen(ts) {
+  if (!ts) return "";
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+function NoteCard({ note, onSave, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(note.title);
+  const [body, setBody] = useState(note.body);
+  const bodyRef = useRef(null);
+
+  // Grow the textarea to fit rather than scrolling inside a small box -- a
+  // note you cannot see all of is a note you stop trusting.
+  const autoSize = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+
+  useEffect(() => { if (editing) autoSize(); }, [editing, autoSize]);
+
+  const commit = () => {
+    const t = title.trim() || "untitled";
+    onSave(note.id, { title: t, body, updated: Date.now() });
+    setEditing(false);
+    sound.click();
+  };
+
+  const cancel = () => {
+    setTitle(note.title);
+    setBody(note.body);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="note-card editing">
+        <div className="note-head">
+          <span className="note-prompt">~/notes/</span>
+          <input
+            className="note-title-input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="filename"
+            aria-label="Note title"
+            autoFocus
+          />
+        </div>
+        <textarea
+          ref={bodyRef}
+          className="note-body-input"
+          value={body}
+          onChange={(e) => { setBody(e.target.value); autoSize(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") cancel();
+            // ctrl/cmd+enter saves; plain enter must stay a newline
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commit();
+          }}
+          placeholder="type here..."
+          rows={3}
+          aria-label="Note body"
+        />
+        <div className="note-actions">
+          <button className="note-btn save" onClick={commit}>save</button>
+          <button className="note-btn" onClick={cancel}>cancel</button>
+          <button className="note-btn danger" onClick={() => onDelete(note.id)}>delete</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="note-card"
+      onClick={() => setEditing(true)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter") setEditing(true); }}
+      aria-label={`Edit note ${note.title}`}
+    >
+      <div className="note-head">
+        <span className="note-prompt">~/notes/</span>
+        <span className="note-title">{note.title}</span>
+        <span className="note-when">{relativeWhen(note.updated)}</span>
+      </div>
+      {note.body.trim()
+        ? <pre className="note-body">{note.body}</pre>
+        : <pre className="note-body empty">empty<span className="note-caret" /></pre>}
+    </div>
+  );
+}
+
+function VaultNotesSection({ notes, setNotes }) {
+  const [draft, setDraft] = useState("");
+  const [flash, triggerFlash] = useFlash();
+
+  const add = () => {
+    const text = draft.trim();
+    if (!text) { triggerFlash(); sound.error(); return; }
+    // First line becomes the title, the rest the body -- so a note can be
+    // captured in one keystroke without filling in two fields.
+    const [first, ...rest] = text.split("\n");
+    setNotes((prev) => [
+      { id: makeId(), title: first.slice(0, 40), body: rest.join("\n"), updated: Date.now() },
+      ...prev,
+    ]);
+    setDraft("");
+    sound.click();
+  };
+
+  const save = (id, patch) =>
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
+  const del = (id) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    sound.delete();
+  };
+
+  return (
+    <>
+      <div className="section-header"><span>NOTES</span></div>
+
+      <div className={`composer ${flash ? "shake" : ""}`}>
+        <input
+          type="text"
+          placeholder="new note..."
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          aria-label="New note"
+        />
+        <button onClick={add} aria-label="Add note">+</button>
+      </div>
+
+      {notes.length === 0 ? (
+        <div className="note-empty">
+          <span className="note-prompt">~/notes/</span> is empty
+          <span className="note-caret" />
+        </div>
+      ) : (
+        <div className="note-list">
+          {notes.map((n) => (
+            <NoteCard key={n.id} note={n} onSave={save} onDelete={del} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
   return (
     <div className="task-list vault-scroll">
       <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
       <VaultProjectsSection projects={projects} setProjects={setProjects} />
+      <VaultNotesSection notes={notes} setNotes={setNotes} />
     </div>
   );
 }
@@ -4471,7 +4714,10 @@ async function syncRoutinesToWorker(routines) {
 // `free` drives the sign-up list on the key gate; OpenAI is supported but is
 // not free, so it's detected without being advertised.
 const KEY_PROVIDERS = [
-  { id: "gemini",     label: "Gemini",     test: (k) => /^AIza/.test(k),
+  // AIza… is the old "Standard" key; AQ.Ab… is the "Auth" key AI Studio has
+  // issued since ~June 2026. AIza is scheduled to stop working in September
+  // 2026, so both must be accepted -- see the worker's PROVIDERS table.
+  { id: "gemini",     label: "Gemini",     test: (k) => /^(AIza|AQ\.)/.test(k),
     where: "aistudio.google.com/apikey", free: "~1000 req/day", shared: true },
   { id: "groq",       label: "Groq",       test: (k) => /^gsk_/.test(k),
     where: "console.groq.com", free: "~1000 req/day, fastest" },
@@ -5084,7 +5330,7 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
           type="password"
           autoComplete="off"
           spellCheck={false}
-          placeholder="AIza… · gsk_… · csk-… · nvapi-…"
+          placeholder="AQ.… · AIza… · gsk_… · csk-… · nvapi-…"
           value={key}
           onChange={(e) => setKey(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
@@ -5368,6 +5614,7 @@ function TodoApp() {
   const [routines, setRoutines] = useState(() => loadStored(STORAGE_KEY_ROUTINES, seedRoutines));
   const [vaultHabits, setVaultHabits] = useState(() => loadStored(STORAGE_KEY_VAULT_HABITS, seedVaultHabits));
   const [projects, setProjects] = useState(() => loadStored(STORAGE_KEY_PROJECTS, seedProjects));
+  const [notes, setNotes] = useState(() => loadStored(STORAGE_KEY_NOTES, seedNotes));
   const [goodHabits, setGoodHabits] = useState(() => loadStored(STORAGE_KEY_GOOD_HABITS, seedGoodHabits));
   const [badHabits, setBadHabits] = useState(() => loadStored(STORAGE_KEY_BAD_HABITS, seedBadHabits));
   const [rewards, setRewards] = useState(() => loadStored(STORAGE_KEY_REWARDS, seedRewards));
@@ -5514,7 +5761,7 @@ function TodoApp() {
         app: "tasks.sh",
         version: 1,
         exportedAt: new Date().toISOString(),
-        data: { tasks, routines, vaultHabits, projects, goodHabits, badHabits, rewards },
+        data: { tasks, routines, vaultHabits, projects, notes, goodHabits, badHabits, rewards },
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -5552,6 +5799,7 @@ function TodoApp() {
           routines: setRoutines,
           vaultHabits: setVaultHabits,
           projects: setProjects,
+          notes: setNotes,
           goodHabits: setGoodHabits,
           badHabits: setBadHabits,
           rewards: setRewards,
@@ -5623,6 +5871,10 @@ function TodoApp() {
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(projects)); } catch {}
   }, [projects]);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(notes)); } catch {}
+  }, [notes]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_GOOD_HABITS, JSON.stringify(goodHabits)); } catch {}
@@ -6781,6 +7033,25 @@ function TodoApp() {
         .timeline-block.active {
           outline: 1.5px solid rgba(255,255,255,0.55);
           outline-offset: -1.5px;
+        }
+
+        /* double-tap target: the block itself must not swallow the horizontal
+           scroll gesture, so only vertical panning is claimed */
+        .timeline-block.tappable { cursor: pointer; touch-action: pan-x; }
+        .timeline-block.tappable:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 1px;
+        }
+
+        /* confirmation that a double-tap registered */
+        .timeline-block.pulse { animation: blockPulse 420ms ease; }
+        @keyframes blockPulse {
+          0%   { transform: scale(1); filter: brightness(1); }
+          35%  { transform: scale(1.06); filter: brightness(1.45); }
+          100% { transform: scale(1); filter: brightness(1); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .timeline-block.pulse { animation: none; }
         }
 
         .timeline-block-label {
@@ -8475,6 +8746,81 @@ function TodoApp() {
         .muted { color: #4B5563; }
 
         /* ---- vault: habit cards ---- */
+        /* ---- notes: a terminal buffer, not a card ---- */
+        .note-list { display: flex; flex-direction: column; gap: 10px; padding: 0 18px 8px; }
+
+        .note-card {
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-left: 2px solid var(--accent);
+          border-radius: 6px;
+          padding: 10px 12px;
+          cursor: pointer;
+          transition: border-color 140ms ease;
+        }
+        .note-card:hover { border-color: var(--accent); }
+        .note-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .note-card.editing { cursor: default; border-left-color: var(--accent2); }
+
+        .note-head {
+          display: flex; align-items: baseline; gap: 6px;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          margin-bottom: 6px;
+        }
+        .note-prompt { color: var(--accent); opacity: 0.75; }
+        .note-title { color: var(--text); font-weight: 600; }
+        .note-when { margin-left: auto; color: var(--muted); font-size: 9px; }
+
+        /* pre, not div: a note is text the user typed, and their line breaks
+           and indentation are part of what they meant */
+        .note-body {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; line-height: 1.65; color: var(--muted);
+          white-space: pre-wrap; word-break: break-word;
+          margin: 0; max-height: 220px; overflow: hidden;
+        }
+        .note-body.empty { opacity: 0.5; }
+
+        .note-caret {
+          display: inline-block; width: 6px; height: 11px;
+          background: var(--accent); margin-left: 3px;
+          vertical-align: text-bottom; animation: noteBlink 1.1s steps(1) infinite;
+        }
+        @keyframes noteBlink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) {
+          .note-caret { animation: none; }
+        }
+
+        .note-title-input, .note-body-input {
+          background: var(--bg); border: 1px solid var(--border);
+          border-radius: 4px; color: var(--text);
+          font-family: 'JetBrains Mono', monospace;
+          outline: none; width: 100%;
+        }
+        .note-title-input { font-size: 10px; padding: 3px 6px; font-weight: 600; }
+        .note-body-input {
+          font-size: 11px; line-height: 1.65; padding: 8px;
+          resize: none; overflow: hidden; min-height: 60px;
+        }
+        .note-title-input:focus, .note-body-input:focus { border-color: var(--accent); }
+
+        .note-actions { display: flex; gap: 6px; margin-top: 8px; }
+        .note-btn {
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 4px; color: var(--muted); cursor: pointer;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.06em; padding: 4px 10px;
+          transition: all 140ms ease;
+        }
+        .note-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .note-btn.save { border-color: var(--accent); color: var(--accent); }
+        .note-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+        .note-empty {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          color: var(--muted); padding: 10px 18px 14px;
+        }
+
         .vault-card {
           background: var(--panel);
           border: 1px solid var(--border);
@@ -9470,6 +9816,8 @@ function TodoApp() {
             setVaultHabits={setVaultHabits}
             projects={projects}
             setProjects={setProjects}
+            notes={notes}
+            setNotes={setNotes}
           />
         ) : tab === "quest" ? (
           <QuestView

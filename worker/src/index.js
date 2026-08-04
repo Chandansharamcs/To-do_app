@@ -508,7 +508,19 @@ async function handlePet(request, env) {
 
 const PROVIDERS = {
   gemini: {
-    id: "gemini", label: "Gemini", test: (k) => /^AIza/.test(k),
+    // Two key formats, both Google:
+    //   AIza…    "Standard" / traffic key -- the original, being retired
+    //   AQ.Ab…   "Auth" key -- what AI Studio issues now, since ~June 2026
+    //
+    // Unrestricted AIza keys started being rejected 2026-06-19 and the format
+    // is scheduled to stop working entirely in September 2026, so accepting
+    // only AIza would have locked new users out of Gemini for good.
+    //
+    // AQ. keys work on the NATIVE endpoint (?key= query param), which is what
+    // geminiUrl() below already uses. They are rejected on OpenAI-compatible
+    // Bearer paths, so Gemini must keep kind:"gemini" and must never be
+    // routed through callOpenAICompatible().
+    id: "gemini", label: "Gemini", test: (k) => /^(AIza|AQ\.)/.test(k),
     kind: "gemini", signup: "aistudio.google.com/apikey",
     resets: "pacific",
   },
@@ -1112,7 +1124,7 @@ async function handleAIVerify(request, env) {
   const found = providerFor(raw);
   if (!found) {
     return json({ ok: false, message:
-      "Unrecognised key. Expected AIza… (Gemini), gsk_… (Groq), csk-… (Cerebras), " +
+      "Unrecognised key. Expected AQ.… or AIza… (Gemini), gsk_… (Groq), csk-… (Cerebras), " +
       "nvapi-… (NVIDIA) or sk-or-… (OpenRouter). " +
       "For a Mistral key, prefix it: mistral:YOUR_KEY" }, 400);
   }
