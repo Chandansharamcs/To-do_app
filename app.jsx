@@ -4672,7 +4672,7 @@ function EvolutionOverlay({ from, to, petName, onDone }) {
 //    generated with (they're a matched keypair — the private half lives only
 //    in the worker's secrets, never in this client bundle).
 const NOTIFY_WORKER_URL = "https://tasksh-notify.techcraftor.workers.dev";
-const VAPID_PUBLIC_KEY = "BO0VGBlyG--zbIASY0_ws98Y9V25Sh9QjS1OwR8eMV9hhgGo50N38rAXuJ-umahm5ORhmQcpG_ibLEFOOVRI4_Y";
+const VAPID_PUBLIC_KEY = "BO6-Y8l-bh_WOLy4A7zYXX_8cAPCYiY2gzlkn7kuWqMlvK921aU5IebajkHiQlRuQaoOQxSjfIAFj--bO_Vvyi0";
 
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
