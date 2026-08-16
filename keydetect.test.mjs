@@ -185,11 +185,40 @@ test("no provider entry leaks a full key into its label", () => {
   }
 });
 
-test("the AI key is never added to the export payload", () => {
-  // R12: the key lives only on the device. Backups get shared between people.
-  const m = APP.match(/const payload = \{[\s\S]{0,600}?\}/);
-  assert.ok(m, "could not find the export payload");
-  assert.ok(!/aikey|apiKey|aiKeys/i.test(m[0]), "export payload mentions an AI key");
+test("the default export excludes AI keys", () => {
+  // R12 relaxed in v34 at the user's explicit request: keys CAN be exported,
+  // but only through a separate opt-in button. The default path -- the
+  // titlebar icon, the one people actually tap -- must still omit them,
+  // because that is the file that gets shared between devices and people.
+  assert.ok(/const SENSITIVE_KEYS = \[STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS\]/.test(APP),
+    "SENSITIVE_KEYS list is missing");
+  assert.ok(/if \(!full && SENSITIVE_KEYS\.includes\(k\)\) continue;/.test(APP),
+    "the export no longer skips sensitive keys when full=false");
+  assert.ok(/onClick=\{\(\) => exportData\(false\)\}/.test(APP),
+    "the titlebar export button must call exportData(false)");
+});
+
+test("including keys requires an explicit opt-in", () => {
+  // one tap must not be enough -- the button arms first, then confirms
+  assert.ok(/export with API keys/.test(APP), "no opt-in export button");
+  assert.ok(/yes — include my API keys/.test(APP), "no confirmation step");
+});
+
+test("the backup sweeps localStorage rather than naming keys", () => {
+  // THE v33 BUG: export listed 8 keys by hand and silently dropped the other
+  // 15 -- edited sub-area tags, achievements, wallet, pet, links, themes.
+  // A list that must be updated whenever a feature adds a key will be wrong.
+  assert.ok(/localStorage\.key\(i\)/.test(APP), "export does not iterate localStorage");
+  assert.ok(/k\.startsWith\("tasksh\."\)/.test(APP), "export does not filter by prefix");
+  assert.ok(/parsed\.store/.test(APP), "import cannot restore a whole-store backup");
+});
+
+test("deviceId is never exported or restored", () => {
+  // cloning it would give two phones one push subscription and one widget feed
+  const exp = APP.slice(APP.indexOf("const exportData"), APP.indexOf("const triggerImport"));
+  assert.ok(/k === STORAGE_KEY_DEVICE_ID\) continue/.test(exp), "export copies the device id");
+  const imp = APP.slice(APP.indexOf("const handleImportFile"), APP.indexOf("const handleImportFile") + 3000);
+  assert.ok(/STORAGE_KEY_DEVICE_ID\) continue/.test(imp), "import overwrites the device id");
 });
 
 // ------------------------------------------------------------- XP + levels --

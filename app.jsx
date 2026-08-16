@@ -3244,13 +3244,56 @@ function WidgetFeedRow() {
   );
 }
 
-function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
+// Full-backup row. The plain titlebar export deliberately omits AI keys;
+// this is the opt-in variant that includes them, and it says so before you
+// tap it rather than after. Same reasoning as the key gate: a file that
+// quietly contains credentials is how credentials end up somewhere public.
+function BackupRow({ onExport }) {
+  const [armed, setArmed] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const arm = () => {
+    setArmed(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setArmed(false); timer.current = null; }, 5000);
+  };
+
+  return (
+    <>
+      <div className="section-header"><span>BACKUP</span></div>
+      <div className="note-card widget-feed">
+        <div className="note-head">
+          <span className="note-prompt">~/backup</span>
+          <span className="note-when">everything, one file</span>
+        </div>
+        <pre className="note-body">
+          the icon in the title bar saves tasks, routines, habits, notes, tags,
+          achievements, pet and themes — but not your API keys.
+        </pre>
+        <div className="note-actions">
+          {armed ? (
+            <button className="note-btn danger" onClick={() => { onExport(true); setArmed(false); }}>
+              yes — include my API keys
+            </button>
+          ) : (
+            <button className="note-btn" onClick={arm}>export with API keys</button>
+          )}
+          <button className="note-btn save" onClick={() => onExport(false)}>export</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes, onExport }) {
   return (
     <div className="task-list vault-scroll">
       <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
       <VaultProjectsSection projects={projects} setProjects={setProjects} />
       <VaultNotesSection notes={notes} setNotes={setNotes} />
       <WidgetFeedRow />
+      <BackupRow onExport={onExport} />
     </div>
   );
 }
@@ -5817,25 +5860,57 @@ function TodoApp() {
     return () => clearTimeout(t);
   }, [dataMsg]);
 
-  const exportData = () => {
+  // BACKUP (v34)
+  //
+  // Sweeps every `tasksh.*` key out of localStorage rather than listing eight
+  // of them by hand. The old export named its keys explicitly and silently
+  // dropped the other fifteen -- edited sub-area tags, achievements, wallet,
+  // pet, links, themes, sound. You only discovered that on restore, which is
+  // the worst possible moment. A list that has to be updated every time a
+  // feature adds a key is a list that will be wrong.
+  //
+  // `full` decides whether AI keys ride along. Default export excludes them
+  // (AGENTS.md R12: backups get shared between devices and people). The
+  // "with keys" variant is opt-in and says so on the button, because a file
+  // that quietly contains credentials is how credentials leak.
+  const SENSITIVE_KEYS = [STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS];
+
+  const exportData = (full = false) => {
     try {
+      const store = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith("tasksh.")) continue;
+        // deviceId is per-install: restoring it onto a second device would
+        // make both phones share one push subscription and one widget feed
+        if (k === STORAGE_KEY_DEVICE_ID) continue;
+        if (!full && SENSITIVE_KEYS.includes(k)) continue;
+        store[k] = localStorage.getItem(k);
+      }
+
       const payload = {
         app: "tasks.sh",
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
+        containsKeys: full,
+        // `store` is the real backup: raw key -> raw JSON string.
+        store,
+        // `data` is kept so v2 files still restore in an older build, and so
+        // the file stays readable by eye.
         data: { tasks, routines, vaultHabits, projects, notes, goodHabits, badHabits, rewards },
       };
+
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const stamp = getISTDateString(0);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `tasks-sh-backup-${stamp}.json`;
+      a.download = `tasks-sh-backup-${stamp}${full ? "-with-keys" : ""}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showDataMsg("ok", "backup exported");
+      showDataMsg("ok", full ? "backup exported — contains your API keys" : "backup exported");
     } catch {
       showDataMsg("err", "export failed");
     }
@@ -5853,7 +5928,26 @@ function TodoApp() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result));
-        const data = parsed && typeof parsed === "object" && parsed.data ? parsed.data : parsed;
+        if (!parsed || typeof parsed !== "object") throw new Error("bad shape");
+
+        // v2: whole-store restore. Write every key back, then reload so each
+        // hook re-reads its own slice. Reloading is deliberate -- half these
+        // keys are only read in a useState initialiser, so setting them
+        // without a reload would leave the UI showing stale values.
+        if (parsed.store && typeof parsed.store === "object") {
+          const keys = Object.keys(parsed.store).filter((k) => k.startsWith("tasksh."));
+          if (!keys.length) throw new Error("empty store");
+          for (const k of keys) {
+            if (k === STORAGE_KEY_DEVICE_ID) continue;   // never clone a device id
+            try { localStorage.setItem(k, parsed.store[k]); } catch {}
+          }
+          showDataMsg("ok", `restored ${keys.length} keys — reloading`);
+          setTimeout(() => window.location.reload(), 700);
+          return;
+        }
+
+        // v1 fallback: the old eight-array format.
+        const data = parsed.data ? parsed.data : parsed;
         if (!data || typeof data !== "object") throw new Error("bad shape");
 
         const setters = {
@@ -9713,7 +9807,7 @@ function TodoApp() {
                 <path d="M12 16V4M7 9l5-5 5 5M4 20h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <button className="titlebar-icon-btn" onClick={exportData} aria-label="Export backup" title="Export backup">
+            <button className="titlebar-icon-btn" onClick={() => exportData(false)} aria-label="Export backup" title="Export backup (no API keys)">
               <svg viewBox="0 0 24 24" width="14" height="14">
                 <path d="M12 4v12M7 11l5 5 5-5M4 20h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
@@ -9883,6 +9977,7 @@ function TodoApp() {
             setProjects={setProjects}
             notes={notes}
             setNotes={setNotes}
+            onExport={exportData}
           />
         ) : tab === "quest" ? (
           <QuestView

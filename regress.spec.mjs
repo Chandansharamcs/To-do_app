@@ -346,18 +346,66 @@ await test("export produces valid JSON containing the data keys", async () => {
   await ctx.close();
 });
 
-await test("the AI key is never written into the export payload", async () => {
-  // R12 — backups get shared between devices and people
+await test("a backup round-trips every key, not just eight", async () => {
+  // THE v33 BUG: edited sub-area tags vanished on restore because the export
+  // named its keys by hand. Now it sweeps localStorage.
+  const { ctx, page } = await open();
+  await page.evaluate(() => {
+    localStorage.setItem("tasksh.subareas.v1", JSON.stringify([{ key: "custom", area: "work", label: "MyTag" }]));
+    localStorage.setItem("tasksh.wallet.v1", "999");
+    localStorage.setItem("tasksh.theme.v1", "amber");
+  });
+
+  // reproduce what exportData(false) collects
+  const store = await page.evaluate(() => {
+    const out = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("tasksh.")) continue;
+      if (k === "tasksh.deviceid.v1") continue;
+      if (k === "tasksh.aikey.v1" || k === "tasksh.aikeys.v1") continue;
+      out[k] = localStorage.getItem(k);
+    }
+    return out;
+  });
+
+  for (const need of ["tasksh.subareas.v1", "tasksh.wallet.v1", "tasksh.theme.v1"]) {
+    assert.ok(store[need], `${need} missing from the backup`);
+  }
+  assert.equal(store["tasksh.wallet.v1"], "999");
+  assert.ok(store["tasksh.subareas.v1"].includes("MyTag"), "custom tag not captured");
+  await ctx.close();
+});
+
+await test("the default backup still leaves AI keys out", async () => {
+  // keys are opt-in as of v34; the default file must stay shareable
   const { ctx, page } = await open();
   await page.evaluate(() => localStorage.setItem("tasksh.aikey.v1", "gsk_SECRETVALUE123"));
-  const dump = await page.evaluate(() => {
+  const store = await page.evaluate(() => {
     const out = {};
-    for (const k of Object.keys(localStorage)) {
-      if (k.startsWith("tasksh.") && !/aikey/i.test(k)) out[k] = localStorage.getItem(k);
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("tasksh.")) continue;
+      if (k === "tasksh.aikey.v1" || k === "tasksh.aikeys.v1") continue;
+      out[k] = localStorage.getItem(k);
     }
     return JSON.stringify(out);
   });
-  assert.ok(!dump.includes("gsk_SECRETVALUE123"), "an AI key leaked into exportable data");
+  assert.ok(!store.includes("gsk_SECRETVALUE123"), "an AI key leaked into the default backup");
+  await ctx.close();
+});
+
+await test("the opt-in export needs two taps", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  const arm = page.locator("button").filter({ hasText: /export with API keys/i });
+  assert.equal(await arm.count(), 1, "no opt-in export button in the vault");
+  assert.equal(await page.locator("button").filter({ hasText: /yes — include/i }).count(), 0,
+    "the confirm button is visible before arming");
+  await arm.click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator("button").filter({ hasText: /yes — include/i }).count(), 1,
+    "arming did not reveal a confirmation");
   await ctx.close();
 });
 
