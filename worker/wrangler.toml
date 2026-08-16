@@ -14,6 +14,6 @@ binding = "TASKSH_KV"
 id = "dfcdeba05c884f529c6d4b579630eba0"
 
 [vars]
-VAPID_CONTACT = "mailto:youremail@example.com"
+VAPID_CONTACT = "mailto:ghanshamsharma4@gmail.com"
 # VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are set as secrets, not here —
 # see README.md. Never commit the private key to git.
