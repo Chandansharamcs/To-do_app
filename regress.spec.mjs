@@ -395,17 +395,122 @@ await test("the default backup still leaves AI keys out", async () => {
   await ctx.close();
 });
 
-await test("the opt-in export needs two taps", async () => {
+await test("exporting opens a chooser rather than silently saving", async () => {
+  // v35 moved the choice out of the Vault and onto the export button itself:
+  // a file that quietly contains credentials is how credentials leak, and a
+  // panel nobody scrolls to is not a warning.
   const { ctx, page } = await open();
-  await gotoTab(page, "vault");
-  const arm = page.locator("button").filter({ hasText: /export with API keys/i });
-  assert.equal(await arm.count(), 1, "no opt-in export button in the vault");
-  assert.equal(await page.locator("button").filter({ hasText: /yes — include/i }).count(), 0,
-    "the confirm button is visible before arming");
-  await arm.click();
+  const btn = page.locator('button[aria-label="Export backup"]');
+  assert.equal(await btn.count(), 1, "no export button in the titlebar");
+
+  assert.equal(await page.locator(".backup-ask").count(), 0, "popup visible before tapping");
+  await btn.click();
+  await page.waitForTimeout(350);
+
+  const ask = page.locator(".backup-ask");
+  assert.equal(await ask.count(), 1, "export did not open the chooser");
+  const text = await ask.innerText();
+  assert.ok(/credential/i.test(text), "no warning about what including keys means");
+  assert.equal(await ask.locator("button").filter({ hasText: /^export$/i }).count(), 1, "no plain export choice");
+  assert.equal(await ask.locator("button").filter({ hasText: /with API keys/i }).count(), 1, "no keys choice");
+  await ctx.close();
+});
+
+await test("the chooser can be dismissed without exporting", async () => {
+  const { ctx, page } = await open();
+  await page.locator('button[aria-label="Export backup"]').click();
   await page.waitForTimeout(300);
-  assert.equal(await page.locator("button").filter({ hasText: /yes — include/i }).count(), 1,
-    "arming did not reveal a confirmation");
+  await page.locator(".backup-ask button").filter({ hasText: /cancel/i }).click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".backup-ask").count(), 0, "cancel did not close the chooser");
+  await ctx.close();
+});
+
+// -------------------------------------------------- merged habits (v35) ---
+
+await test("there is one habits section, not good and bad", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const body = await page.locator("body").innerText();
+  assert.ok(!/BAD-HABITS/.test(body), "a separate bad-habits section still exists");
+  assert.ok(!/GOOD-HABITS/.test(body), "still says GOOD-HABITS");
+  assert.ok(/HABITS/.test(body), "no habits section at all");
+  await ctx.close();
+});
+
+await test("every habit offers both a done and a slip mark", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const cards = await page.locator(".quest-habit-card").count();
+  assert.ok(cards > 0, "no habit cards rendered");
+  assert.equal(await page.locator(".quest-check").count(), cards, "not every habit has a done button");
+  assert.equal(await page.locator(".quest-slip").count(), cards, "not every habit has a slip button");
+  await ctx.close();
+});
+
+await test("slip lowers XP, and re-completing restores it", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const readXP = async () =>
+    Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
+
+  const before = await readXP();
+
+  // ✗ on a completed day switches done -> slip, so the completion is lost
+  await page.locator(".quest-slip").first().click();
+  await page.waitForTimeout(900);
+  const afterSlip = await readXP();
+  assert.ok(afterSlip < before, `slip did not lower XP: ${before} -> ${afterSlip}`);
+
+  // ✗ again clears the slip. The day is now BLANK, not done -- undoing a slip
+  // is not the same as re-completing, and the XP must not silently come back.
+  await page.locator(".quest-slip").first().click();
+  await page.waitForTimeout(900);
+  assert.equal(await readXP(), afterSlip, "clearing a slip wrongly restored the completion");
+
+  // ✓ re-completes it, and only now does the XP return
+  await page.locator(".quest-check").first().click();
+  await page.waitForTimeout(900);
+  assert.equal(await readXP(), before, "re-completing did not restore XP");
+  await ctx.close();
+});
+
+await test("marking one habit never marks another", async () => {
+  // THE MERGE BUG: goodHabits and badHabits numbered ids independently, so
+  // after merging two habits shared id 1 and a single click hit both.
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+
+  const ids = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => h.id));
+  assert.equal(new Set(ids).size, ids.length, `duplicate habit ids: ${ids}`);
+
+  const marksBefore = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")
+      .map((h) => (h.history || []).length));
+
+  await page.locator(".quest-slip").first().click();
+  await page.waitForTimeout(900);
+
+  const marksAfter = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")
+      .map((h) => (h.history || []).length));
+
+  const changed = marksAfter.filter((n, i) => n !== marksBefore[i]).length;
+  assert.ok(changed <= 1, `one click changed ${changed} habits`);
+  await ctx.close();
+});
+
+await test("XP never goes negative even when slips outweigh everything", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  for (let i = 0; i < 4; i++) {
+    const slips = page.locator(".quest-slip");
+    if (i < await slips.count()) { await slips.nth(i).click(); await page.waitForTimeout(250); }
+  }
+  await page.waitForTimeout(500);
+  const xp = Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
+  assert.ok(xp >= 0, `XP went negative: ${xp}`);
   await ctx.close();
 });
 

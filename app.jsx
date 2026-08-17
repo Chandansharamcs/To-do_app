@@ -221,7 +221,7 @@ function describeRef(ref, data) {
   const { kind, id } = parseRef(ref);
   const list =
     kind === "routine" ? data.routines :
-    kind === "good"    ? data.goodHabits :
+    kind === "good"    ? data.habits :
     kind === "vault"   ? data.vaultHabits : null;
   if (!list) return null;
   const item = list.find((x) => x.id === id);
@@ -240,9 +240,23 @@ function propagateCompletion(ref, done, links, setters, dateStr) {
   const targets = linkedTo(links, ref);
   if (!targets.length) return 0;
 
+  // Habits use the v35 { d, t } shape while routines and vault habits still
+  // store plain date strings. Writing a bare string into a habit's history
+  // silently destroyed its done/slip marks -- caught by the browser suite when
+  // undoing a slip failed to restore XP. Detect the shape and match it.
   const apply = (list, id) => list.map((it) => {
     if (it.id !== id) return it;
     const hist = it.history || [];
+    const rich = hist.some((e) => e && typeof e === "object");
+
+    if (rich || it.penalty !== undefined) {
+      const entries = normaliseHistory(hist);
+      const has = entries.some((e) => e.d === dateStr && e.t === "done");
+      if (done === has) return it;                     // already right
+      const rest = entries.filter((e) => e.d !== dateStr);
+      return { ...it, history: done ? [...rest, { d: dateStr, t: "done" }] : rest };
+    }
+
     const has = hist.includes(dateStr);
     if (done === has) return it;                       // already right
     return {
@@ -260,8 +274,8 @@ function propagateCompletion(ref, done, links, setters, dateStr) {
   if (byKind.routine.length && setters.setRoutines) {
     setters.setRoutines((prev) => byKind.routine.reduce((acc, id) => apply(acc, id), prev));
   }
-  if (byKind.good.length && setters.setGoodHabits) {
-    setters.setGoodHabits((prev) => byKind.good.reduce((acc, id) => apply(acc, id), prev));
+  if (byKind.good.length && setters.setHabits) {
+    setters.setHabits((prev) => byKind.good.reduce((acc, id) => apply(acc, id), prev));
   }
   if (byKind.vault.length && setters.setVaultHabits) {
     setters.setVaultHabits((prev) => byKind.vault.reduce((acc, id) => apply(acc, id), prev));
@@ -3244,56 +3258,13 @@ function WidgetFeedRow() {
   );
 }
 
-// Full-backup row. The plain titlebar export deliberately omits AI keys;
-// this is the opt-in variant that includes them, and it says so before you
-// tap it rather than after. Same reasoning as the key gate: a file that
-// quietly contains credentials is how credentials end up somewhere public.
-function BackupRow({ onExport }) {
-  const [armed, setArmed] = useState(false);
-  const timer = useRef(null);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-
-  const arm = () => {
-    setArmed(true);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { setArmed(false); timer.current = null; }, 5000);
-  };
-
-  return (
-    <>
-      <div className="section-header"><span>BACKUP</span></div>
-      <div className="note-card widget-feed">
-        <div className="note-head">
-          <span className="note-prompt">~/backup</span>
-          <span className="note-when">everything, one file</span>
-        </div>
-        <pre className="note-body">
-          the icon in the title bar saves tasks, routines, habits, notes, tags,
-          achievements, pet and themes — but not your API keys.
-        </pre>
-        <div className="note-actions">
-          {armed ? (
-            <button className="note-btn danger" onClick={() => { onExport(true); setArmed(false); }}>
-              yes — include my API keys
-            </button>
-          ) : (
-            <button className="note-btn" onClick={arm}>export with API keys</button>
-          )}
-          <button className="note-btn save" onClick={() => onExport(false)}>export</button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes, onExport }) {
+function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
   return (
     <div className="task-list vault-scroll">
       <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
       <VaultProjectsSection projects={projects} setProjects={setProjects} />
       <VaultNotesSection notes={notes} setNotes={setNotes} />
       <WidgetFeedRow />
-      <BackupRow onExport={onExport} />
     </div>
   );
 }
@@ -3350,14 +3321,117 @@ function subForHabit(h) {
   return list && list.length ? list[0].key : null;
 }
 
-function computeSubXP(subKey, goodHabits, badHabits) {
-  const earned = goodHabits
-    .filter((h) => subForHabit(h) === subKey)
-    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lost = badHabits
-    .filter((h) => subForHabit(h) === subKey)
-    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  return earned - lost;
+// ---- habit history (v35) --------------------------------------------------
+//
+// v34 and earlier kept two lists: goodHabits (history added XP) and badHabits
+// (history subtracted it). A date string alone carried the sign, because the
+// list it lived in decided what it meant.
+//
+// v35 merges them. One habit can now be COMPLETED or SLIPPED on the same day,
+// so a bare date can no longer say which, and each entry becomes
+//
+//     { d: "2026-08-15", t: "done" | "slip" }
+//
+// Old string entries are still read as "done", so a v34 backup restores
+// without rewriting anything. normaliseHistory() is the single place that
+// knows about both shapes -- nothing else should ever branch on it.
+
+function normaliseHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((e) => (typeof e === "string" ? { d: e, t: "done" } : e))
+    .filter((e) => e && typeof e.d === "string");
+}
+
+function countHist(h, type) {
+  return normaliseHistory(h.history).filter((e) => e.t === type).length;
+}
+
+/** Reward per completion. Defaults preserve v34 habits unchanged. */
+function habitXP(h) { return Math.max(0, +h.xp || 0); }
+
+/** Cost per slip. Independent of the reward on purpose: skipping a workout
+ *  should be allowed to cost less than doing it earns. */
+function habitPenalty(h) { return Math.max(0, +h.penalty || 0); }
+
+/** Net XP a single habit contributes. The one place the sign is decided. */
+function habitNet(h) {
+  return habitXP(h) * countHist(h, "done") - habitPenalty(h) * countHist(h, "slip");
+}
+
+function habitDoneOn(h, date) {
+  return normaliseHistory(h.history).some((e) => e.d === date && e.t === "done");
+}
+function habitSlipOn(h, date) {
+  return normaliseHistory(h.history).some((e) => e.d === date && e.t === "slip");
+}
+
+/**
+ * Records or clears one mark. A day is either done, slipped, or neither --
+ * "I did it and also didn't" is not a state the XP maths can price.
+ *
+ * Tapping the mark that is already set CLEARS it. Tapping the other one
+ * REPLACES it. The distinction matters: an earlier version dropped the day
+ * entirely and then re-added, so slipping a completed day and immediately
+ * undoing left the day blank rather than done -- a silent loss of a
+ * completion, and of a streak.
+ */
+function markHabit(h, date, type) {
+  const hist = normaliseHistory(h.history);
+  const cur = hist.find((e) => e.d === date);
+  const rest = hist.filter((e) => e.d !== date);
+  // same mark twice = clear it; different mark = switch to it
+  if (cur && cur.t === type) return { ...h, history: rest.slice(-400) };
+  return { ...h, history: [...rest, { d: date, t: type }].slice(-400) };
+}
+
+/**
+ * Folds a v34 save into the merged shape.
+ *
+ * A bad habit becomes a habit with NO reward and a penalty equal to its old
+ * cost, and every history entry becomes a slip. That is deliberately the
+ * arithmetic identity of the old model: earned - lost is unchanged, so nobody
+ * gains or loses a level by upgrading. The user can add a reward afterwards
+ * if they want "avoided junk food" to be worth something.
+ */
+function mergeHabitLists(good, bad) {
+  const g = (Array.isArray(good) ? good : []).map((h) => ({
+    ...h,
+    xp: Math.max(0, +h.xp || 0),
+    penalty: Math.max(0, +h.penalty || 0),
+    history: normaliseHistory(h.history),
+  }));
+
+  // The two lists numbered their ids INDEPENDENTLY -- both seed sets start at
+  // 1, and so do most real saves. Concatenating them produced two habits with
+  // id 1, and every lookup is by id, so marking "Deep Work" also marked "High
+  // Screen Time". Re-id any collision; nothing references habit ids across
+  // saves except links, which are remapped below.
+  const used = new Set(g.map((h) => h.id));
+  const remap = new Map();
+
+  const b = (Array.isArray(bad) ? bad : []).map((h) => {
+    let id = h.id;
+    if (used.has(id)) {
+      id = makeId();
+      remap.set(h.id, id);
+    }
+    used.add(id);
+    return {
+      ...h,
+      id,
+      xp: Math.max(0, +h.xp2 || 0),
+      penalty: Math.max(0, +h.xp || 0),
+      history: normaliseHistory(h.history).map((e) => ({ d: e.d, t: "slip" })),
+      wasBad: true,
+    };
+  });
+
+  return [...g, ...b];
+}
+
+function computeSubXP(subKey, habits) {
+  return habits.filter((h) => subForHabit(h) === subKey).reduce((s, h) => s + habitNet(h), 0);
 }
 
 // ---- user-editable sub-tags (v26) ----------------------------------------
@@ -3387,14 +3461,10 @@ function subForHabitIn(list, h) {
   return first ? first.key : null;
 }
 
-function computeSubXPIn(list, subKey, goodHabits, badHabits) {
-  const earned = goodHabits
+function computeSubXPIn(list, subKey, habits) {
+  return (habits || [])
     .filter((h) => subForHabitIn(list, h) === subKey)
-    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lost = badHabits
-    .filter((h) => subForHabitIn(list, h) === subKey)
-    .reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  return earned - lost;
+    .reduce((s, h) => s + habitNet(h), 0);
 }
 
 function useSubAreas() {
@@ -3476,27 +3546,22 @@ const LEVEL_TITLES = [
 // negative. Before v27 it did both (155 earned - 40 lost - 150 spent = -35 XP
 // and a drop from level 2 to level 1), which punished the user for using the
 // feature. Bad habits still count against you; that's the point of them.
-function computeTotalXP(goodHabits, badHabits) {
-  const earned = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lost = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  return Math.max(0, earned - lost);
+function computeTotalXP(habits) {
+  return Math.max(0, (habits || []).reduce((s, h) => s + habitNet(h), 0));
 }
 
 // SPENDABLE BALANCE -- what rewards actually cost against. This is the number
 // that goes down when you claim something.
-function computeSpendableXP(goodHabits, badHabits, rewards) {
-  const earned = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lost = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const spent = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
+function computeSpendableXP(habits, rewards) {
+  const net = (habits || []).reduce((s, h) => s + habitNet(h), 0);
+  const spent = (rewards || []).reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
   // floor at 0: pre-v27 data could go negative because claims weren't checked
   // against a separate balance. Never show the user a negative wallet.
-  return Math.max(0, earned - lost - spent);
+  return Math.max(0, net - spent);
 }
 
-function computeAreaXP(area, goodHabits, badHabits) {
-  const earned = goodHabits.filter((h) => h.area === area).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lost = badHabits.filter((h) => h.area === area).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  return earned - lost;
+function computeAreaXP(area, habits) {
+  return (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
 }
 
 // Cumulative XP required to REACH level L (L >= 1).
@@ -3570,32 +3635,52 @@ function LifeAreaCard({ area, xp }) {
   );
 }
 
-function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSave }) {
-  const doneToday = (habit.history || []).includes(getISTDateString(0));
-  // one-shot completion feedback: a pulse ring plus a floating +XP. Keyed
-  // by a counter so repeated toggles retrigger the animation.
+// ---- habit card (v35) ------------------------------------------------------
+// One card replaces GoodHabitCard and BadHabitCard. Every habit now has two
+// marks: ✓ did it (adds xp) and ✗ did the opposite (subtracts penalty). A
+// habit with penalty 0 behaves exactly like a v34 good habit; one with xp 0
+// behaves exactly like a v34 bad habit. The old split was never a difference
+// in kind, only in which list a row happened to live in.
+function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave }) {
+  const today = getISTDateString(0);
+  const doneToday = habitDoneOn(habit, today);
+  const slipToday = habitSlipOn(habit, today);
+
   const [fx, setFx] = useState(0);
   const fireFx = () => { if (!doneToday) setFx((n) => n + 1); };
-  const { streak, freezeUsed } = streakFreezeInfo(habit.history);
+  // streaks count completions only -- a slip is not a quiet day, it breaks it
+  const { streak, freezeUsed } = streakFreezeInfo(
+    normaliseHistory(habit.history).filter((e) => e.t === "done").map((e) => e.d)
+  );
   const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
 
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
   const [eArea, setEArea] = useState(habit.area);
   const [eSub, setESub] = useState(() => subForHabitIn(subs, habit));
-  const [eXP, setEXP] = useState(habit.xp);
+  const [eXP, setEXP] = useState(habitXP(habit));
+  const [ePen, setEPen] = useState(habitPenalty(habit));
+  const [eOpp, setEOpp] = useState(habit.opposite || "");
 
   const openEdit = () => {
     setELabel(habit.label);
     setEArea(habit.area);
     setESub(subForHabitIn(subs, habit));
-    setEXP(habit.xp);
+    setEXP(habitXP(habit));
+    setEPen(habitPenalty(habit));
+    setEOpp(habit.opposite || "");
     setEditing(true);
   };
+
   const saveEdit = () => {
     const text = eLabel.trim();
     if (!text) return;
-    onSave(habit.id, { label: text, area: eArea, sub: eSub, xp: Math.max(1, +eXP || habit.xp) });
+    onSave(habit.id, {
+      label: text, area: eArea, sub: eSub,
+      xp: Math.max(0, +eXP || 0),
+      penalty: Math.max(0, +ePen || 0),
+      opposite: eOpp || null,
+    });
     setEditing(false);
   };
 
@@ -3639,10 +3724,35 @@ function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSav
               </button>
             ))}
           </div>
-          <div className="edit-row">
-            <input type="number" min="1" step="5" className="duration-input" value={eXP} onChange={(e) => setEXP(e.target.value)} />
-            <span className="edit-unit">XP</span>
+
+          {/* reward and penalty are separate on purpose: skipping a workout
+              should be allowed to cost less than doing it earns */}
+          <div className="edit-row edit-xp-row">
+            <label className="edit-xp-field">
+              <span className="edit-xp-tag gain">✓ adds</span>
+              <input type="number" min="0" step="5" className="duration-input"
+                     value={eXP} onChange={(e) => setEXP(e.target.value)} />
+            </label>
+            <label className="edit-xp-field">
+              <span className="edit-xp-tag lose">✗ cuts</span>
+              <input type="number" min="0" step="5" className="duration-input"
+                     value={ePen} onChange={(e) => setEPen(e.target.value)} />
+            </label>
           </div>
+
+          {/* pairing: marking one habit done marks its partner slipped, so
+              "sleep early" and "sleep after 12" cannot both be true */}
+          <div className="edit-row edit-opp-row">
+            <span className="edit-xp-tag">opposite of</span>
+            <select className="edit-opp-select" value={eOpp}
+                    onChange={(e) => setEOpp(e.target.value)}>
+              <option value="">— none —</option>
+              {allHabits.filter((h) => h.id !== habit.id).map((h) => (
+                <option key={h.id} value={h.id}>{h.label}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="edit-actions">
             <button className="edit-cancel" onClick={() => setEditing(false)}>cancel</button>
             <button className="edit-save" onClick={saveEdit}>save</button>
@@ -3652,14 +3762,18 @@ function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSav
     );
   }
 
+  const meta = [];
+  if (habitXP(habit) > 0) meta.push(`+${habitXP(habit)}`);
+  if (habitPenalty(habit) > 0) meta.push(`−${habitPenalty(habit)}`);
+
   return (
-    <div className={`quest-habit-card good ${fx ? "just-completed" : ""}`} key={`g${habit.id}`}>
-      {fx > 0 && <span className="xp-pop" key={fx}>+{habit.xp}</span>}
+    <div className={`quest-habit-card good ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`} key={`h${habit.id}`}>
+      {fx > 0 && <span className="xp-pop" key={fx}>+{habitXP(habit)}</span>}
       <span className="area-dot" style={{ background: area.color }} />
       <div className="quest-habit-main">
         <span className="quest-habit-label">{habit.label}</span>
         <span className="quest-habit-meta">
-          +{habit.xp} XP · {area.label}{streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
+          {meta.join(" / ")} XP · {area.label}{streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
         </span>
       </div>
       <button
@@ -3673,9 +3787,21 @@ function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSav
           <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
         </svg>
       </button>
+
+      <button
+        className={`quest-slip ${slipToday ? "on" : ""}`}
+        onClick={() => onMark(habit.id, "slip")}
+        aria-label="Mark slipped today"
+        title="did the opposite"
+      >
+        <svg viewBox="0 0 24 24" width="13" height="13">
+          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+      </button>
+
       <button
         className={`quest-check ${doneToday ? "done" : ""}`}
-        onClick={() => { fireFx(); onToggleToday(habit.id); }}
+        onClick={() => { fireFx(); onMark(habit.id, "done"); }}
         aria-label="Mark done today"
       >
         <svg viewBox="0 0 24 24" width="14" height="14">
@@ -3688,114 +3814,6 @@ function GoodHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSav
             strokeLinejoin="round"
             style={{ strokeDasharray: 24, strokeDashoffset: doneToday ? 0 : 24, transition: "stroke-dashoffset 220ms ease" }}
           />
-        </svg>
-      </button>
-      <button className="vault-card-edit" onClick={openEdit} aria-label="Edit habit">
-        <svg viewBox="0 0 24 24" width="13" height="13">
-          <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      <button className="del-btn" onClick={() => onDelete(habit.id)} aria-label="Delete habit">
-        <svg viewBox="0 0 24 24" width="13" height="13">
-          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      </button>
-    </div>
-  );
-}
-
-function BadHabitCard({ habit, subs = SUB_AREAS, onToggleToday, onDelete, onSave }) {
-  const loggedToday = (habit.history || []).includes(getISTDateString(0));
-  const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
-  const wk = weeklyCount(habit.history);
-
-  const [editing, setEditing] = useState(false);
-  const [eLabel, setELabel] = useState(habit.label);
-  const [eArea, setEArea] = useState(habit.area);
-  const [eSub, setESub] = useState(() => subForHabitIn(subs, habit));
-  const [eXP, setEXP] = useState(habit.xp);
-
-  const openEdit = () => {
-    setELabel(habit.label);
-    setEArea(habit.area);
-    setESub(subForHabitIn(subs, habit));
-    setEXP(habit.xp);
-    setEditing(true);
-  };
-  const saveEdit = () => {
-    const text = eLabel.trim();
-    if (!text) return;
-    onSave(habit.id, { label: text, area: eArea, sub: eSub, xp: Math.max(1, +eXP || habit.xp) });
-    setEditing(false);
-  };
-
-  if (editing) {
-    return (
-      <div className="quest-habit-card bad editing">
-        <div className="routine-edit">
-          <input
-            className="edit-label"
-            value={eLabel}
-            onChange={(e) => setELabel(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && saveEdit()}
-            autoFocus
-          />
-          <div className="edit-row">
-            {AREAS.map((a) => (
-              <button
-                key={a.key}
-                type="button"
-                className={`area-chip ${eArea === a.key ? "active" : ""}`}
-                style={{ "--ac": a.color }}
-                onClick={() => {
-                  setEArea(a.key);
-                  const list = subsForArea(subs, a.key);
-                  setESub(list.length ? list[0].key : null);
-                }}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-          <div className="edit-row edit-row-subs">
-            {subsForArea(subs, eArea).map((sb) => (
-              <button
-                key={sb.key}
-                type="button"
-                className={`sub-chip ${eSub === sb.key ? "active" : ""}`}
-                onClick={() => setESub(sb.key)}
-              >
-                {sb.label}
-              </button>
-            ))}
-          </div>
-          <div className="edit-row">
-            <input type="number" min="1" step="5" className="duration-input" value={eXP} onChange={(e) => setEXP(e.target.value)} />
-            <span className="edit-unit">XP</span>
-          </div>
-          <div className="edit-actions">
-            <button className="edit-cancel" onClick={() => setEditing(false)}>cancel</button>
-            <button className="edit-save" onClick={saveEdit}>save</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="quest-habit-card bad">
-      <span className="area-dot" style={{ background: area.color }} />
-      <div className="quest-habit-main">
-        <span className="quest-habit-label">{habit.label}</span>
-        <span className="quest-habit-meta">-{habit.xp} XP · {area.label} · {wk}x this week</span>
-      </div>
-      <button
-        className={`quest-check bad-check ${loggedToday ? "done" : ""}`}
-        onClick={() => onToggleToday(habit.id)}
-        aria-label="Log slip today"
-      >
-        <svg viewBox="0 0 24 24" width="14" height="14">
-          <path d="M6 6l12 12M18 6L6 18" stroke="#0B0D10" strokeWidth="3" strokeLinecap="round" />
         </svg>
       </button>
       <button className="vault-card-edit" onClick={openEdit} aria-label="Edit habit">
@@ -3879,56 +3897,66 @@ function RewardCard({ reward, canClaim, onClaim, onDelete, onSave }) {
   );
 }
 
-function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards, setRewards, tagCtl }) {
+function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
   const subs = tagCtl.subs;
-  const totalXP = useMemo(() => computeTotalXP(goodHabits, badHabits), [goodHabits, badHabits]);
+  const totalXP = useMemo(() => computeTotalXP(habits), [habits]);
   // separate pot: what rewards are actually paid from
-  const spendableXP = useMemo(() => computeSpendableXP(goodHabits, badHabits, rewards), [goodHabits, badHabits, rewards]);
+  const spendableXP = useMemo(() => computeSpendableXP(habits, rewards), [habits, rewards]);
   const { level, into, span } = levelFromXP(totalXP);
   const levelPct = Math.round((into / span) * 100);
 
-  const toggleGood = (id) => {
+  /**
+   * Records ✓ done or ✗ slipped for today.
+   *
+   * If the habit is paired with an opposite, the partner gets the inverse
+   * mark: you cannot have both slept early and slept after midnight. The
+   * partner is updated in the SAME setHabits call, because two sequential
+   * updaters would each see stale state.
+   */
+  const markToday = (id, type) => {
     const today = getISTDateString(0);
-    // derive from current state, not from inside the updater -- the updater
-    // is not guaranteed to have run by the time we read the flag
-    const willBeDone = !(goodHabits.find((h) => h.id === id)?.history || []).includes(today);
-    setGoodHabits((prev) =>
-      prev.map((h) => {
-        if (h.id !== id) return h;
-        const has = (h.history || []).includes(today);
-        const history = has ? h.history.filter((d) => d !== today) : [...(h.history || []), today];
-        return { ...h, history: history.slice(-370) };
-      })
-    );
-    linkBridge.propagate("good", id, willBeDone);
-    if (willBeDone) {
+    const cur = habits.find((h) => h.id === id);
+    if (!cur) return;
+    // derive before dispatching -- the updater may not have run yet
+    const had = type === "done" ? habitDoneOn(cur, today) : habitSlipOn(cur, today);
+    const willBeOn = !had;
+    const partnerId = cur.opposite ? String(cur.opposite) : null;
+
+    setHabits((prev) => prev.map((h) => {
+      if (h.id === id) return markHabit(h, today, type);
+      if (willBeOn && partnerId && String(h.id) === partnerId) {
+        const inverse = type === "done" ? "slip" : "done";
+        const already = inverse === "done" ? habitDoneOn(h, today) : habitSlipOn(h, today);
+        return already ? h : markHabit(h, today, inverse);
+      }
+      return h;
+    }));
+
+    // Links mean "when this is COMPLETED, complete that too". A slip is not a
+    // completion event, so it must not travel: clicking ✗ on Deep Work was
+    // silently slipping a linked habit the user never touched. Only the done
+    // mark propagates -- opposite-pairing above is the mechanism for slips.
+    if (type === "done") linkBridge.propagate("good", id, willBeOn);
+
+    if (!willBeOn) { sound.click(); return; }
+    if (type === "done") {
       sound.success();
       petBus.emit("habitDone");
       // hidden-achievement triggers: note the hour the user actually finished
-      const h = getISTParts().hour;
-      if (h < 6) saveMeta({ earlyFinish: true });
-      if (h >= 0 && h < 4) saveMeta({ lateFinish: true });
-    } else { sound.click(); }
+      const hh = getISTParts().hour;
+      if (hh < 6) saveMeta({ earlyFinish: true });
+      if (hh >= 0 && hh < 4) saveMeta({ lateFinish: true });
+    } else {
+      sound.error();
+      petBus.emit("badHabit");
+    }
   };
-  const toggleBad = (id) => {
-    const today = getISTDateString(0);
-    const willBeDone = !(badHabits.find((h) => h.id === id)?.history || []).includes(today);
-    setBadHabits((prev) =>
-      prev.map((h) => {
-        if (h.id !== id) return h;
-        const has = (h.history || []).includes(today);
-        const history = has ? h.history.filter((d) => d !== today) : [...(h.history || []), today];
-        return { ...h, history: history.slice(-370) };
-      })
-    );
-    if (willBeDone) { sound.error(); petBus.emit("badHabit"); } else { sound.click(); }
-  };
-  const delGood = (id) => { setGoodHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
-  const delBad = (id) => { setBadHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
-  const saveGood = (id, patch) => setGoodHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
-  const saveBad = (id, patch) => setBadHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
+
+  const delHabit = (id) => { setHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
+  const saveHabit = (id, patch) => setHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
+
   const claimReward = (id) => {
     const today = getISTDateString(0);
     setRewards((prev) => prev.map((r) => (r.id === id ? { ...r, claimed: [...(r.claimed || []), today] } : r)));
@@ -3941,26 +3969,23 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   const [ghLabel, setGhLabel] = useState("");
   const [ghArea, setGhArea] = useState("work");
   const [ghXP, setGhXP] = useState(20);
-  const [bhLabel, setBhLabel] = useState("");
-  const [bhArea, setBhArea] = useState("work");
-  const [bhXP, setBhXP] = useState(20);
+  const [ghPen, setGhPen] = useState(0);
   const [rwLabel, setRwLabel] = useState("");
   const [rwCost, setRwCost] = useState(100);
 
-  const addGood = () => {
+  const addHabit = () => {
     const t = ghLabel.trim();
     if (!t) return;
-    setGoodHabits((prev) => [...prev, { id: makeId(), label: t, area: ghArea, xp: +ghXP || 10, history: [] }]);
+    setHabits((prev) => [...prev, {
+      id: makeId(), label: t, area: ghArea,
+      xp: Math.max(0, +ghXP || 0),
+      penalty: Math.max(0, +ghPen || 0),
+      history: [],
+    }]);
     setGhLabel("");
     sound.click();
   };
-  const addBad = () => {
-    const t = bhLabel.trim();
-    if (!t) return;
-    setBadHabits((prev) => [...prev, { id: makeId(), label: t, area: bhArea, xp: +bhXP || 10, history: [] }]);
-    setBhLabel("");
-    sound.click();
-  };
+
   const addReward = () => {
     const t = rwLabel.trim();
     if (!t) return;
@@ -3978,47 +4003,45 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
   // Values are NOT clamped at zero. A net-negative area is real information --
   // clamping made "-280, your worst area by far" render identically to "never
   // started", which is the opposite of what a diagnostic chart is for.
+  // Values are NOT clamped at zero. A net-negative area is real information --
+  // clamping made "-280, your worst area by far" render identically to "never
+  // started", which is the opposite of what a diagnostic chart is for.
   const areaAxes = useMemo(() => (
     tagCtl.radarMode === "areas"
       ? AREAS.map((a) => ({
           key: a.key, label: a.label, color: a.color,
-          value: computeAreaXP(a.key, goodHabits, badHabits),
+          value: computeAreaXP(a.key, habits),
         }))
       : subs.map((sb) => ({
           key: sb.key, label: sb.label,
           color: (AREAS.find((a) => a.key === sb.area) || {}).color,
-          value: computeSubXPIn(subs, sb.key, goodHabits, badHabits),
+          value: computeSubXPIn(subs, sb.key, habits),
         }))
-  ), [tagCtl.radarMode, subs, goodHabits, badHabits]);
+  ), [tagCtl.radarMode, subs, habits]);
 
   // One ceiling for BOTH modes, so switching view doesn't silently rescale the
   // shape, and so growth pushes the polygon outward instead of flattening its
-  // neighbours. Recomputed from data, so it still tracks real progress.
+  // neighbours.
   const radarMax = useMemo(() => {
-    const areaPeak = Math.max(...AREAS.map((a) => computeAreaXP(a.key, goodHabits, badHabits)), 0);
-    const subPeak = Math.max(...subs.map((sb) => computeSubXPIn(subs, sb.key, goodHabits, badHabits)), 0);
-    // round up to a clean step so the rim isn't pinned to an arbitrary value
+    const areaPeak = Math.max(...AREAS.map((a) => computeAreaXP(a.key, habits)), 0);
+    const subPeak = Math.max(...subs.map((sb) => computeSubXPIn(subs, sb.key, habits)), 0);
     const peak = Math.max(areaPeak, subPeak, 1);
     const step = peak <= 100 ? 25 : peak <= 500 ? 50 : 100;
     return Math.ceil(peak / step) * step;
-  }, [subs, goodHabits, badHabits]);
+  }, [subs, habits]);
 
   // Habits with no `sub` tag are counted by the 4-area view but vanish in the
-  // tag view, so the same data appears to total differently depending on which
-  // toggle is active. Surface it rather than letting the number quietly differ.
+  // tag view, so the same data appears to total differently.
   const untaggedXP = useMemo(() => {
     if (tagCtl.radarMode === "areas") return 0;
     const known = new Set(subs.map((s) => s.key));
     const orphan = (h) => !h.sub || !known.has(h.sub);
-    const e = goodHabits.filter(orphan).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-    const l = badHabits.filter(orphan).reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-    return e + l;
-  }, [tagCtl.radarMode, subs, goodHabits, badHabits]);
+    return habits.filter(orphan).reduce((s, h) => s + Math.abs(habitNet(h)), 0);
+  }, [tagCtl.radarMode, subs, habits]);
 
-  const visibleGood = areaFilter === "all" ? goodHabits : goodHabits.filter((h) => h.area === areaFilter);
-  const visibleBad  = areaFilter === "all" ? badHabits  : badHabits.filter((h) => h.area === areaFilter);
-  const earnedXP = goodHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
-  const lostXP = badHabits.reduce((s, h) => s + h.xp * (h.history?.length || 0), 0);
+  const visibleHabits = areaFilter === "all" ? habits : habits.filter((h) => h.area === areaFilter);
+  const earnedXP = habits.reduce((s, h) => s + habitXP(h) * countHist(h, "done"), 0);
+  const lostXP = habits.reduce((s, h) => s + habitPenalty(h) * countHist(h, "slip"), 0);
   const spentXP = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
 
   return (
@@ -4120,26 +4143,36 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
 
       {showTagEditor && <TagEditor tagCtl={tagCtl} onClose={() => setShowTagEditor(false)} />}
 
-      <div className="section-header"><span>GOOD-HABITS</span></div>
+      <div className="section-header"><span>HABITS</span></div>
       <div className="quest-habit-list">
-        {goodHabits.length === 0 ? (
+        {habits.length === 0 ? (
           <div className="empty-state">
             <div className="glyph">{"{ }"}</div>
-            <div className="msg">no good habits yet</div>
+            <div className="msg">no habits yet</div>
           </div>
         ) : (
-          visibleGood.map((h) => <GoodHabitCard key={h.id} habit={h} subs={subs} onToggleToday={toggleGood} onDelete={delGood} onSave={saveGood} />)
+          visibleHabits.map((h) => (
+            <HabitCard
+              key={h.id}
+              habit={h}
+              subs={subs}
+              allHabits={habits}
+              onMark={markToday}
+              onDelete={delHabit}
+              onSave={saveHabit}
+            />
+          ))
         )}
       </div>
       <div className="composer">
         <input
           type="text"
-          placeholder="new good habit..."
+          placeholder="new habit..."
           value={ghLabel}
           onChange={(e) => setGhLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addGood()}
+          onKeyDown={(e) => e.key === "Enter" && addHabit()}
         />
-        <button className="add-btn" onClick={addGood} aria-label="Add good habit">
+        <button className="add-btn" onClick={addHabit} aria-label="Add habit">
           <svg viewBox="0 0 24 24" width="16" height="16">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
           </svg>
@@ -4151,41 +4184,16 @@ function QuestView({ goodHabits, setGoodHabits, badHabits, setBadHabits, rewards
             {a.label}
           </button>
         ))}
-        <input type="number" min="5" step="5" className="duration-custom" value={ghXP} onChange={(e) => setGhXP(+e.target.value || 5)} />
-      </div>
-
-      <div className="section-header"><span>BAD-HABITS</span></div>
-      <div className="quest-habit-list">
-        {badHabits.length === 0 ? (
-          <div className="empty-state">
-            <div className="glyph">{"{ }"}</div>
-            <div className="msg">no bad habits tracked</div>
-          </div>
-        ) : (
-          visibleBad.map((h) => <BadHabitCard key={h.id} habit={h} subs={subs} onToggleToday={toggleBad} onDelete={delBad} onSave={saveBad} />)
-        )}
-      </div>
-      <div className="composer">
-        <input
-          type="text"
-          placeholder="new bad habit..."
-          value={bhLabel}
-          onChange={(e) => setBhLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addBad()}
-        />
-        <button className="add-btn" onClick={addBad} aria-label="Add bad habit">
-          <svg viewBox="0 0 24 24" width="16" height="16">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-          </svg>
-        </button>
-      </div>
-      <div className="duration-chips">
-        {AREAS.map((a) => (
-          <button key={a.key} className={bhArea === a.key ? "active" : ""} onClick={() => setBhArea(a.key)}>
-            {a.label}
-          </button>
-        ))}
-        <input type="number" min="5" step="5" className="duration-custom" value={bhXP} onChange={(e) => setBhXP(+e.target.value || 5)} />
+        <label className="new-xp-field">
+          <span className="edit-xp-tag gain">✓</span>
+          <input type="number" min="0" step="5" className="duration-custom" value={ghXP}
+                 onChange={(e) => setGhXP(+e.target.value || 0)} />
+        </label>
+        <label className="new-xp-field">
+          <span className="edit-xp-tag lose">✗</span>
+          <input type="number" min="0" step="5" className="duration-custom" value={ghPen}
+                 onChange={(e) => setGhPen(+e.target.value || 0)} />
+        </label>
       </div>
 
       <div className="section-header"><span>REWARD-CENTER</span></div>
@@ -4322,6 +4330,9 @@ const STORAGE_KEY_VAULT_HABITS = "tasksh.vaulthabits.v1";
 const STORAGE_KEY_PROJECTS = "tasksh.projects.v1";
 const STORAGE_KEY_GOOD_HABITS = "tasksh.goodhabits.v1";
 const STORAGE_KEY_BAD_HABITS = "tasksh.badhabits.v1";
+// v35: the merged list. GOOD/BAD keys are still read once, by the migration
+// in the root state initialiser, then never written again.
+const STORAGE_KEY_HABITS = "tasksh.habits.v1";
 const STORAGE_KEY_REWARDS = "tasksh.rewards.v1";
 const STORAGE_KEY_DEVICE_ID = "tasksh.deviceid.v1";
 const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
@@ -4411,7 +4422,7 @@ function LinkManager({ selfRef, data, links, setLinks, onClose }) {
   const candidates = useMemo(() => {
     const all = [
       ...data.routines.map((r) => ({ ref: refOf("routine", r.id), label: r.label, kind: "routine" })),
-      ...data.goodHabits.map((h) => ({ ref: refOf("good", h.id), label: h.label, kind: "good" })),
+      ...(data.habits || []).map((h) => ({ ref: refOf("good", h.id), label: h.label, kind: "good" })),
       ...data.vaultHabits.map((h) => ({ ref: refOf("vault", h.id), label: h.label, kind: "vault" })),
     ];
     return all.filter((c) => c.ref !== selfRef && !connected.includes(c.ref));
@@ -4876,6 +4887,26 @@ function addAIKey(key) {
   return getAIKeys();
 }
 
+/**
+ * Moves a key up or down the pool.
+ *
+ * Order is not cosmetic: withKeyPool() in the worker tries keys top to bottom
+ * and stops at the first that answers, so position 1 is the one that carries
+ * almost all traffic. Being able to promote a key matters when one provider
+ * is faster (Groq) or has far more headroom (Cerebras, 1M tokens/day) than
+ * whichever key happened to be pasted first.
+ */
+function moveAIKey(key, dir) {
+  const keys = getAIKeys();
+  const i = keys.indexOf(key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= keys.length) return keys;
+  const next = [...keys];
+  [next[i], next[j]] = [next[j], next[i]];
+  setAIKeys(next);
+  return getAIKeys();
+}
+
 function removeAIKey(key) {
   const next = getAIKeys().filter((k) => k !== key);
   setAIKeys(next);
@@ -4992,9 +5023,9 @@ function describeAIAction(a, state) {
     case "add_bad_habit":
       return { kind: "add", surface: "quest", text: `−${a.xp} XP · ${a.label} (${a.area})` };
     case "delete_good_habit":
-      return { kind: "remove", surface: "quest", text: find(state.goodHabits, a.id)?.label || `#${a.id}` };
+      return { kind: "remove", surface: "quest", text: find(state.habits, a.id)?.label || `#${a.id}` };
     case "delete_bad_habit":
-      return { kind: "remove", surface: "quest", text: find(state.badHabits, a.id)?.label || `#${a.id}` };
+      return { kind: "remove", surface: "quest", text: find(state.habits, a.id)?.label || `#${a.id}` };
     case "add_reward":
       return { kind: "add", surface: "reward", text: `${a.label} · ${a.cost} XP` };
     case "delete_reward":
@@ -5008,11 +5039,10 @@ function describeAIAction(a, state) {
 // with a single derived array, so React batches it into one render and one
 // localStorage write per surface.
 function applyAIActions(actions, state, setters) {
-  let { routines, vaultHabits, goodHabits, badHabits, rewards } = {
+  let { routines, vaultHabits, habits, rewards } = {
     routines: [...state.routines],
     vaultHabits: [...state.vaultHabits],
-    goodHabits: [...state.goodHabits],
-    badHabits: [...state.badHabits],
+    habits: [...state.habits],
     rewards: [...state.rewards],
   };
   const touched = new Set();
@@ -5056,18 +5086,18 @@ function applyAIActions(actions, state, setters) {
         touched.add("vaultHabits"); break;
 
       case "add_good_habit":
-        goodHabits = [...goodHabits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, history: [] }];
-        touched.add("goodHabits"); break;
+        habits = [...habits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, penalty: 0, history: [] }];
+        touched.add("habits"); break;
       case "delete_good_habit":
-        goodHabits = goodHabits.filter((h) => h.id !== a.id);
-        touched.add("goodHabits"); break;
+        habits = habits.filter((h) => h.id !== a.id);
+        touched.add("habits"); break;
 
       case "add_bad_habit":
-        badHabits = [...badHabits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, history: [] }];
-        touched.add("badHabits"); break;
+        habits = [...habits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: 0, penalty: a.xp, history: [] }];
+        touched.add("habits"); break;
       case "delete_bad_habit":
-        badHabits = badHabits.filter((h) => h.id !== a.id);
-        touched.add("badHabits"); break;
+        habits = habits.filter((h) => h.id !== a.id);
+        touched.add("habits"); break;
 
       case "add_reward":
         rewards = [...rewards, { id: makeId(), label: a.label, cost: a.cost, claimed: [] }];
@@ -5081,8 +5111,7 @@ function applyAIActions(actions, state, setters) {
 
   if (touched.has("routines")) setters.setRoutines(routines);
   if (touched.has("vaultHabits")) setters.setVaultHabits(vaultHabits);
-  if (touched.has("goodHabits")) setters.setGoodHabits(goodHabits);
-  if (touched.has("badHabits")) setters.setBadHabits(badHabits);
+  if (touched.has("habits")) setters.setHabits(habits);
   if (touched.has("rewards")) setters.setRewards(rewards);
 }
 
@@ -5163,8 +5192,7 @@ function CompanionView({ petCtl, state, setters, ctx, showDataMsg }) {
         {
           routines: state.routines,
           vaultHabits: state.vaultHabits,
-          goodHabits: state.goodHabits,
-          badHabits: state.badHabits,
+          habits: state.habits,
           rewards: state.rewards,
           totalXP: state.totalXP,
         },
@@ -5470,6 +5498,20 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
                   <span className="keypool-num">{i + 1}</span>
                   <span className="keypool-prov">{pr ? pr.label : "?"}</span>
                   <span className="keypool-val">{maskAIKey(k)}</span>
+                  <button
+                    className="keypool-move"
+                    disabled={i === 0}
+                    onClick={() => { setExisting(moveAIKey(k, -1)); sound.click(); }}
+                    aria-label="Try this key earlier"
+                    title="move up"
+                  >↑</button>
+                  <button
+                    className="keypool-move"
+                    disabled={i === existing.length - 1}
+                    onClick={() => { setExisting(moveAIKey(k, 1)); sound.click(); }}
+                    aria-label="Try this key later"
+                    title="move down"
+                  >↓</button>
                   <button className="keypool-del" onClick={() => { setExisting(removeAIKey(k)); sound.delete(); }}>
                     remove
                   </button>
@@ -5532,6 +5574,7 @@ function collectMaxId(data) {
   (data.tasks || []).forEach((t) => consider(t?.id));
   (data.routines || []).forEach((r) => consider(r?.id));
   (data.vaultHabits || []).forEach((h) => consider(h?.id));
+  (data.habits || []).forEach((h) => consider(h?.id));
   (data.goodHabits || []).forEach((h) => consider(h?.id));
   (data.badHabits || []).forEach((h) => consider(h?.id));
   (data.rewards || []).forEach((r) => consider(r?.id));
@@ -5545,8 +5588,8 @@ function collectMaxId(data) {
 // combined "today" dashboard: next/current routine, top open tasks, and
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
-function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHabits, badHabits, rewards, setRewards, totalXP, setTab }) {
-  const spendableXP = useMemo(() => computeSpendableXP(goodHabits, badHabits || [], rewards), [goodHabits, badHabits, rewards]);
+function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab }) {
+  const spendableXP = useMemo(() => computeSpendableXP(habits, rewards), [habits, rewards]);
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
   const { sorted, currentId, nextId } = useRoutineStatus(routines, nowMinutes);
@@ -5598,9 +5641,9 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, goodHa
     };
     routines.forEach((r) => add(r.history));
     vaultHabits.forEach((h) => add(h.history));
-    goodHabits.forEach((h) => add(h.history));
+    habits.forEach((h) => add(normaliseHistory(h.history).filter((e) => e.t === "done").map((e) => e.d)));
     return counts;
-  }, [routines, vaultHabits, goodHabits]);
+  }, [routines, vaultHabits, habits]);
 
   const spotlight = current || next;
   const spotlightIsNow = !!current;
@@ -5713,12 +5756,21 @@ function TodoApp() {
   const [vaultHabits, setVaultHabits] = useState(() => loadStored(STORAGE_KEY_VAULT_HABITS, seedVaultHabits));
   const [projects, setProjects] = useState(() => loadStored(STORAGE_KEY_PROJECTS, seedProjects));
   const [notes, setNotes] = useState(() => loadStored(STORAGE_KEY_NOTES, seedNotes));
-  const [goodHabits, setGoodHabits] = useState(() => loadStored(STORAGE_KEY_GOOD_HABITS, seedGoodHabits));
-  const [badHabits, setBadHabits] = useState(() => loadStored(STORAGE_KEY_BAD_HABITS, seedBadHabits));
+  // v35 merged good+bad into one list. On first launch after the upgrade the
+  // merged key is absent, so fold the two old lists together; mergeHabitLists
+  // is arithmetically identity-preserving, so nobody's XP or level moves.
+  const [habits, setHabits] = useState(() => {
+    const merged = loadStored(STORAGE_KEY_HABITS, null);
+    if (Array.isArray(merged)) return merged;
+    return mergeHabitLists(
+      loadStored(STORAGE_KEY_GOOD_HABITS, seedGoodHabits),
+      loadStored(STORAGE_KEY_BAD_HABITS, seedBadHabits),
+    );
+  });
   const [rewards, setRewards] = useState(() => loadStored(STORAGE_KEY_REWARDS, seedRewards));
   const totalXP = useMemo(
-    () => computeTotalXP(goodHabits, badHabits),
-    [goodHabits, badHabits, rewards]
+    () => computeTotalXP(habits),
+    [habits, rewards]
   );
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
   const themeCtl = useTheme(currentLevel);
@@ -5734,7 +5786,7 @@ function TodoApp() {
   useEffect(() => linkBridge.register((kind, id, done) => {
     propagateCompletion(
       refOf(kind, id), done, links,
-      { setRoutines, setVaultHabits, setGoodHabits },
+      { setRoutines, setVaultHabits, setHabits },
       getISTDateString(0)
     );
   }), [links]);
@@ -5748,11 +5800,11 @@ function TodoApp() {
       level: currentLevel,
       tasksDone: tasks.filter((t) => t.done).length,
       bestStreak: Math.max(
-        goodHabits.reduce((m, h) => Math.max(m, computeStreak(h.history)), 0),
+        habits.reduce((m, h) => Math.max(m, computeStreak(normaliseHistory(h.history).filter((e) => e.t === "done").map((e) => e.d))), 0),
         routines.reduce((m, r) => Math.max(m, computeStreak(r.history)), 0)
       ),
-      doneToday: goodHabits.filter((h) => (h.history || []).includes(todayStr)).length,
-      totalHabits: goodHabits.length,
+      doneToday: habits.filter((h) => habitDoneOn(h, todayStr)).length,
+      totalHabits: habits.length,
       routinesDoneToday: routines.filter((r) => (r.history || []).includes(todayStr)).length,
       totalRoutines: routines.length,
       vaultCount: vaultHabits.length,
@@ -5764,7 +5816,7 @@ function TodoApp() {
       lateFinish: !!meta.lateFinish,
       returnedAfterGap: !!meta.returnedAfterGap,
     };
-  }, [currentLevel, tasks, goodHabits, routines, vaultHabits, petCtl.pet, todayStr]);
+  }, [currentLevel, tasks, habits, routines, vaultHabits, petCtl.pet, todayStr]);
 
   const achCtl = useAchievements(achSnapshot);
 
@@ -5814,6 +5866,11 @@ function TodoApp() {
     () => localStorage.getItem(STORAGE_KEY_NOTIFY_ENABLED) === "1"
   );
   const [notifyBusy, setNotifyBusy] = useState(false);
+  // Backup choice popup. DESIGN.md forbids modals for EDITING -- inline only --
+  // but this is a one-shot confirmation with a consequence attached, and
+  // burying "this file contains your API keys" in a panel nobody scrolls to is
+  // how a key ends up in a group chat. It gets its own moment.
+  const [backupAsk, setBackupAsk] = useState(false);
   const [showThemes, setShowThemes] = useState(false);
 
   // Sync the schedule whenever it changes, regardless of the notification
@@ -5897,7 +5954,7 @@ function TodoApp() {
         store,
         // `data` is kept so v2 files still restore in an older build, and so
         // the file stays readable by eye.
-        data: { tasks, routines, vaultHabits, projects, notes, goodHabits, badHabits, rewards },
+        data: { tasks, routines, vaultHabits, projects, notes, habits, rewards },
       };
 
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -5956,8 +6013,7 @@ function TodoApp() {
           vaultHabits: setVaultHabits,
           projects: setProjects,
           notes: setNotes,
-          goodHabits: setGoodHabits,
-          badHabits: setBadHabits,
+          habits: setHabits,
           rewards: setRewards,
         };
 
@@ -6033,12 +6089,9 @@ function TodoApp() {
   }, [notes]);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_GOOD_HABITS, JSON.stringify(goodHabits)); } catch {}
-  }, [goodHabits]);
+    try { localStorage.setItem(STORAGE_KEY_HABITS, JSON.stringify(habits)); } catch {}
+  }, [habits]);
 
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_BAD_HABITS, JSON.stringify(badHabits)); } catch {}
-  }, [badHabits]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_REWARDS, JSON.stringify(rewards)); } catch {}
@@ -6121,7 +6174,7 @@ function TodoApp() {
       {linkTarget && (
         <LinkManager
           selfRef={linkTarget}
-          data={{ routines, goodHabits, vaultHabits }}
+          data={{ routines, habits, vaultHabits }}
           links={links}
           setLinks={setLinks}
           onClose={() => setLinkTarget(null)}
@@ -8975,6 +9028,82 @@ function TodoApp() {
         .widget-feed { border-left-color: var(--accent2); }
         .widget-url { word-break: break-all; white-space: pre-wrap; color: var(--accent); font-size: 10px; }
 
+        /* ---- habit slip button + paired edit fields (v35) ---- */
+        .quest-slip {
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 6px; color: var(--muted); cursor: pointer;
+          width: 26px; height: 26px; display: flex; align-items: center;
+          justify-content: center; transition: all 140ms ease; flex: none;
+        }
+        .quest-slip:hover { border-color: var(--danger); color: var(--danger); }
+        .quest-slip.on {
+          background: var(--danger); border-color: var(--danger); color: var(--bg);
+        }
+        /* a slipped day reads as a deficit, not as an untouched row */
+        .quest-habit-card.slipped { border-left: 2px solid var(--danger); }
+
+        .edit-xp-row { display: flex; gap: 10px; align-items: center; }
+        .edit-xp-field, .new-xp-field { display: flex; align-items: center; gap: 5px; }
+        .edit-xp-tag {
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.06em; color: var(--muted);
+        }
+        .edit-xp-tag.gain { color: var(--accent); }
+        .edit-xp-tag.lose { color: var(--danger); }
+
+        .edit-opp-row { display: flex; align-items: center; gap: 6px; }
+        .edit-opp-select {
+          flex: 1; min-width: 0; background: var(--bg);
+          border: 1px solid var(--border); border-radius: 4px;
+          color: var(--text); font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; padding: 4px 6px; outline: none;
+        }
+        .edit-opp-select:focus { border-color: var(--accent); }
+
+        /* ---- key pool reordering ---- */
+        .keypool-move {
+          background: transparent; border: 1px solid var(--border);
+          border-radius: 4px; color: var(--muted); cursor: pointer;
+          font-size: 11px; line-height: 1; padding: 2px 6px; flex: none;
+          transition: all 140ms ease;
+        }
+        .keypool-move:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .keypool-move:disabled { opacity: 0.25; cursor: default; }
+
+        /* ---- backup popup ---- */
+        .backup-ask-backdrop {
+          position: fixed; inset: 0; z-index: 60;
+          background: rgba(0,0,0,0.72);
+          display: flex; align-items: center; justify-content: center;
+          padding: 24px; animation: fadeIn 160ms ease;
+        }
+        .backup-ask {
+          width: 100%; max-width: 340px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 2px solid var(--accent); border-radius: 8px;
+          padding: 14px;
+        }
+        .backup-ask-head {
+          display: flex; align-items: baseline; gap: 6px;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          margin-bottom: 8px;
+        }
+        .backup-ask-body {
+          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          line-height: 1.6; color: var(--muted); white-space: pre-wrap; margin: 0;
+        }
+        .backup-ask-warn {
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          line-height: 1.6; color: var(--accent2);
+          border: 1px solid var(--border); border-radius: 4px;
+          padding: 7px 8px; margin-top: 10px;
+        }
+        .backup-ask-actions { flex-wrap: wrap; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) {
+          .backup-ask-backdrop { animation: none; }
+        }
+
         .note-empty {
           font-family: 'JetBrains Mono', monospace; font-size: 10px;
           color: var(--muted); padding: 10px 18px 14px;
@@ -9216,12 +9345,19 @@ function TodoApp() {
         .quest-habit-card {
           display: flex;
           align-items: center;
-          gap: 10px;
+          /* v35 added a second mark button, so the row now carries link, ✗, ✓,
+             edit and delete. The old 10px gap pushed delete off the edge on a
+             360px phone -- tighten the gap and let the label absorb the slack
+             rather than dropping a control. */
+          gap: 6px;
           background: var(--panel);
           border: 1px solid var(--border);
           border-radius: 10px;
-          padding: 10px 12px;
+          padding: 10px 10px;
         }
+        /* the label is the only thing that should shrink */
+        .quest-habit-card > .quest-habit-main { min-width: 0; flex: 1 1 auto; }
+        .quest-habit-card > button { flex: 0 0 auto; }
 
         .quest-habit-card.bad { border-color: #2A1F22; }
 
@@ -9807,7 +9943,7 @@ function TodoApp() {
                 <path d="M12 16V4M7 9l5-5 5 5M4 20h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <button className="titlebar-icon-btn" onClick={() => exportData(false)} aria-label="Export backup" title="Export backup (no API keys)">
+            <button className="titlebar-icon-btn" onClick={() => { setBackupAsk(true); sound.click(); }} aria-label="Export backup" title="Export backup">
               <svg viewBox="0 0 24 24" width="14" height="14">
                 <path d="M12 4v12M7 11l5 5 5-5M4 20h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
@@ -9817,6 +9953,34 @@ function TodoApp() {
             </span>
           </div>
         </div>
+
+        {backupAsk && (
+          <div className="backup-ask-backdrop" onClick={() => setBackupAsk(false)}>
+            <div className="backup-ask" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Export backup">
+              <div className="backup-ask-head">
+                <span className="note-prompt">~/backup</span>
+                <span className="note-when">everything in one file</span>
+              </div>
+              <pre className="backup-ask-body">
+tasks, routines, habits, notes, tags, achievements,
+pet, wallet and themes are always included.
+              </pre>
+              <div className="backup-ask-warn">
+                ⚠ including API keys makes this file a credential.
+                anyone you send it to can spend your quota.
+              </div>
+              <div className="note-actions backup-ask-actions">
+                <button className="note-btn save" onClick={() => { setBackupAsk(false); exportData(false); }}>
+                  export
+                </button>
+                <button className="note-btn danger" onClick={() => { setBackupAsk(false); exportData(true); }}>
+                  export with API keys
+                </button>
+                <button className="note-btn" onClick={() => setBackupAsk(false)}>cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {dataMsg && (
           <div className={`data-toast ${dataMsg.type}`}>{dataMsg.text}</div>
@@ -9862,8 +10026,7 @@ function TodoApp() {
             tasks={tasks}
             setTasks={setTasks}
             vaultHabits={vaultHabits}
-            goodHabits={goodHabits}
-            badHabits={badHabits}
+            habits={habits}
             rewards={rewards}
             setRewards={setRewards}
             totalXP={totalXP}
@@ -9977,32 +10140,29 @@ function TodoApp() {
             setProjects={setProjects}
             notes={notes}
             setNotes={setNotes}
-            onExport={exportData}
           />
         ) : tab === "quest" ? (
           <QuestView
             tagCtl={tagCtl}
-            goodHabits={goodHabits}
-            setGoodHabits={setGoodHabits}
-            badHabits={badHabits}
-            setBadHabits={setBadHabits}
+            habits={habits}
+            setHabits={setHabits}
             rewards={rewards}
             setRewards={setRewards}
           />
         ) : (
           <CompanionView
             petCtl={petCtl}
-            state={{ routines, vaultHabits, goodHabits, badHabits, rewards, totalXP }}
-            setters={{ setRoutines, setVaultHabits, setGoodHabits, setBadHabits, setRewards }}
+            state={{ routines, vaultHabits, habits, rewards, totalXP }}
+            setters={{ setRoutines, setVaultHabits, setHabits, setRewards }}
             showDataMsg={showDataMsg}
             ctx={{
               pet: petCtl.pet,
               level: currentLevel,
               hour: getISTParts().hour,
               phase: themeCtl.phase.id,
-              doneToday: goodHabits.filter((h) => (h.history || []).includes(getISTDateString(0))).length,
-              totalToday: goodHabits.length,
-              streak: goodHabits.reduce((m, h) => Math.max(m, computeStreak(h.history)), 0),
+              doneToday: habits.filter((h) => habitDoneOn(h, getISTDateString(0))).length,
+              totalToday: habits.length,
+              streak: habits.reduce((m, h) => Math.max(m, computeStreak(normaliseHistory(h.history).filter((e) => e.t === "done").map((e) => e.d))), 0),
               routineNow: null,
               nextRoutine: null,
             }}

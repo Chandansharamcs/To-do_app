@@ -66,8 +66,12 @@ function sliceFrom(SRC, name) {
   throw new Error(`unbalanced braces while lifting "${name}"`);
 }
 
+// makeId lives in the app but is not worth lifting for these tests; the merge
+// only needs it to mint a fresh id when two saves collide.
 const liftApp = (names) =>
-  new Function([...names.map((n) => sliceFrom(APP, n)), `return { ${names.join(", ")} };`].join("\n\n"))();
+  new Function("makeId",
+    [...names.map((n) => sliceFrom(APP, n)), `return { ${names.join(", ")} };`].join("\n\n"),
+  )(() => Math.floor(Math.random() * 1e15) + 1e15);
 const liftWorker = (names) =>
   new Function([...names.map((n) => sliceFrom(WORKER, n)), `return { ${names.join(", ")} };`].join("\n\n"))();
 
@@ -194,14 +198,15 @@ test("the default export excludes AI keys", () => {
     "SENSITIVE_KEYS list is missing");
   assert.ok(/if \(!full && SENSITIVE_KEYS\.includes\(k\)\) continue;/.test(APP),
     "the export no longer skips sensitive keys when full=false");
-  assert.ok(/onClick=\{\(\) => exportData\(false\)\}/.test(APP),
-    "the titlebar export button must call exportData(false)");
+  assert.ok(/exportData\(false\)/.test(APP), "no plain export path");
 });
 
 test("including keys requires an explicit opt-in", () => {
   // one tap must not be enough -- the button arms first, then confirms
-  assert.ok(/export with API keys/.test(APP), "no opt-in export button");
-  assert.ok(/yes — include my API keys/.test(APP), "no confirmation step");
+  // the titlebar button opens a chooser rather than exporting silently
+  assert.ok(/setBackupAsk\(true\)/.test(APP), "export button does not open the popup");
+  assert.ok(/export with API keys/.test(APP), "no opt-in export choice");
+  assert.ok(/makes this file a credential/.test(APP), "no warning shown before exporting keys");
 });
 
 test("the backup sweeps localStorage rather than naming keys", () => {
@@ -223,10 +228,24 @@ test("deviceId is never exported or restored", () => {
 
 // ------------------------------------------------------------- XP + levels --
 
-const { cumulativeXPForLevel, levelFromXP, computeTotalXP, computeSpendableXP, computeAreaXP } =
-  liftApp(["cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeSpendableXP", "computeAreaXP"]);
+const {
+  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeSpendableXP, computeAreaXP,
+  normaliseHistory, countHist, habitXP, habitPenalty, habitNet,
+  habitDoneOn, habitSlipOn, markHabit, mergeHabitLists,
+} = liftApp([
+  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeSpendableXP", "computeAreaXP",
+  "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
+  "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
+]);
 
-const habit = (xp, days, area = "work") => ({ xp, area, history: Array(days).fill("2026-01-01") });
+/** v35 habit: `done` completions, optional `slip` marks. */
+const habit = (xp, days, area = "work", penalty = 0, slips = 0) => ({
+  xp, penalty, area,
+  history: [
+    ...Array.from({ length: days }, (_, i) => ({ d: `2026-01-${String(i + 1).padStart(2, "0")}`, t: "done" })),
+    ...Array.from({ length: slips }, (_, i) => ({ d: `2026-02-${String(i + 1).padStart(2, "0")}`, t: "slip" })),
+  ],
+});
 
 test("level 2 still unlocks at exactly 100 XP", () => {
   // an invariant deliberately preserved across the v22 curve change
@@ -256,41 +275,188 @@ test("spending XP on rewards does NOT reduce level progress", () => {
   // THE v26 BUG: computeTotalXP subtracted reward spending, so claiming a
   // reward could push a real profile to a negative total and demote it to
   // level 1. v27 split the two pots; this keeps them split.
-  const good = [habit(50, 4)];   // 200 earned
-  const bad = [habit(20, 2)];    //  40 lost
+  const habits = [habit(50, 4), habit(20, 0, "work", 20, 2)];   // 200 earned, 40 lost
   const rewards = [{ cost: 150, claimed: ["2026-01-01"] }];
-  const total = computeTotalXP(good, bad);
+  const total = computeTotalXP(habits);
   assert.equal(total, 160, "level XP must ignore spending");
   assert.equal(levelFromXP(total).level, 2);
-  assert.equal(computeSpendableXP(good, bad, rewards), 10, "the wallet must reflect spending");
+  assert.equal(computeSpendableXP(habits, rewards), 10, "the wallet must reflect spending");
 });
 
 test("total XP is never negative", () => {
-  const total = computeTotalXP([habit(10, 1)], [habit(500, 5)]);
+  const total = computeTotalXP([habit(10, 1), habit(0, 0, "work", 500, 5)]);
   assert.ok(total >= 0, `computeTotalXP returned ${total}`);
   assert.equal(levelFromXP(total).level, 1);
 });
 
 test("the wallet is never negative", () => {
-  const spendable = computeSpendableXP([habit(10, 1)], [], [{ cost: 9999, claimed: ["x"] }]);
+  const spendable = computeSpendableXP([habit(10, 1)], [{ cost: 9999, claimed: ["x"] }]);
   assert.ok(spendable >= 0, `computeSpendableXP returned ${spendable}`);
 });
 
 test("computeTotalXP takes no rewards argument", () => {
   // guards against reintroducing the v26 signature by accident
-  assert.equal(computeTotalXP.length, 2, "computeTotalXP should accept exactly (good, bad)");
+  assert.equal(computeTotalXP.length, 1, "computeTotalXP should accept exactly (habits)");
 });
 
 test("area XP may be negative", () => {
   // a life area where bad habits outweigh good is real, useful information --
   // clamping it to zero made a -280 area look identical to an untouched one
-  const v = computeAreaXP("work", [habit(10, 1, "work")], [habit(100, 3, "work")]);
+  const v = computeAreaXP("work", [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)]);
   assert.equal(v, -290);
 });
 
 test("area XP ignores habits from other areas", () => {
-  const v = computeAreaXP("work", [habit(50, 2, "work"), habit(50, 2, "health")], []);
+  const v = computeAreaXP("work", [habit(50, 2, "work"), habit(50, 2, "health")]);
   assert.equal(v, 100);
+});
+
+// ------------------------------------------------- v35 habit merge --------
+//
+// The merge folded goodHabits + badHabits into one list. It MUST be
+// arithmetically identity-preserving: a user who upgrades cannot gain or lose
+// a single point, or their level moves under them.
+
+const v34Good = [
+  { id: 1, label: "Deep Work", area: "work", xp: 50, history: ["2026-07-18", "2026-07-19", "2026-07-27", "2026-08-02"] },
+  { id: 2, label: "Diet", area: "health", xp: 10, history: ["2026-07-19", "2026-07-27"] },
+];
+const v34Bad = [
+  { id: 3, label: "Screen", area: "health", xp: 20, history: ["2026-07-31", "2026-08-01"] },
+  { id: 4, label: "NOVEMBER", area: "self", xp: 70, history: ["2026-07-23"] },
+];
+const v34Total = Math.max(0,
+  v34Good.reduce((s, h) => s + h.xp * h.history.length, 0) -
+  v34Bad.reduce((s, h) => s + h.xp * h.history.length, 0));
+
+test("merging good+bad preserves total XP exactly", () => {
+  assert.equal(computeTotalXP(mergeHabitLists(v34Good, v34Bad)), v34Total);
+});
+
+test("merging preserves every area total", () => {
+  const merged = mergeHabitLists(v34Good, v34Bad);
+  for (const a of ["work", "fitness", "health", "self"]) {
+    const before =
+      v34Good.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0) -
+      v34Bad.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0);
+    assert.equal(computeAreaXP(a, merged), before, `${a} drifted`);
+  }
+});
+
+test("merging loses no habit and no history entry", () => {
+  const merged = mergeHabitLists(v34Good, v34Bad);
+  assert.equal(merged.length, v34Good.length + v34Bad.length);
+  const before = [...v34Good, ...v34Bad].reduce((s, h) => s + h.history.length, 0);
+  assert.equal(merged.reduce((s, h) => s + h.history.length, 0), before);
+});
+
+test("merging never produces two habits with the same id", () => {
+  // THE BUG: goodHabits and badHabits numbered ids independently -- both seed
+  // sets start at 1 -- so after concatenation "Deep Work" and "High Screen
+  // Time" were both id 1. Every lookup is by id, so marking one marked BOTH,
+  // and slipping a habit silently slipped an unrelated one.
+  const merged = mergeHabitLists(
+    [{ id: 1, label: "A", area: "work", xp: 10, history: [] },
+     { id: 2, label: "B", area: "work", xp: 10, history: [] }],
+    [{ id: 1, label: "C", area: "work", xp: 20, history: [] },
+     { id: 2, label: "D", area: "work", xp: 20, history: [] }],
+  );
+  const ids = merged.map((h) => h.id);
+  assert.equal(new Set(ids).size, ids.length, `duplicate ids: ${ids}`);
+  assert.equal(merged.length, 4);
+});
+
+test("re-iding a collision does not change any XP", () => {
+  const good = [{ id: 1, label: "A", area: "work", xp: 10, history: ["d1", "d2"] }];
+  const bad = [{ id: 1, label: "C", area: "work", xp: 20, history: ["d3"] }];
+  assert.equal(computeTotalXP(mergeHabitLists(good, bad)), Math.max(0, 20 - 20));
+});
+
+test("an ex-bad habit becomes penalty-only", () => {
+  const nov = mergeHabitLists([], v34Bad).find((h) => h.label === "NOVEMBER");
+  assert.equal(nov.xp, 0, "an ex-bad habit must not silently start earning XP");
+  assert.equal(nov.penalty, 70);
+  assert.ok(nov.history.every((e) => e.t === "slip"));
+});
+
+test("the migration is idempotent", () => {
+  const once = mergeHabitLists(v34Good, v34Bad);
+  assert.equal(computeTotalXP(mergeHabitLists(once, [])), v34Total);
+});
+
+test("v34 plain-string history still counts as done", () => {
+  assert.equal(countHist({ history: ["2026-01-01", "2026-01-02"] }, "done"), 2);
+  assert.equal(countHist({ history: ["2026-01-01"] }, "slip"), 0);
+});
+
+test("a day cannot be both done and slipped", () => {
+  // "I did it and also didn't" is not a state the XP maths can price
+  let h = { id: 1, xp: 50, penalty: 20, history: [] };
+  h = markHabit(h, "2026-01-01", "done");
+  h = markHabit(h, "2026-01-01", "slip");
+  assert.equal(countHist(h, "done"), 0);
+  assert.equal(countHist(h, "slip"), 1);
+  assert.equal(habitNet(h), -20);
+});
+
+test("slipping a completed day and undoing restores the completion", () => {
+  // Found in the browser suite: the first implementation dropped the day and
+  // re-added it, so undo left the day BLANK rather than done -- a silent loss
+  // of a completion and of the streak that depended on it.
+  let h = { id: 1, xp: 40, penalty: 0, history: [{ d: "2026-08-17", t: "done" }] };
+  assert.equal(habitNet(h), 40);
+
+  h = markHabit(h, "2026-08-17", "slip");         // switch
+  assert.ok(habitSlipOn(h, "2026-08-17"));
+  assert.ok(!habitDoneOn(h, "2026-08-17"));
+
+  h = markHabit(h, "2026-08-17", "done");         // switch back
+  assert.ok(habitDoneOn(h, "2026-08-17"), "the completion did not come back");
+  assert.equal(habitNet(h), 40, "XP did not return to where it started");
+  assert.equal(normaliseHistory(h.history).length, 1, "the day was duplicated");
+});
+
+test("tapping the same mark twice clears it", () => {
+  let h = { id: 1, xp: 50, penalty: 20, history: [] };
+  h = markHabit(h, "2026-01-01", "done");
+  h = markHabit(h, "2026-01-01", "done");
+  assert.equal(h.history.length, 0);
+  assert.equal(habitNet(h), 0);
+});
+
+test("reward and penalty are independent", () => {
+  // skipping a workout should be allowed to cost less than doing it earns
+  const h = { xp: 50, penalty: 5, history: [{ d: "a", t: "done" }, { d: "b", t: "slip" }] };
+  assert.equal(habitNet(h), 45);
+});
+
+test("a habit with no penalty behaves exactly like a v34 good habit", () => {
+  const h = { xp: 30, history: [{ d: "a", t: "done" }, { d: "b", t: "done" }] };
+  assert.equal(habitPenalty(h), 0);
+  assert.equal(habitNet(h), 60);
+});
+
+test("opposite pairing is stored on the habit", () => {
+  // marking one done must mark its partner slipped -- wired in markToday
+  assert.ok(/opposite: eOpp \|\| null/.test(APP), "edit does not save the pairing");
+  assert.ok(/const partnerId = cur\.opposite/.test(APP), "markToday ignores the pairing");
+});
+
+test("both marks reach the UI", () => {
+  assert.ok(/onMark\(habit\.id, "slip"\)/.test(APP), "no slip button");
+  assert.ok(/onMark\(habit\.id, "done"\)/.test(APP), "no done button");
+});
+
+test("the bad-habits section is gone", () => {
+  assert.ok(!/BAD-HABITS/.test(APP), "a separate bad-habits section still exists");
+  assert.ok(!/function BadHabitCard/.test(APP), "BadHabitCard was not removed");
+  assert.ok(/<span>HABITS<\/span>/.test(APP), "no merged habits section");
+});
+
+test("the AI key pool can be reordered", () => {
+  // order decides which provider carries the traffic -- position 1 gets nearly all of it
+  assert.ok(/function moveAIKey/.test(APP), "no reorder helper");
+  assert.ok(/moveAIKey\(k, -1\)/.test(APP) && /moveAIKey\(k, 1\)/.test(APP), "no up/down controls");
 });
 
 // -------------------------------------------------------------- radar scale --
