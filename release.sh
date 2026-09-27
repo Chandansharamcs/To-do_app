@@ -154,6 +154,10 @@ for f in app.jsx bundle.js sw.js index.html manifest.json package.json; do
 done
 for f in "$SRC"/*.md;   do [ -e "$f" ] && copy_one "$(basename "$f")"; done
 for f in "$SRC"/*.png;  do [ -e "$f" ] && copy_one "$(basename "$f")"; done
+# v38: icon SOURCES travel too. v37 shipped notification-badge.svg in the zip
+# and it never reached the repo, because only *.png was globbed -- so the one
+# file needed to redraw the badge lived nowhere but a download folder.
+for f in "$SRC"/*.svg;  do [ -e "$f" ] && copy_one "$(basename "$f")"; done
 [ -f "$SRC/favicon.ico" ]   && copy_one "favicon.ico"
 [ -f "$SRC/gitignore.txt" ] && { run cp "$SRC/gitignore.txt" "$REPO/.gitignore"; printf '      .gitignore\n'; copied=$((copied+1)); }
 copy_one "worker/src/index.js"
@@ -166,9 +170,37 @@ copy_one "worker/wrangler.toml"
 # silently dropped them would undo it.
 for f in "$SRC"/*.test.mjs; do [ -e "$f" ] && copy_one "$(basename "$f")"; done
 for f in "$SRC"/*.spec.mjs; do [ -e "$f" ] && copy_one "$(basename "$f")"; done
-copy_one "worker/providers.test.mjs"
-copy_one "worker/callshape.test.mjs"
+# Globbed, not listed. Naming them by hand is how worker/next.test.mjs sat in
+# three release zips without ever reaching the repo.
+for f in "$SRC"/worker/*.test.mjs; do
+  [ -e "$f" ] && copy_one "worker/$(basename "$f")"
+done
 copy_one "package-lock.json"
+
+# Deletions. A payload can only ever ADD files, so anything retired upstream
+# would linger forever -- list it in remove.txt instead.
+if [ -f "$SRC/remove.txt" ]; then
+  while IFS= read -r victim; do
+    [ -n "$victim" ] || continue
+    case "$victim" in \#*) continue ;; esac
+    if [ -e "$REPO/$victim" ]; then
+      run git rm -q -f --ignore-unmatch "$victim"
+      printf '      - %s\n' "$victim"
+      copied=$((copied+1))
+    fi
+  done < "$SRC/remove.txt"
+fi
+
+# The script updates itself last, via rename rather than overwrite: bash reads
+# a script by byte offset as it runs, so truncating this file mid-execution
+# makes it resume in the middle of a different line.
+if [ -f "$SRC/release.sh" ] && ! cmp -s "$SRC/release.sh" "$REPO/release.sh"; then
+  if [ "$DRY" -eq 0 ]; then
+    cp "$SRC/release.sh" "$REPO/.release.sh.new" && mv "$REPO/.release.sh.new" "$REPO/release.sh"
+  fi
+  printf '      release.sh (updated -- takes effect next release)\n'
+  copied=$((copied+1))
+fi
 
 [ "$copied" -gt 0 ] || die "nothing was copied — is $SRC empty?"
 ok "$copied file(s) copied"
@@ -272,9 +304,13 @@ printf '\n%s└─ %s done%s\n' "$B" "$TAG" "$X"
 if [ "$DRY" -eq 0 ]; then
   cat <<EOF
 
-  On your phone, to pick up the new cache:
-    export your data → remove from home screen → clear site data
-    → revisit → reinstall → import backup
+  On your phone: nothing. Since v38 the app replaces its own code --
+  it reloads itself the next time you put it in the background.
+
+  Impatient, or it looks stale:
+    VAULT → APP-UPDATE → reload app code   (keeps every task and XP point)
+
+  Never "clear site data" to force an update again. That deletes the app.
 
 EOF
 fi

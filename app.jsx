@@ -3210,64 +3210,14 @@ function VaultNotesSection({ notes, setNotes }) {
   );
 }
 
-// The home-screen widget (KWGT) reads GET /next?id=<deviceId>. That id is
-// generated on first launch and otherwise never surfaced, so without this the
-// widget is impossible to configure. Shown on demand rather than by default:
-// it is not secret, but it is not decoration either.
-function WidgetFeedRow() {
-  const [shown, setShown] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const timer = useRef(null);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-
-  const url = `${NOTIFY_WORKER_URL}/next?id=${getDeviceId()}`;
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      sound.click();
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => { setCopied(false); timer.current = null; }, 2000);
-    } catch {
-      // clipboard is blocked in some contexts -- the URL is on screen anyway
-      setShown(true);
-    }
-  };
-
-  return (
-    <>
-      <div className="section-header"><span>WIDGET-FEED</span></div>
-      <div className="note-card widget-feed">
-        <div className="note-head">
-          <span className="note-prompt">~/next</span>
-          <span className="note-when">home screen widget</span>
-        </div>
-        {shown ? (
-          <pre className="note-body widget-url">{url}</pre>
-        ) : (
-          <pre className="note-body">tap reveal to see this device&apos;s feed URL</pre>
-        )}
-        <div className="note-actions">
-          <button className="note-btn" onClick={() => { setShown((v) => !v); sound.click(); }}>
-            {shown ? "hide" : "reveal"}
-          </button>
-          <button className="note-btn save" onClick={copy}>
-            {copied ? "copied" : "copy url"}
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
 function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
   return (
     <div className="task-list vault-scroll">
       <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
       <VaultProjectsSection projects={projects} setProjects={setProjects} />
       <VaultNotesSection notes={notes} setNotes={setNotes} />
-      <WidgetFeedRow />
+      <CloudBackupRow />
+      <AppUpdateRow />
     </div>
   );
 }
@@ -5906,6 +5856,655 @@ function AIKeyGate({ onSaved, initialError, onCancel }) {
 }
 
 
+// ============================================================
+// CLOUD BACKUP (v38)
+// ============================================================
+// Clearing site data used to be the only reliable way to force new code onto
+// the phone -- and clearing site data also deletes localStorage, which is the
+// entire app. Two fixes ship together: this one makes a wipe survivable, and
+// the update path below makes a wipe unnecessary in the first place.
+//
+// Threat model: the ciphertext sits in a KV namespace behind a URL whose only
+// secret is a 10-character id. Ids leak -- deviceId used to be printed in the
+// app for the widget feed, and anything printed once is public forever. So
+// the id is treated as public and the payload is encrypted on this device
+// under a key derived from a 16-character recovery code that is never sent
+// anywhere. Lose the code and the backup is unreadable. That is the trade,
+// and the UI says so in words rather than burying it.
+
+const STORAGE_KEY_CLOUD = "tasksh.cloud.v1";
+
+// Crockford base32: no i, l, o or u. This code gets read off one screen and
+// typed into another phone, and 1/l and 0/o are exactly where that fails.
+const CLOUD_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+const CLOUD_ID_LEN = 10;
+const CLOUD_SECRET_LEN = 16;
+const CLOUD_ROUNDS = 200000;
+const CLOUD_MIN_GAP_MS = 60 * 60 * 1000;
+
+// Keys that must never ride inside a file the user might hand to someone.
+// The cloud config is in here because it holds the recovery code: a plaintext
+// export containing the code that decrypts the cloud copy would undo the
+// whole point of encrypting it.
+const SENSITIVE_KEYS = [STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS, STORAGE_KEY_CLOUD];
+
+function randomToken(len) {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  let out = "";
+  // 256 is a whole multiple of 32, so `% 32` is unbiased here. With a 31- or
+  // 33-character alphabet this would quietly favour the first few letters.
+  for (let i = 0; i < len; i++) out += CLOUD_ALPHABET[bytes[i] % CLOUD_ALPHABET.length];
+  return out;
+}
+
+function makeRecoveryKey() {
+  return `tsh-${randomToken(CLOUD_ID_LEN)}-${randomToken(CLOUD_SECRET_LEN)}`;
+}
+
+/** Tolerant on input, strict on shape. Spaces, case and the classic
+ *  i/l/1 and o/0 mix-ups are normalised; anything else is rejected rather
+ *  than silently deriving the wrong key and reporting "wrong code". */
+function parseRecoveryKey(raw) {
+  const cleaned = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[il]/g, "1")
+    .replace(/o/g, "0");
+  const m = cleaned.match(/^tsh-([0-9a-z]{10})-([0-9a-z]{16})$/);
+  return m ? { id: m[1], secret: m[2] } : null;
+}
+
+/** Throttle for the automatic push. A clock that jumped backwards must not
+ *  wedge backups off forever, so a future `lastAt` counts as due. */
+function shouldPushBackup(lastAt, now, gapMs = CLOUD_MIN_GAP_MS) {
+  if (typeof lastAt !== "number" || !isFinite(lastAt) || lastAt <= 0) return true;
+  if (lastAt > now) return true;
+  return now - lastAt >= gapMs;
+}
+
+function bytesToB64(bytes) {
+  let s = "";
+  const CHUNK = 0x8000; // apply() on a 60KB array blows the argument limit
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(s);
+}
+
+function b64ToBytes(b64) {
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function deriveCloudKey(secret, salt) {
+  const material = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), "PBKDF2", false, ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: CLOUD_ROUNDS, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+/** -> "v1.<salt>.<iv>.<ciphertext>", all base64. The version prefix is there
+ *  so a future format change can be detected instead of mis-parsed. */
+async function encryptBackup(plaintext, secret) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveCloudKey(secret, salt);
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext))
+  );
+  return ["v1", bytesToB64(salt), bytesToB64(iv), bytesToB64(ct)].join(".");
+}
+
+async function decryptBackup(blob, secret) {
+  const parts = String(blob || "").split(".");
+  if (parts.length !== 4 || parts[0] !== "v1") throw new Error("unrecognised backup format");
+  const key = await deriveCloudKey(secret, b64ToBytes(parts[1]));
+  let plain;
+  try {
+    // AES-GCM authenticates: a wrong key fails here rather than returning
+    // plausible rubbish, which is the whole reason for GCM over CBC.
+    plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: b64ToBytes(parts[2]) }, key, b64ToBytes(parts[3])
+    );
+  } catch {
+    throw new Error("wrong recovery code");
+  }
+  return new TextDecoder().decode(plain);
+}
+
+/** Sweeps localStorage instead of naming keys. Any feature that adds a key
+ *  is backed up automatically -- a hand-maintained list is a list that will
+ *  be out of date on the one day it matters. */
+function collectStore(full, alwaysSkip) {
+  const skip = alwaysSkip || [];
+  const store = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith("tasksh.")) continue;
+    if (skip.indexOf(k) !== -1) continue;
+    if (!full && SENSITIVE_KEYS.indexOf(k) !== -1) continue;
+    store[k] = localStorage.getItem(k);
+  }
+  return store;
+}
+
+/** The cloud snapshot. Always carries API keys (the point is a one-tap
+ *  restore) but never the cloud config itself: a backup that contains its
+ *  own decryption key is not encrypted. */
+function buildCloudSnapshot() {
+  return JSON.stringify({
+    app: "tasks.sh",
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    containsKeys: true,
+    store: collectStore(true, [STORAGE_KEY_DEVICE_ID, STORAGE_KEY_CLOUD]),
+  });
+}
+
+function readCloudConfig() {
+  const cfg = loadStored(STORAGE_KEY_CLOUD, null);
+  if (!cfg || typeof cfg !== "object" || !cfg.id || !cfg.secret) return null;
+  return cfg;
+}
+
+function writeCloudConfig(patch) {
+  const next = { ...(readCloudConfig() || {}), ...patch };
+  try { localStorage.setItem(STORAGE_KEY_CLOUD, JSON.stringify(next)); } catch {}
+  // The vault row and the background pusher both hold their own copy; this
+  // keeps them from drifting without threading state through six components.
+  try { window.dispatchEvent(new Event("tasksh-cloud")); } catch {}
+  return next;
+}
+
+function clearCloudConfig() {
+  try { localStorage.removeItem(STORAGE_KEY_CLOUD); } catch {}
+  try { window.dispatchEvent(new Event("tasksh-cloud")); } catch {}
+}
+
+async function cloudPush(cfg, plaintext) {
+  const blob = await encryptBackup(plaintext, cfg.secret);
+  const res = await fetch(`${NOTIFY_WORKER_URL}/backup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: cfg.id, blob }),
+  });
+  let body = {};
+  try { body = await res.json(); } catch { /* keep the status code as the message */ }
+  if (!res.ok) throw new Error(body.error || `push failed (${res.status})`);
+  return { at: body.at || Date.now(), size: body.size || blob.length };
+}
+
+async function cloudFetch(id, opts) {
+  const o = opts || {};
+  const q = new URLSearchParams({ id });
+  if (o.meta) q.set("meta", "1");
+  if (o.prev) q.set("prev", "1");
+  const res = await fetch(`${NOTIFY_WORKER_URL}/backup?${q.toString()}`);
+  let body = {};
+  try { body = await res.json(); } catch { /* fall through */ }
+  if (res.status === 404) throw new Error("no backup stored for that code");
+  if (!res.ok) throw new Error(body.error || `fetch failed (${res.status})`);
+  return body;
+}
+
+/** Writes a restored store back and reloads. Reloading is deliberate: half
+ *  these keys are only read inside a useState initialiser, so setting them
+ *  without a reload leaves the UI showing yesterday's numbers. */
+function applyRestoredStore(store) {
+  const keys = Object.keys(store || {}).filter((k) => k.startsWith("tasksh."));
+  let written = 0;
+  for (const k of keys) {
+    if (k === STORAGE_KEY_DEVICE_ID) continue; // never clone a device id
+    if (k === STORAGE_KEY_CLOUD) continue;     // the code just typed in wins
+    try { localStorage.setItem(k, store[k]); written++; } catch {}
+  }
+  return written;
+}
+
+function fmtAgo(ts, now) {
+  if (!ts) return "never";
+  const s = Math.max(0, Math.round((now - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/** Background pusher. Runs on mount and whenever the app comes back to the
+ *  foreground, throttled to once an hour, and stays silent on failure --
+ *  a backup that interrupts you to complain about wifi is worse than no
+ *  backup. Failures surface in the vault row, which is where you'd look. */
+function useCloudAutoBackup() {
+  useEffect(() => {
+    let stopped = false;
+
+    const run = async () => {
+      if (stopped) return;
+      const cfg = readCloudConfig();
+      if (!cfg) return;
+      if (!shouldPushBackup(cfg.lastAt, Date.now())) return;
+      try {
+        const out = await cloudPush(cfg, buildCloudSnapshot());
+        if (!stopped) writeCloudConfig({ lastAt: out.at, lastSize: out.size, lastError: null });
+      } catch (err) {
+        if (!stopped) writeCloudConfig({ lastError: String(err.message || err) });
+      }
+    };
+
+    const onVis = () => { if (!document.hidden) run(); };
+    // A couple of seconds after boot: the first paint should not wait on
+    // PBKDF2 and a network round trip.
+    const t = setTimeout(run, 2500);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stopped = true;
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+}
+
+function CloudBackupRow() {
+  const [cfg, setCfg] = useState(() => readCloudConfig());
+  const [revealed, setRevealed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+  const [entry, setEntry] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    const sync = () => setCfg(readCloudConfig());
+    window.addEventListener("tasksh-cloud", sync);
+    return () => window.removeEventListener("tasksh-cloud", sync);
+  }, []);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const key = cfg ? `tsh-${cfg.id}-${cfg.secret}` : "";
+
+  const turnOn = () => {
+    const parsed = parseRecoveryKey(makeRecoveryKey());
+    setCfg(writeCloudConfig({ id: parsed.id, secret: parsed.secret, lastAt: 0 }));
+    setRevealed(true);
+    sound.click();
+  };
+
+  const turnOff = () => {
+    clearCloudConfig();
+    setCfg(null);
+    setRevealed(false);
+    setMsg(null);
+    sound.click();
+  };
+
+  const backupNow = async () => {
+    if (!cfg || busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const out = await cloudPush(cfg, buildCloudSnapshot());
+      setCfg(writeCloudConfig({ lastAt: out.at, lastSize: out.size, lastError: null }));
+      setMsg({ type: "ok", text: `pushed ${fmtSize(out.size)}` });
+    } catch (err) {
+      setMsg({ type: "err", text: String(err.message || err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyKey = async () => {
+    try {
+      await navigator.clipboard.writeText(key);
+      setCopied(true);
+      sound.click();
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => { setCopied(false); timer.current = null; }, 2000);
+    } catch {
+      setRevealed(true); // clipboard blocked -- the code is on screen anyway
+    }
+  };
+
+  const lookup = async () => {
+    const parsed = parseRecoveryKey(entry);
+    if (!parsed) {
+      setMsg({ type: "err", text: "that doesn't look like a recovery code" });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const rec = await cloudFetch(parsed.id, {});
+      const plain = await decryptBackup(rec.blob, parsed.secret);
+      const parsedJson = JSON.parse(plain);
+      const store = parsedJson.store || {};
+      setPreview({ parsed, rec, store, keys: Object.keys(store).length, when: parsedJson.exportedAt });
+      setMsg(null);
+    } catch (err) {
+      setPreview(null);
+      setMsg({ type: "err", text: String(err.message || err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyRestore = () => {
+    if (!preview) return;
+    const written = applyRestoredStore(preview.store);
+    // Adopt the code that was just used, so this device keeps the same
+    // backup line instead of silently starting a second one.
+    writeCloudConfig({
+      id: preview.parsed.id,
+      secret: preview.parsed.secret,
+      lastAt: preview.rec.at || 0,
+      lastSize: preview.rec.size || 0,
+      lastError: null,
+    });
+    setMsg({ type: "ok", text: `restored ${written} keys — reloading` });
+    setTimeout(() => window.location.reload(), 700);
+  };
+
+  const now = Date.now();
+
+  return (
+    <>
+      <div className="section-header"><span>CLOUD-BACKUP</span></div>
+      <div className="note-card cloud-card">
+        <div className="note-head">
+          <span className="note-prompt">~/backup</span>
+          <span className="note-when">
+            {cfg ? `${fmtAgo(cfg.lastAt, now)}${cfg.lastSize ? ` · ${fmtSize(cfg.lastSize)}` : ""}` : "off"}
+          </span>
+        </div>
+
+        {!cfg && !restoring && (
+          <pre className="note-body">
+            an encrypted copy, pushed hourly. the code below is the only way
+            to read it back — the server cannot.
+          </pre>
+        )}
+
+        {cfg && (
+          <pre className="note-body cloud-key">
+            {revealed ? key : "recovery code hidden · tap reveal"}
+          </pre>
+        )}
+
+        {cfg && revealed && (
+          <pre className="note-body cloud-warn">
+            save this somewhere off the phone. without it the backup is
+            unreadable — that is what makes it safe to store.
+          </pre>
+        )}
+
+        {cfg && cfg.lastError && (
+          <pre className="note-body cloud-warn">last push failed: {cfg.lastError}</pre>
+        )}
+
+        {restoring && (
+          <>
+            <input
+              className="cloud-input"
+              value={entry}
+              onChange={(e) => setEntry(e.target.value)}
+              placeholder="tsh-xxxxxxxxxx-xxxxxxxxxxxxxxxx"
+              spellCheck="false"
+              autoCapitalize="none"
+              autoComplete="off"
+              aria-label="recovery code"
+            />
+            {preview && (
+              <pre className="note-body cloud-preview">
+                {`${preview.keys} keys · ${fmtSize(preview.rec.size)} · saved ${fmtAgo(preview.rec.at, now)}`}
+                {"\n"}applying overwrites everything on this device.
+              </pre>
+            )}
+          </>
+        )}
+
+        {msg && <pre className={`note-body cloud-msg ${msg.type}`}>{msg.text}</pre>}
+
+        <div className="note-actions">
+          {!cfg && !restoring && (
+            <button className="note-btn save" onClick={turnOn}>turn on</button>
+          )}
+          {cfg && !restoring && (
+            <>
+              <button className="note-btn" onClick={() => { setRevealed((v) => !v); sound.click(); }}>
+                {revealed ? "hide" : "reveal"}
+              </button>
+              <button className="note-btn" onClick={copyKey}>{copied ? "copied" : "copy code"}</button>
+              <button className="note-btn save" onClick={backupNow} disabled={busy}>
+                {busy ? "pushing…" : "back up now"}
+              </button>
+            </>
+          )}
+          {!restoring && (
+            <button className="note-btn" onClick={() => { setRestoring(true); setMsg(null); sound.click(); }}>
+              restore
+            </button>
+          )}
+          {restoring && (
+            <>
+              <button className="note-btn" onClick={lookup} disabled={busy}>
+                {busy ? "checking…" : "look up"}
+              </button>
+              {preview && (
+                <button className="note-btn danger" onClick={applyRestore}>apply</button>
+              )}
+              <button
+                className="note-btn"
+                onClick={() => { setRestoring(false); setPreview(null); setEntry(""); setMsg(null); sound.click(); }}
+              >
+                cancel
+              </button>
+            </>
+          )}
+          {cfg && !restoring && (
+            <button className="note-btn danger" onClick={turnOff}>turn off</button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// APP UPDATE (v38)
+// ============================================================
+// The old registration was one line -- register("sw.js") and nothing more.
+// A new worker would install and activate (sw.js calls skipWaiting), but the
+// PAGE went on running the bundle.js already in memory, so the app looked
+// unchanged until something forced a full navigation. An installed PWA
+// resumed from the launcher often isn't one. The workaround people reach for
+// is "clear site data", which also deletes localStorage: every task, habit
+// and XP point, thrown away to fix a cache. Hence this.
+
+function isTyping(doc) {
+  const el = doc && doc.activeElement;
+  if (!el) return false;
+  const tag = String(el.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || el.isContentEditable === true;
+}
+
+/** Hidden and idle -> swap immediately, so the next look at the app is the
+ *  new build. Otherwise ask: reloading under someone's fingers throws away
+ *  whatever they were half-way through typing.
+ *
+ *  `hadController` is the one that isn't obvious. controllerchange also
+ *  fires the FIRST time a worker claims an uncontrolled page -- i.e. on a
+ *  brand-new install, where nothing has updated at all. Without this guard
+ *  every first launch opens with "new build ready", which is both a lie and
+ *  a reload loop waiting to happen. Caught in a screenshot, not a test. */
+function decideUpdateAction(hidden, typing, hadController) {
+  if (!hadController) return "ignore";
+  return hidden && !typing ? "reload" : "prompt";
+}
+
+/** Drops the service worker and every cache, then reloads. localStorage is
+ *  deliberately untouched -- this is the "clear site data" people reach for,
+ *  minus the part that destroys the data. */
+async function purgeAppCode() {
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map((r) => r.unregister()));
+  } catch { /* no SW support, or already gone */ }
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+  } catch { /* no cache API */ }
+  window.location.reload();
+}
+
+const UPDATE_POLL_MS = 30 * 60 * 1000;
+
+function useAppUpdate() {
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const reloading = useRef(false);
+
+  const mark = (v) => { pendingRef.current = v; setPending(v); };
+
+  const apply = () => {
+    if (reloading.current) return;
+    reloading.current = true;
+    window.location.reload();
+  };
+
+  const check = async () => {
+    try {
+      // index.html stashes the registration: getRegistration() races the
+      // load-event listener on a cold start and returns undefined, which
+      // makes the check a silent no-op exactly when it matters most.
+      const reg = window.__swReg || await navigator.serviceWorker.getRegistration();
+      if (reg) await reg.update();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    const sw = navigator.serviceWorker;
+    if (!sw) return;
+
+    // Was this page under a worker's control BEFORE the change that just
+    // fired? Not "at mount" -- a first visit loads uncontrolled, and reading
+    // this once would then ignore every real update for the rest of that
+    // session. It has to move with each event.
+    let wasControlled = !!sw.controller;
+
+    // A new worker took over. With skipWaiting in sw.js this fires as soon as
+    // the new code is installed, while this page is still running the old.
+    const onController = () => {
+      const action = decideUpdateAction(document.hidden, isTyping(document), wasControlled);
+      wasControlled = !!sw.controller;
+      if (action === "ignore") return;
+      if (action === "reload") apply();
+      else mark(true);
+    };
+
+    const onVis = () => {
+      if (document.hidden) {
+        // Deferred from earlier: the moment the app is out of sight and
+        // nothing is being typed, take the update.
+        if (pendingRef.current && !isTyping(document)) apply();
+      } else {
+        check();
+      }
+    };
+
+    sw.addEventListener("controllerchange", onController);
+    document.addEventListener("visibilitychange", onVis);
+    check();
+    const poll = setInterval(check, UPDATE_POLL_MS);
+
+    return () => {
+      sw.removeEventListener("controllerchange", onController);
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(poll);
+    };
+  }, []);
+
+  return { pending, apply, check };
+}
+
+function AppUpdateRow() {
+  const version = useRunningVersion();
+  const [state, setState] = useState("idle");
+  const [armed, setArmed] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const check = async () => {
+    setState("checking");
+    sound.click();
+    try {
+      const reg = window.__swReg || await navigator.serviceWorker.getRegistration();
+      if (reg) await reg.update();
+      // No callback tells you "already current", so this reports what it can:
+      // the check ran. If a new worker was found, the update bar appears.
+      setState("checked");
+    } catch {
+      setState("failed");
+    }
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setState("idle"); timer.current = null; }, 4000);
+  };
+
+  return (
+    <>
+      <div className="section-header"><span>APP-UPDATE</span></div>
+      <div className="note-card update-card">
+        <div className="note-head">
+          <span className="note-prompt">~/build</span>
+          <span className="note-when">{version || "unknown"}</span>
+        </div>
+        <pre className="note-body">
+          {state === "checking" ? "checking for a new build…"
+            : state === "checked" ? "checked — a new build reloads on its own"
+            : state === "failed" ? "couldn't reach the server"
+            : "reload app code drops the cache and re-downloads. your tasks, habits and XP are not touched."}
+        </pre>
+        <div className="note-actions">
+          <button className="note-btn" onClick={check}>check now</button>
+          {armed ? (
+            <>
+              <button className="note-btn danger" onClick={() => { sound.click(); purgeAppCode(); }}>
+                confirm reload
+              </button>
+              <button className="note-btn" onClick={() => { setArmed(false); sound.click(); }}>cancel</button>
+            </>
+          ) : (
+            <button className="note-btn save" onClick={() => { setArmed(true); sound.click(); }}>
+              reload app code
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function loadStored(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -6300,20 +6899,11 @@ function TodoApp() {
   // (AGENTS.md R12: backups get shared between devices and people). The
   // "with keys" variant is opt-in and says so on the button, because a file
   // that quietly contains credentials is how credentials leak.
-  const SENSITIVE_KEYS = [STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS];
-
   const exportData = (full = false) => {
     try {
-      const store = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k || !k.startsWith("tasksh.")) continue;
-        // deviceId is per-install: restoring it onto a second device would
-        // make both phones share one push subscription and one widget feed
-        if (k === STORAGE_KEY_DEVICE_ID) continue;
-        if (!full && SENSITIVE_KEYS.includes(k)) continue;
-        store[k] = localStorage.getItem(k);
-      }
+      // deviceId is per-install: restoring it onto a second device would
+      // make both phones share one push subscription.
+      const store = collectStore(full, [STORAGE_KEY_DEVICE_ID]);
 
       const payload = {
         app: "tasks.sh",
@@ -6411,6 +7001,10 @@ function TodoApp() {
 
   // in-app banner: fires when the "current" routine changes, so it's
   // visible no matter which tab you're on
+  // v38: keep the running code fresh, and the data recoverable if it isn't.
+  const update = useAppUpdate();
+  useCloudAutoBackup();
+
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
   const { currentId: liveCurrentId, sorted: liveSorted } = useRoutineStatus(routines, nowMinutes);
@@ -9411,8 +10005,38 @@ function TodoApp() {
         .note-btn.save { border-color: var(--accent); color: var(--accent); }
         .note-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 
-        .widget-feed { border-left-color: var(--accent2); }
-        .widget-url { word-break: break-all; white-space: pre-wrap; color: var(--accent); font-size: 10px; }
+        .cloud-card { border-left-color: var(--accent2); }
+        .cloud-key {
+          word-break: break-all; white-space: pre-wrap;
+          color: var(--accent); font-size: 10px;
+        }
+        .cloud-warn { color: var(--accent2); font-size: 10px; }
+        .cloud-preview { color: var(--text); font-size: 10px; }
+        .cloud-msg.ok { color: var(--accent); font-size: 10px; }
+        .cloud-msg.err { color: var(--danger); font-size: 10px; }
+        .cloud-input {
+          width: 100%; box-sizing: border-box; margin: 6px 0 2px;
+          background: transparent; border: 1px solid var(--border);
+          color: var(--accent); font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; letter-spacing: 0.02em; padding: 6px 8px;
+          border-radius: 3px;
+        }
+        .cloud-input:focus { outline: none; border-color: var(--accent); }
+        .update-card { border-left-color: var(--accent); }
+
+        /* Flat bar, no shadow: DESIGN.md forbids raised cards, and this sits
+           above everything already by being the first thing in the panel. */
+        .update-bar {
+          display: flex; align-items: center; gap: 8px;
+          margin: 0 0 8px; padding: 7px 12px; cursor: pointer;
+          background: rgba(245,166,35,0.10);
+          border: 1px solid var(--accent2);
+          border-radius: 3px;
+          color: var(--accent2);
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; letter-spacing: 0.03em;
+        }
+        .update-bar-icon { font-size: 9px; }
 
         /* ---- habit slip button + paired edit fields (v35) ---- */
         .quest-slip {
@@ -10274,6 +10898,18 @@ function TodoApp() {
 
       <div className="panel">
         <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} scoped />
+        {update.pending && (
+          <div
+            className="update-bar"
+            role="button"
+            tabIndex={0}
+            onClick={update.apply}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") update.apply(); }}
+          >
+            <span className="update-bar-icon">▲</span>
+            <span>new build ready — tap to reload</span>
+          </div>
+        )}
         {banner && (
           <div className="quest-banner" onClick={() => setBanner(null)}>
             <span className="quest-banner-icon">▸</span>

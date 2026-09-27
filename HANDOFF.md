@@ -13,8 +13,8 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v28   (service worker cache tag, see sw.js)
-  LAST UPDATED      2026-07-31
+  CURRENT VERSION   tasksh-v38   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-09-27
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
 ```
@@ -404,6 +404,46 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   counts on every render. There's no separate "current XP" field to get
   out of sync.
 
+
+## Updates and backup (v38)
+
+Two halves of one problem: the app could not replace its own code, so the
+only way to force an update was "clear site data", which also deleted every
+task, habit and XP point.
+
+**Update path.** `index.html` registers the worker and stashes it on
+`window.__swReg` (`getRegistration()` races the load listener on a cold
+start and returns `undefined`). `useAppUpdate()` calls `reg.update()` on
+mount, on every foreground, and every 30 minutes. When `controllerchange`
+fires, `decideUpdateAction(hidden, typing)` decides: **hidden and idle →
+reload now; otherwise show the amber tap-to-reload bar.** A deferred update
+is also taken the moment the app goes to the background.
+
+`VAULT → APP-UPDATE` has `check now` and `reload app code`. The latter
+unregisters the worker and deletes every cache but **never touches
+`localStorage`** — it is "clear site data" minus the data loss. It arms
+before it fires.
+
+**Backup path.** `VAULT → CLOUD-BACKUP`. On app open, at most hourly, the
+whole `tasksh.*` store is swept, encrypted with AES-GCM-256 under a
+PBKDF2-derived key, and pushed to `POST /backup`. Restore anywhere with the
+31-character recovery code. The worker never sees plaintext; the threat
+model is in `SECURITY.md`.
+
+Key functions in `app.jsx`: `makeRecoveryKey`, `parseRecoveryKey`,
+`shouldPushBackup`, `encryptBackup`, `decryptBackup`, `collectStore`,
+`buildCloudSnapshot`, `applyRestoredStore`, `useCloudAutoBackup`,
+`useAppUpdate`, `purgeAppCode`.
+
+Two traps worth keeping in mind:
+
+- `SENSITIVE_KEYS` is evaluated at module load, so the cloud block must sit
+  **below** `STORAGE_KEY_AI_KEYS` in the file or it dies in the temporal
+  dead zone. It is not a style choice.
+- The cloud snapshot must never contain `tasksh.cloud.v1` (its own key) or
+  `tasksh.deviceid.v1` (a cloned push subscription). Tests assert both.
+
+---
 
 ## Push notifications architecture
 

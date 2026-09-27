@@ -199,10 +199,12 @@ test("the default export excludes AI keys", () => {
   // but only through a separate opt-in button. The default path -- the
   // titlebar icon, the one people actually tap -- must still omit them,
   // because that is the file that gets shared between devices and people.
-  assert.ok(/const SENSITIVE_KEYS = \[STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS\]/.test(APP),
-    "SENSITIVE_KEYS list is missing");
-  assert.ok(/if \(!full && SENSITIVE_KEYS\.includes\(k\)\) continue;/.test(APP),
-    "the export no longer skips sensitive keys when full=false");
+  // v38 added the cloud recovery code to the list: a plaintext export that
+  // contained it would hand over the key to the encrypted cloud copy too.
+  assert.ok(/const SENSITIVE_KEYS = \[STORAGE_KEY_AI_KEY, STORAGE_KEY_AI_KEYS, STORAGE_KEY_CLOUD\]/.test(APP),
+    "SENSITIVE_KEYS list is missing or no longer covers the recovery code");
+  assert.ok(/if \(!full && SENSITIVE_KEYS\.indexOf\(k\) !== -1\) continue;/.test(APP),
+    "the sweep no longer skips sensitive keys when full=false");
   assert.ok(/exportData\(false\)/.test(APP), "no plain export path");
 });
 
@@ -224,9 +226,13 @@ test("the backup sweeps localStorage rather than naming keys", () => {
 });
 
 test("deviceId is never exported or restored", () => {
-  // cloning it would give two phones one push subscription and one widget feed
+  // cloning it would give two phones one push subscription
   const exp = APP.slice(APP.indexOf("const exportData"), APP.indexOf("const triggerImport"));
-  assert.ok(/k === STORAGE_KEY_DEVICE_ID\) continue/.test(exp), "export copies the device id");
+  assert.ok(/collectStore\(full, \[STORAGE_KEY_DEVICE_ID\]\)/.test(exp), "export copies the device id");
+  assert.ok(/if \(skip\.indexOf\(k\) !== -1\) continue;/.test(APP), "the sweep ignores its skip list");
+  // the cloud snapshot is a second export path and has the same duty
+  assert.ok(/collectStore\(true, \[STORAGE_KEY_DEVICE_ID, STORAGE_KEY_CLOUD\]\)/.test(APP),
+    "the cloud snapshot copies the device id or its own recovery code");
   const imp = APP.slice(APP.indexOf("const handleImportFile"), APP.indexOf("const handleImportFile") + 3000);
   assert.ok(/STORAGE_KEY_DEVICE_ID\) continue/.test(imp), "import overwrites the device id");
 });

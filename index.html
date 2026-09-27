@@ -44,7 +44,13 @@
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("sw.js").catch(() => {});
+        navigator.serviceWorker.register("sw.js").then((reg) => {
+          // The app polls this handle for updates. getRegistration() races
+          // with this listener on a cold start and can come back undefined,
+          // which is how an update check silently does nothing.
+          window.__swReg = reg;
+          reg.update().catch(() => {});
+        }).catch(() => {});
       });
     }
   </script>

@@ -4,6 +4,8 @@
 //   POST /subscribe    { deviceId, subscription }  -> store push subscription
 //   POST /unsubscribe  { deviceId }                 -> remove subscription + data
 //   POST /sync         { deviceId, routines }        -> store this device's routine schedule
+//   POST /backup       { id, blob }                  -> store an encrypted snapshot
+//   GET  /backup?id=                                 -> read that snapshot back
 //
 // Cron (runs every minute, see wrangler.toml):
 //   For every subscribed device, checks whether any routine's start time
@@ -14,6 +16,8 @@
 //   sub:{deviceId}       -> JSON PushSubscription
 //   routines:{deviceId}  -> JSON [{ id, time: "HH:MM", label }]
 //   fired:{deviceId}:{routineId}:{YYYY-MM-DD}  -> "1"  (dedupe marker, auto-expires)
+//   bk:{id}              -> JSON { at, size, blob }  encrypted backup, opaque here
+//   bk:{id}:prev         -> the snapshot it replaced
 
 import webpush from "web-push";
 
@@ -63,94 +67,67 @@ async function handleSync(request, env) {
   return json({ ok: true });
 }
 
-// ---- widget feed (v32) ----------------------------------------------------
-// GET /next?id=<deviceId>  ->  what the KWGT home-screen widget renders.
+// ---- encrypted cloud backup (v38) -----------------------------------------
+// POST /backup   { id, blob }        -> store one ciphertext snapshot
+// GET  /backup?id=...[&meta=1]       -> read it back (meta=1 omits the payload)
 //
-// The widget cannot read the PWA's localStorage: Chrome sandboxes it per
-// origin and no Android app can reach in. So the widget never touches the app
-// at all -- both sides talk to this worker. The routine schedule is already
-// here, pushed by POST /sync for push notifications; this just reads it back.
+// The worker never sees plaintext and holds no key material. The app derives
+// an AES-GCM key from a recovery code that never leaves the device, so `blob`
+// is opaque here by design: a full KV dump is worthless without the code.
 //
-// Every field is returned PRE-FORMATTED as a display string. KWGT's free tier
-// has no Flows, so the widget cannot post-process anything -- whatever it gets
-// goes straight on screen. Doing the maths here also keeps IST in one place;
-// the widget must not have to know the timezone.
-function handleNext(request, env) {
+// `id` is an address, not a credential, and it is deliberately NOT derived
+// from deviceId. deviceId was printed in the app for the old widget feed, and
+// anything printed once is public forever.
+//
+// KV layout:
+//   bk:{id}       -> { at, size, blob }   newest snapshot
+//   bk:{id}:prev  -> the one it replaced  (a bad push cannot eat the good one)
+
+const BACKUP_ID_RE = /^[0-9a-z]{10}$/;
+const BACKUP_MAX_BYTES = 2000000;
+const BACKUP_MIN_GAP_MS = 5 * 60 * 1000;
+
+async function handleBackupPut(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
+
+  const id = String((body && body.id) || "");
+  const blob = body && body.blob;
+  if (!BACKUP_ID_RE.test(id)) return json({ error: "bad id" }, 400);
+  if (typeof blob !== "string" || !blob) return json({ error: "missing blob" }, 400);
+  if (blob.length > BACKUP_MAX_BYTES) return json({ error: "too large", max: BACKUP_MAX_BYTES }, 413);
+
+  // Flood guard. The app pushes at most hourly, so anything faster is a bug
+  // or somebody else -- and KV writes are the billable resource either way.
+  const prevRaw = await env.TASKSH_KV.get(`bk:${id}`);
+  let prev = null;
+  try { prev = prevRaw ? JSON.parse(prevRaw) : null; } catch { prev = null; }
+
+  const now = Date.now();
+  if (prev && typeof prev.at === "number" && now - prev.at < BACKUP_MIN_GAP_MS) {
+    return json({ error: "too soon", retryInMs: BACKUP_MIN_GAP_MS - (now - prev.at) }, 429);
+  }
+
+  // Rotate before overwriting: a snapshot taken mid-corruption should never
+  // be the only thing left to restore from.
+  if (prevRaw) { try { await env.TASKSH_KV.put(`bk:${id}:prev`, prevRaw); } catch {} }
+  await env.TASKSH_KV.put(`bk:${id}`, JSON.stringify({ at: now, size: blob.length, blob }));
+  return json({ ok: true, at: now, size: blob.length });
+}
+
+async function handleBackupGet(request, env) {
   const url = new URL(request.url);
-  const deviceId = url.searchParams.get("id");
-  if (!deviceId) return json({ error: "pass ?id=YOUR_DEVICE_ID" }, 400);
-  return nextPayload(env, deviceId);
-}
+  const id = String(url.searchParams.get("id") || "");
+  if (!BACKUP_ID_RE.test(id)) return json({ error: "bad id" }, 400);
 
-async function nextPayload(env, deviceId) {
-  let routines = [];
-  try {
-    const raw = await env.TASKSH_KV.get(`routines:${deviceId}`);
-    if (raw) routines = JSON.parse(raw);
-  } catch { /* fall through to the empty state */ }
+  const key = url.searchParams.get("prev") === "1" ? `bk:${id}:prev` : `bk:${id}`;
+  const raw = await env.TASKSH_KV.get(key);
+  if (!raw) return json({ error: "not found" }, 404);
 
-  const { hhmm, dateStr } = istNowParts();
-  const nowMin = toMin(hhmm);
-
-  const valid = (Array.isArray(routines) ? routines : [])
-    .filter((r) => r && typeof r.time === "string" && /^\d{2}:\d{2}$/.test(r.time))
-    .map((r) => ({ ...r, start: toMin(r.time), dur: Math.max(1, +r.duration || 30) }))
-    .sort((a, b) => a.start - b.start);
-
-  if (!valid.length) {
-    return json({
-      ok: true, empty: true, date: dateStr, now: hhmm,
-      time: "--:--", label: "no routines", sub: "open tasks.sh to add one",
-      pct: 0, state: "empty",
-    });
-  }
-
-  // Something running right now takes priority over what is merely next: the
-  // widget should say "you are in School" rather than pointing at dinner.
-  const current = valid.find((r) => nowMin >= r.start && nowMin < r.start + r.dur);
-  if (current) {
-    const elapsed = nowMin - current.start;
-    const left = current.dur - elapsed;
-    return json({
-      ok: true, empty: false, date: dateStr, now: hhmm,
-      time: current.time,
-      label: current.label || "routine",
-      sub: `${fmtGap(left)} left · ${fmtGap(current.dur)} block`,
-      pct: Math.round((elapsed / current.dur) * 100),
-      state: "now",
-      mins: left,
-    });
-  }
-
-  // Otherwise the next one today, or the first one tomorrow if the day is done.
-  const upcoming = valid.find((r) => r.start > nowMin);
-  const target = upcoming || valid[0];
-  const gap = upcoming ? target.start - nowMin : (1440 - nowMin) + target.start;
-
-  return json({
-    ok: true, empty: false, date: dateStr, now: hhmm,
-    time: target.time,
-    label: target.label || "routine",
-    sub: `in ${fmtGap(gap)}${upcoming ? "" : " · tomorrow"} · ${fmtGap(target.dur)} block`,
-    // progress through the WAIT, so the bar fills as the routine approaches
-    pct: gap >= 180 ? 0 : Math.round((1 - gap / 180) * 100),
-    state: upcoming ? "next" : "tomorrow",
-    mins: gap,
-  });
-}
-
-function toMin(hhmm) {
-  const [h, m] = String(hhmm).split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
-
-/** 95 -> "1h 35m", 40 -> "40m". Short enough for a 4x2 widget. */
-function fmtGap(mins) {
-  const m = Math.max(0, Math.round(mins));
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const rem = m % 60;
-  return rem ? `${h}h ${rem}m` : `${h}h`;
+  let rec;
+  try { rec = JSON.parse(raw); } catch { return json({ error: "corrupt" }, 500); }
+  if (url.searchParams.get("meta") === "1") return json({ ok: true, at: rec.at, size: rec.size });
+  return json({ ok: true, at: rec.at, size: rec.size, blob: rec.blob });
 }
 
 async function runCheck(env) {
@@ -1307,7 +1284,8 @@ export default {
       if (request.method === "POST" && url.pathname === "/companion") return await handleCompanion(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
-      if (request.method === "GET" && url.pathname === "/next") return await handleNext(request, env);
+      if (request.method === "POST" && url.pathname === "/backup") return await handleBackupPut(request, env);
+      if (request.method === "GET" && url.pathname === "/backup") return await handleBackupGet(request, env);
       // manual trigger for testing: GET /run-check-now
       if (request.method === "GET" && url.pathname === "/run-check-now") {
         await runCheck(env);

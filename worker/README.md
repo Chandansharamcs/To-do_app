@@ -40,7 +40,8 @@ Setup is a **one-time** job on your laptop. After that it runs by itself.
      ├─ pushManager.subscribe(VAPID_PUBLIC_KEY)
      │
      ├──── POST /subscribe ────▶  KV: sub:{deviceId}
-     └──── POST /sync ─────────▶  KV: routines:{deviceId}
+     ├──── POST /sync ─────────▶  KV: routines:{deviceId}
+     └──── POST /backup ───────▶  KV: bk:{id}        (ciphertext, opaque here)
                                         │
                                   ┌─────▼──────┐
                                   │ cron, 1/min│
@@ -475,3 +476,35 @@ limits exist if this ever grows beyond a handful of devices.
 ```
 
 </div>
+
+
+---
+
+## `POST /backup` and `GET /backup`  *(v38)*
+
+An encrypted snapshot of the app's `localStorage`, pushed hourly.
+
+```
+POST /backup       { id, blob }            -> { ok, at, size }
+GET  /backup?id=                           -> { ok, at, size, blob }
+GET  /backup?id=&meta=1                    -> { ok, at, size }
+GET  /backup?id=&prev=1                    -> the snapshot this one replaced
+```
+
+The worker cannot read a backup and holds no key material. `blob` is
+AES-GCM ciphertext produced on the device from a recovery code that is never
+sent here — see `SECURITY.md`. Treat `id` as public: it travels in a URL.
+
+Guards, all covered by `worker/backup.test.mjs`:
+
+| Rule | Response |
+|---|---|
+| `id` not exactly 10 lowercase base32 chars | `400 bad id` |
+| missing / non-string / empty `blob` | `400` |
+| `blob` over 2,000,000 chars | `413 too large` |
+| second push inside 5 minutes | `429 too soon` + `retryInMs` |
+| unknown id | `404 not found` |
+| stored record is unparseable | `500 corrupt` — deliberately *not* 404, so a storage fault never reads as "you lost your backup" |
+
+Every successful write rotates the existing snapshot to `bk:{id}:prev` first,
+so a truncated or mid-corruption push cannot destroy the last good one.

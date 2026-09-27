@@ -18,6 +18,45 @@ project.
 
 ---
 
+## Cloud backup · what the server can and cannot see  *(v38)*
+
+The app pushes an encrypted snapshot of `localStorage` to the worker once an
+hour. Design in one line: **the id is public, the payload is the secret.**
+
+| | |
+|---|---|
+| Address | `bk:{id}` — 10 chars of Crockford base32, sent in the URL |
+| Cipher | AES-GCM-256, 96-bit random IV per push |
+| Key | PBKDF2-SHA256, 200,000 rounds, 128-bit random salt per push |
+| Secret | 16 chars (80 bits) of the recovery code — **never transmitted** |
+| Server sees | `{ at, size, blob }` and nothing else |
+
+Why encrypt a single-user app's data at all: the id is the only thing between
+a stranger and the blob, and ids leak. `deviceId` was printed inside the app
+itself for the widget feed until v38. Anything displayed once should be
+assumed public, so the URL is assumed guessable and the contents are assumed
+readable by whoever holds them — which is why they are ciphertext.
+
+Consequences, stated plainly because they are not recoverable:
+
+- **Lose the recovery code and the backup is gone.** There is no reset, no
+  email, no support. That is the same property that makes it safe to store.
+- The snapshot **does** contain your API keys — deliberate, so a restore is
+  one step — which is exactly why it is never stored in the clear.
+- The snapshot **never** contains the recovery code itself or the
+  `deviceId`. A backup holding its own key would not be encrypted in any
+  meaningful sense, and a cloned `deviceId` would give two phones one push
+  subscription.
+- A plaintext file export (the titlebar button) excludes the cloud config for
+  the same reason: that file gets shared, and it must not carry the key to
+  the cloud copy.
+
+Not defended against: someone who already has your unlocked phone. The
+recovery code sits in `localStorage` next to the data it protects, which is
+the only place it can live if backups are to run unattended.
+
+---
+
 ## ⚠ Action required · VAPID private key in git history
 
 The VAPID **private** key was committed to this repository in

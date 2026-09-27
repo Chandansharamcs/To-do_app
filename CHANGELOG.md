@@ -24,6 +24,14 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v38`** | 2026-09-27 | Encrypted cloud backup, self-updating app, widget feed removed |
+| **`v37`** | 2026-09-27 | Notification badge icon + routine name as the title |
+| **`v36`** | 2026-09-27 | Routine gradient, quest reorder, harder levels, daily quests |
+| **`v35`** | 2026-08-17 | Good/bad habits merged, separate reward + penalty |
+| **`v34`** | 2026-08-16 | Backup sweeps every key, opt-in export with API keys |
+| **`v33`** | 2026-08-16 | VAPID contact fix + cache bump |
+| **`v32`** | 2026-08-16 | Widget feed endpoint, /sync ungated |
+| **`v31`** | 2026-08-16 | `AQ.` Gemini keys, notes in vault, double-tap to complete |
 | **`v30`** | 2026-08-02 | GitHub Models removed, 410 pool halt, radar truth, test suite in-repo |
 | **`v29`** | 2026-08-02 | Cerebras / NVIDIA / GitHub / Mistral, first-run fix |
 | **`v28`** | 2026-08-02 | Groq / OpenRouter support, multi-provider pool |
@@ -200,6 +208,117 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-27 — `tasksh-v38`**
+
+- **Fixed: the app could not update itself, so updating meant destroying the
+  data.** `index.html` registered the service worker and did nothing else —
+  no `reg.update()`, no `updatefound` handler, and the one `controllerchange`
+  listener in `app.jsx` only refreshed the version badge. A new worker would
+  install and activate (`sw.js` calls `skipWaiting`), but the *page* carried
+  on executing the `bundle.js` already in memory. An installed PWA resumed
+  from the launcher is often not a fresh navigation, so it could sit on old
+  code indefinitely. The visible symptom was "I deployed and nothing
+  changed", and the folk remedy for that is **clear site data** — which also
+  wipes `localStorage`, i.e. every task, habit, routine and XP point. Data
+  was being destroyed to fix a cache.
+  - The app now checks for a new worker on mount, on every return to the
+    foreground, and every 30 minutes.
+  - When a new build takes over: **reload immediately if the app is hidden
+    and nothing is being typed, otherwise show a tap-to-reload bar.**
+    `decideUpdateAction(hidden, typing)` is a pure function with three tests,
+    because "reload the page out from under someone mid-sentence" is the
+    failure mode that makes people distrust auto-updates.
+  - New **VAULT → APP-UPDATE** row: `check now`, and `reload app code`, which
+    unregisters the worker and deletes every cache **without touching
+    `localStorage`**. That is the "clear site data" people reach for, minus
+    the part that loses the data. It arms before it fires.
+  - `index.html` now stashes the registration on `window.__swReg`.
+    `getRegistration()` races the load listener on a cold start and resolves
+    `undefined`, which made an update check a silent no-op exactly when it
+    mattered.
+
+- **Added: encrypted cloud backup (VAULT → CLOUD-BACKUP).** A snapshot is
+  pushed to the worker on app open, at most once an hour, and restored
+  anywhere with a 31-character recovery code.
+  - **The server cannot read it.** AES-GCM-256 via WebCrypto (no new
+    dependency), key derived with PBKDF2-SHA256 at 200k rounds from a code
+    that never leaves the device. The worker stores an opaque string under
+    `bk:{id}` and has no way to decrypt it.
+  - **Why encrypted at all, for a single-user app:** the only thing guarding
+    the URL is a 10-character id, and ids leak — `deviceId` was printed in
+    the app itself for the old widget feed. Anything printed once is public
+    forever, so the id is treated as public and the payload is treated as
+    the secret.
+  - The recovery code uses **Crockford base32** (no `i`, `l`, `o`, `u`) and
+    parsing normalises the classic misreads `i/l → 1` and `o → 0`, because
+    this code gets read off one screen and typed into another phone.
+  - **The snapshot never contains its own decryption key**, and never the
+    `deviceId` — a restored phone must not clone the push subscription. The
+    cloud config also joined `SENSITIVE_KEYS`, so a plaintext *file* export
+    can't hand over the key to the encrypted *cloud* copy.
+  - Server-side: 10-char id regex, 2MB cap, a 5-minute flood guard, and
+    rotation of the previous snapshot to `bk:{id}:prev` so a bad push cannot
+    eat the only good one.
+  - **Verified end to end** (`cloud.spec.mjs`): turn it on in a real browser,
+    push, throw the whole profile away, restore from the code on a blank
+    one — habits, notes and the API key all come back, and the uploaded blob
+    is asserted to contain none of `tasksh`, `habits`, `drink water` or the
+    key itself.
+
+- **Removed: the KWGT widget feed** (`GET /next`, the VAULT → WIDGET-FEED
+  row, `KWGT-WIDGET.md`). The endpoint still worked — it was returning live
+  data the day it was deleted — but the widget itself had stopped working on
+  the phone and wasn't wanted. Dead surface area with a public device id in
+  it is worse than no feature.
+
+- **Fixed: `release.sh` could only ever add files.**
+  - `worker/*.test.mjs` is now globbed instead of listed by name. Listing is
+    how `worker/next.test.mjs` sat in three release zips without ever
+    reaching the repo.
+  - `*.svg` is globbed too. v37 shipped `notification-badge.svg` in the zip
+    and it never landed — the only file needed to redraw the badge existed
+    nowhere but a downloads folder.
+  - A payload can now list retired paths in `remove.txt`.
+  - The script updates itself, by **rename rather than overwrite**: bash
+    reads a running script by byte offset, so truncating it mid-run makes
+    execution resume in the middle of a different line.
+
+- **Tests: 141 unit + 59 browser.** New: `cloud.test.mjs` (30),
+  `worker/backup.test.mjs` (15), `cloud.spec.mjs` (6). Every one was
+  verified by reverting its fix and confirming it goes red — ten mutations,
+  ten reds, including one that only the recovery-code parser caught
+  (restoring `i`/`l`/`o` to the alphabet breaks round-tripping).
+
+**2026-08-16 … 2026-09-27 — `v31` through `v37`, in brief**
+
+These shipped without prose entries; recorded here so the gap isn't silent.
+
+- **`v31`** — Gemini's new `AQ.` key format (the old `AIza` keys retire in
+  September 2026); notes moved into the vault; double-tap a timeline block to
+  complete it.
+- **`v32`** — `GET /next` widget feed; `/sync` no longer gated on
+  `notifyEnabled`, which had left the feed frozen for anyone with
+  notifications off; `duration` added to the sync payload.
+- **`v33`** — `VAPID_CONTACT` was still `mailto:youremail@example.com`, and
+  the key rotation before it hadn't bumped the cache tag, so phones kept
+  serving a bundle with the old public key and every push 403'd.
+- **`v34`** — the export named eight `localStorage` keys by hand and silently
+  dropped the other fifteen; it now sweeps every `tasksh.*` key. Opt-in
+  "export with API keys" added.
+- **`v35`** — good and bad habits merged into one list with ✓/✗ marks,
+  separate reward and penalty values, opposite-pairing.
+- **`v36`** — routine colour gradient by hue (RGB interpolation went grey at
+  the midpoint); quest reorder as a *mode*, because inline arrows pushed
+  delete off the edge at 360px; delete confirmation; a harder level curve
+  with a correction loop after finding that standing exactly on a level
+  boundary read one level low; daily quests drawn per difficulty, paying
+  coins only.
+- **`v37`** — the notification badge was `icon-192.png`, which is 100%
+  opaque; Android discards a badge's colours and fills its *alpha* channel,
+  so the silhouette was the entire square and the status bar showed a white
+  block. Replaced with an 8.6%-opaque `>_` glyph. Notification title became
+  the routine name instead of "tasks.sh".
 
 **2026-08-02 — `tasksh-v29`**
 

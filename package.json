@@ -8,8 +8,8 @@
     "build:dev": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap",
     "watch": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap --watch",
     "serve": "python3 -m http.server 8080",
-    "test": "node keydetect.test.mjs && node daily.test.mjs && node notify.test.mjs && node worker/providers.test.mjs && node worker/callshape.test.mjs",
-    "test:browser": "node gate.spec.mjs && node regress.spec.mjs"
+    "test": "node keydetect.test.mjs && node daily.test.mjs && node notify.test.mjs && node cloud.test.mjs && node worker/providers.test.mjs && node worker/callshape.test.mjs && node worker/backup.test.mjs",
+    "test:browser": "node gate.spec.mjs && node regress.spec.mjs && node cloud.spec.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

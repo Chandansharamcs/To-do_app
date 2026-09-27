@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  tasks.sh — Android notification BADGE (the small status-bar glyph)
+
+  Android does not render this icon's colours. It takes the ALPHA CHANNEL and
+  fills it with a single system colour, so the file must be a transparent
+  silhouette. Passing a normal app icon here produces a solid white square,
+  which is exactly what icon-192.png was doing: it is 100% opaque, so its
+  silhouette is the whole canvas.
+
+  Rules this file follows:
+    * transparent background, white shape only
+    * no gradients, no strokes that rely on colour, no thin detail
+    * generous padding — the status bar crops aggressively and shrinks this
+      to roughly 24dp, where anything finer than ~6px at 96 disappears
+    * one readable idea: the terminal prompt the whole app is named after
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <g fill="none" stroke="#FFFFFF" stroke-width="10"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- the chevron of a shell prompt:  >  -->
+    <polyline points="30,30 52,48 30,66" />
+    <!-- the cursor rule:  _  -->
+    <line x1="58" y1="66" x2="70" y2="66" />
+  </g>
+</svg>
