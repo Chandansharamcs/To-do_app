@@ -193,11 +193,29 @@ async function runCheck(env) {
         continue;
       }
 
+      // The routine itself is the headline. "tasks.sh / X is starting now"
+      // buried the only word that mattered behind the app's own name, which
+      // the launcher already shows underneath.
+      const mins = Math.max(0, +routine.duration || 0);
+      const dur = mins >= 60
+        ? `${Math.floor(mins / 60)}h${mins % 60 ? ` ${mins % 60}m` : ""}`
+        : mins ? `${mins}m` : "";
+
+      // what follows this one, so the notification answers "and then what?"
+      const after = routines
+        .filter((r) => typeof r.time === "string" && r.time > routine.time)
+        .sort((a, b) => a.time.localeCompare(b.time))[0];
+
+      const bits = ["starting now"];
+      if (dur) bits.push(dur);
+      if (after) bits.push(`then ${after.label} at ${after.time}`);
+
       const payload = JSON.stringify({
-        title: "tasks.sh",
-        body: `${routine.label} is starting now`,
+        title: routine.label,
+        body: bits.join(" · "),
         tag: `routine-${routine.id}`,
         url: "./",
+        at: Date.now(),
       });
 
       try {

@@ -1,10 +1,11 @@
-const CACHE = "tasksh-v36";
+const CACHE = "tasksh-v37";
 const ASSETS = [
   "./",
   "./index.html",
   "./bundle.js",
   "./manifest.json",
   "./icon-192.png",
+  "./badge-96.png",
   "./icon-512.png",
   "./icon-maskable-192.png",
   "./icon-maskable-512.png",
@@ -60,14 +61,24 @@ self.addEventListener("push", (event) => {
   }
 
   const title = data.title || "tasks.sh";
-  const iconUrl = new URL("icon-192.png", self.registration.scope).href;
+  const asset = (f) => new URL(f, self.registration.scope).href;
+
+  // icon  = the large artwork in the notification shade. Full colour is right.
+  // badge = the small glyph in the STATUS BAR. Android throws the colours away
+  //         and fills the alpha channel with one flat tint, so it must be a
+  //         transparent silhouette. icon-192.png is 100% opaque, which made
+  //         that silhouette the entire square -- the white blob in the status
+  //         bar was the app icon, masked.
   const options = {
     body: data.body || "",
-    icon: iconUrl,
-    badge: iconUrl,
+    icon: asset("icon-192.png"),
+    badge: asset("badge-96.png"),
     vibrate: [200, 80, 200],
     tag: data.tag || "tasksh-routine",
     renotify: true,
+    // stamp it with when the routine was due, not when Android got round to
+    // showing it -- Doze can defer delivery by minutes
+    timestamp: data.at || Date.now(),
     data: { url: data.url || "./" },
   };
 
