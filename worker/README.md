@@ -41,7 +41,8 @@ Setup is a **one-time** job on your laptop. After that it runs by itself.
      │
      ├──── POST /subscribe ────▶  KV: sub:{deviceId}
      ├──── POST /sync ─────────▶  KV: routines:{deviceId}
-     └──── POST /backup ───────▶  KV: bk:{id}        (ciphertext, opaque here)
+     ├──── POST /backup ───────▶  KV: bk:{id}        (ciphertext, opaque here)
+     └──── POST /timer ────────▶  KV: timer:{deviceId}  (one-shot push)
                                         │
                                   ┌─────▼──────┐
                                   │ cron, 1/min│
@@ -508,3 +509,34 @@ Guards, all covered by `worker/backup.test.mjs`:
 
 Every successful write rotates the existing snapshot to `bk:{id}:prev` first,
 so a truncated or mid-corruption push cannot destroy the last good one.
+
+
+---
+
+## `POST /timer`  *(v39)*
+
+One-shot push for the pomodoro, because Android suspends JS timers and the
+audio context as soon as the app is backgrounded.
+
+```
+POST /timer  { deviceId, at, label }   -> { ok, at }
+POST /timer  { deviceId, at: 0 }       -> { ok, cancelled: true }
+```
+
+`at` is epoch milliseconds, computed on the phone. The cron that already runs
+every minute for routines checks `timer:{deviceId}` and fires, so **worst-case
+lateness is ~59 seconds** — surfaced in the app rather than hidden.
+
+| Rule | Why |
+|---|---|
+| `at` more than 60s in the past → `400` | would fire on the very next tick |
+| `at` more than 24h ahead → `400` | that's a bug, not a focus block |
+| ≤60s in the past is accepted | the phone's clock decides; skew is normal |
+| label truncated to 60 chars | it goes in a notification title |
+| stored with a 25h TTL | a phone that never returns leaves no residue |
+| fired more than 10 min late → dropped | "focus block done" an hour later is noise |
+
+The KV entry is **deleted before** the push is sent: a retry storm of
+duplicate rings is worse than one missed ring.
+
+Covered by `worker/timer.test.mjs` (16 tests).

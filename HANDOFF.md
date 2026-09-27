@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v38   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v39   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-09-27
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -404,6 +404,34 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   counts on every render. There's no separate "current XP" field to get
   out of sync.
 
+
+## Tools (v39)
+
+A seventh tab. `TOOLS` is a registry — `const TOOLS = [{ id, glyph, name,
+desc, Component }]` — read by both the grid and the router, so a new tool is
+one object rather than edits in four places.
+
+**Pomodoro.** State lives in `tasksh.pomodoro.v1` as
+`{ settings, session }`, where a session is
+`{ phase, round, running, endsAt, remainingMs }`. Time is stored as an
+absolute `endsAt`, never as a decremented counter — the phone sleeps.
+
+`resolveBootPomodoro(stored, now)` decides what the timer looks like the
+moment the tool opens, and it must stay pure and run before the first render
+commits. As a mount effect it raced the per-tick completion effect and an
+abandoned block both reset *and* paid out. Over `POMO_STALE_MS` (2h) overdue
+counts as abandoned.
+
+Ringing is two mechanisms: `ringAlarm()` (Web Audio + vibrate) for the
+foreground, and `POST /timer` → the worker's per-minute cron for everything
+else. Android suspends timers and audio in the background; the push is the
+one that actually works, at one-minute resolution.
+
+**The tab bar fits exactly seven at 360px.** An eighth will silently push
+one off the end, because `.tabs` scrolls with no visual clue. `tools.spec.mjs`
+asserts zero overflow at 360px — treat that test as the budget.
+
+---
 
 ## Updates and backup (v38)
 

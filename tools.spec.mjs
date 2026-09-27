@@ -1,0 +1,334 @@
+// tools.spec.mjs
+//
+// The TOOLS tab, the pomodoro, and inventory editing (v39) — in a real
+// browser, because the interesting parts are persistence across a reload and
+// what the timer does about time that passed while it wasn't watching.
+
+import { chromium } from "playwright";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join, extname } from "node:path";
+import assert from "node:assert/strict";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+const MIME = {
+  ".html": "text/html", ".js": "application/javascript", ".json": "application/json",
+  ".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml",
+};
+
+function serve() {
+  return new Promise((resolve) => {
+    const server = createServer(async (req, res) => {
+      try {
+        const url = req.url.split("?")[0];
+        const path = join(here, url === "/" ? "index.html" : url.slice(1));
+        const body = await readFile(path);
+        res.writeHead(200, { "Content-Type": MIME[extname(path)] || "application/octet-stream" });
+        res.end(body);
+      } catch { res.writeHead(404); res.end("not found"); }
+    });
+    server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port }));
+  });
+}
+
+let passed = 0;
+const results = [];
+const test = async (name, fn) => {
+  try { await fn(); passed++; results.push(`  ✓ ${name}`); }
+  catch (err) {
+    results.push(`  ✗ ${name}\n      ${String(err.message).split("\n")[0]}`);
+    process.exitCode = 1;
+  }
+};
+
+const { server, port } = await serve();
+const BASE = `http://127.0.0.1:${port}/`;
+const browser = await chromium.launch();
+
+/** A phone with the worker faked, so /timer calls are observable and no
+ *  test depends on the network. */
+async function phone(seed) {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const timers = [];
+  await ctx.route("**/timer", async (route) => {
+    timers.push(JSON.parse(route.request().postData() || "{}"));
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await ctx.route("**/backup**", (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) }));
+
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  if (seed) await page.addInitScript((entries) => {
+    for (const [k, v] of entries) localStorage.setItem(k, v);
+  }, Object.entries(seed));
+  return { ctx, page, timers, errors };
+}
+
+const openPomodoro = async (page) => {
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".tool-card", { hasText: "pomodoro" }).click();
+  await page.waitForTimeout(350);
+};
+const clock = (page) => page.locator(".pomo-clock").innerText();
+const wallet = (page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.wallet.v1") || '{"coins":0}').coins);
+
+// ------------------------------------------------------------- the grid ----
+
+await test("TOOLS is a tab and the grid lists pomodoro", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".tool-card", { hasText: "pomodoro" }).count(), 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("opening a tool and coming back doesn't lose the grid", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  assert.equal(await page.locator(".pomo-clock").count(), 1);
+  await page.getByRole("button", { name: "← tools" }).click();
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator(".tool-grid").count(), 1);
+  await ctx.close();
+});
+
+await test("all seven tabs fit on the narrowest phone, no swiping", async () => {
+  // Adding TOOLS as a 7th tab pushed it AND the pet tab off a 390px screen:
+  // 100px of overflow on a bar that scrolls, so a brand-new feature was
+  // invisible unless you knew to swipe. If an 8th tab ever lands, this fails
+  // before it ships rather than after.
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 800 } });
+  const page = await ctx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  const info = await page.evaluate(() => {
+    const bar = document.querySelector(".tabs");
+    const barR = bar.getBoundingClientRect();
+    const cut = [...document.querySelectorAll('[role="tab"]')]
+      .filter((t) => t.getBoundingClientRect().right > barR.right + 0.5)
+      .map((t) => t.textContent);
+    return { overflow: bar.scrollWidth - bar.clientWidth, cut };
+  });
+  assert.deepEqual(info.cut, [], `tabs off screen at 360px: ${info.cut.join(", ")}`);
+  assert.equal(info.overflow, 0, `tab bar overflows by ${info.overflow}px at 360px`);
+  await ctx.close();
+});
+
+// -------------------------------------------------------------- the timer ---
+
+await test("it starts at the configured length and counts down", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  assert.equal(await clock(page), "25:00");
+
+  await page.getByRole("button", { name: "start" }).click();
+  await page.waitForTimeout(1800);
+  const t = await clock(page);
+  assert.notEqual(t, "25:00", "the clock never moved");
+  assert.match(t, /^24:5[5-9]$/, `unexpected clock: ${t}`);
+  await ctx.close();
+});
+
+await test("pause actually stops time, not just the label", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  await page.getByRole("button", { name: "start" }).click();
+  await page.waitForTimeout(1200);
+  await page.getByRole("button", { name: "pause" }).click();
+  const a = await clock(page);
+  await page.waitForTimeout(1600);
+  assert.equal(await clock(page), a, "the clock kept running while paused");
+  await ctx.close();
+});
+
+await test("the end time is handed to the worker, and withdrawn on pause", async () => {
+  // this is the half that rings with the screen off
+  const { ctx, page, timers } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  await page.getByRole("button", { name: "start" }).click();
+  await page.waitForTimeout(600);
+  assert.ok(timers.length >= 1, "no timer was registered");
+  assert.ok(timers[0].at > Date.now(), "registered an end time in the past");
+  assert.ok(timers[0].deviceId, "no device id sent");
+
+  await page.getByRole("button", { name: "pause" }).click();
+  await page.waitForTimeout(600);
+  assert.equal(timers[timers.length - 1].at, 0, "pausing left a pending push");
+  await ctx.close();
+});
+
+await test("skip moves to the break without paying out", async () => {
+  const { ctx, page } = await phone({ "tasksh.wallet.v1": JSON.stringify({ coins: 100 }) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  // achievements also mint coins on load, so only the delta means anything
+  const before = await wallet(page);
+  await page.getByRole("button", { name: "skip" }).click();
+  await page.waitForTimeout(400);
+  assert.match(await page.locator(".pomo-phase").innerText(), /short break/i);
+  assert.equal(await clock(page), "05:00");
+  assert.equal(await wallet(page), before, "skipping paid out");
+  await ctx.close();
+});
+
+// ------------------------------------------------------------- settings ----
+
+await test("editing a length sticks across a reload", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  await page.locator(".pomo-set", { hasText: "focus" }).getByRole("button").first().click();
+  await page.getByRole("button", { name: "+5" }).first().click();
+  await page.waitForTimeout(300);
+  assert.equal(await clock(page), "30:00");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await openPomodoro(page);
+  assert.equal(await clock(page), "30:00", "the setting did not persist");
+  await ctx.close();
+});
+
+await test("lengths cannot be pushed out of range", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.pomodoro.v1": JSON.stringify({ settings: { work: 119, short: 5, long: 15, rounds: 4 } }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openPomodoro(page);
+  await page.locator(".pomo-set", { hasText: "focus" }).getByRole("button").first().click();
+  for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "+5" }).first().click();
+  await page.waitForTimeout(300);
+  // 119 + 15 would be 134, but the cap is 120 minutes -> 2:00:00
+  assert.equal(await clock(page), "2:00:00");
+  await ctx.close();
+});
+
+// --------------------------------------------------- time spent elsewhere ---
+
+await test("a block that ended while the app was closed pays out and advances", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.wallet.v1": JSON.stringify({ coins: 100 }),
+    "tasksh.pomodoro.v1": JSON.stringify({
+      settings: { work: 25, short: 5, long: 15, rounds: 4 },
+      session: { phase: "work", round: 1, running: true, endsAt: Date.now() - 90_000 },
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const before = await wallet(page);          // after achievements have settled
+  await openPomodoro(page);
+  await page.waitForTimeout(700);
+
+  assert.match(await page.locator(".pomo-phase").innerText(), /short break/i);
+  assert.equal(await wallet(page) - before, 25, "the finished block did not pay 25");
+  await ctx.close();
+});
+
+await test("a block that ended hours ago pays nothing", async () => {
+  // the phone was in a pocket, not on a desk
+  const { ctx, page } = await phone({
+    "tasksh.wallet.v1": JSON.stringify({ coins: 100 }),
+    "tasksh.pomodoro.v1": JSON.stringify({
+      settings: { work: 25, short: 5, long: 15, rounds: 4 },
+      session: { phase: "work", round: 1, running: true, endsAt: Date.now() - 5 * 60 * 60 * 1000 },
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const before = await wallet(page);
+  await openPomodoro(page);
+  await page.waitForTimeout(700);
+
+  assert.match(await page.locator(".pomo-phase").innerText(), /focus/i);
+  assert.equal(await clock(page), "25:00");
+  assert.equal(await wallet(page), before, "an abandoned block paid out");
+  await ctx.close();
+});
+
+// ------------------------------------------------------- inventory edit ----
+
+const INV = JSON.stringify([
+  { id: 901, text: "watering plants", diff: "easy" },
+  { id: 902, text: "100 pushups", diff: "hard" },
+]);
+
+await test("an inventory item can be renamed in place", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(300);
+
+  await page.locator(".inv-tap", { hasText: "watering plants" }).click();
+  await page.locator(".inv-edit-input").fill("watering the plants properly");
+  await page.getByRole("button", { name: "save" }).click();
+  await page.waitForTimeout(400);
+
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1")));
+  assert.equal(stored.find((t) => t.id === 901).text, "watering the plants properly");
+  await ctx.close();
+});
+
+await test("difficulty can be changed without deleting and re-adding", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(300);
+
+  await page.locator(".inv-tap", { hasText: "watering plants" }).click();
+  await page.locator(".inv-edit-chips").getByRole("button", { name: /hard/ }).click();
+  await page.getByRole("button", { name: "save" }).click();
+  await page.waitForTimeout(400);
+
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1")));
+  assert.equal(stored.find((t) => t.id === 901).diff, "hard");
+  await ctx.close();
+});
+
+await test("cancelling an edit changes nothing", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(300);
+
+  await page.locator(".inv-tap", { hasText: "100 pushups" }).click();
+  await page.locator(".inv-edit-input").fill("nonsense");
+  await page.getByRole("button", { name: "cancel" }).click();
+  await page.waitForTimeout(300);
+
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1")));
+  assert.equal(stored.find((t) => t.id === 902).text, "100 pushups");
+  await ctx.close();
+});
+
+await test("an empty name is refused rather than saved", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(300);
+
+  await page.locator(".inv-tap", { hasText: "100 pushups" }).click();
+  await page.locator(".inv-edit-input").fill("   ");
+  await page.getByRole("button", { name: "save" }).click();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator(".inv-edit-input").count(), 1, "the editor closed on an empty name");
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1")));
+  assert.equal(stored.find((t) => t.id === 902).text, "100 pushups");
+  await ctx.close();
+});
+
+console.log(results.join("\n"));
+console.log(`  tools.spec.mjs — ${passed} passed`);
+await browser.close();
+server.close();

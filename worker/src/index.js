@@ -5,6 +5,7 @@
 //   POST /unsubscribe  { deviceId }                 -> remove subscription + data
 //   POST /sync         { deviceId, routines }        -> store this device's routine schedule
 //   POST /backup       { id, blob }                  -> store an encrypted snapshot
+//   POST /timer        { deviceId, at, label }       -> one-shot push at `at` (0 cancels)
 //   GET  /backup?id=                                 -> read that snapshot back
 //
 // Cron (runs every minute, see wrangler.toml):
@@ -17,6 +18,7 @@
 //   routines:{deviceId}  -> JSON [{ id, time: "HH:MM", label }]
 //   fired:{deviceId}:{routineId}:{YYYY-MM-DD}  -> "1"  (dedupe marker, auto-expires)
 //   bk:{id}              -> JSON { at, size, blob }  encrypted backup, opaque here
+//   timer:{deviceId}     -> JSON { at, label }        one-shot timer, 25h TTL
 //   bk:{id}:prev         -> the snapshot it replaced
 
 import webpush from "web-push";
@@ -87,6 +89,65 @@ const BACKUP_ID_RE = /^[0-9a-z]{10}$/;
 const BACKUP_MAX_BYTES = 2000000;
 const BACKUP_MIN_GAP_MS = 5 * 60 * 1000;
 
+// ---- one-shot timer (v39) -------------------------------------------------
+// POST /timer { deviceId, at, label }   at = epoch ms, or 0 to cancel
+//
+// The pomodoro's in-app beep is the nice case, not the reliable one: Android
+// suspends JS timers and the audio context once the app is backgrounded or
+// the screen locks. So the end time is parked here and the cron -- which
+// already runs every minute for routines -- fires a real push.
+//
+// Resolution is therefore one minute, worst case ~59s late. Stated in the
+// app rather than hidden, because a focus timer that lies about when it
+// rang is worse than one that admits it rounds.
+const TIMER_MAX_AHEAD_MS = 24 * 60 * 60 * 1000;
+
+async function handleTimer(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
+
+  const deviceId = String((body && body.deviceId) || "");
+  if (!deviceId) return json({ error: "missing deviceId" }, 400);
+
+  const at = Number((body && body.at) || 0);
+  if (!at) {
+    await env.TASKSH_KV.delete(`timer:${deviceId}`);
+    return json({ ok: true, cancelled: true });
+  }
+
+  const now = Date.now();
+  // A timer in the past would fire on the very next tick, and one a week out
+  // is a bug: neither should be stored.
+  if (!isFinite(at) || at < now - 60000 || at > now + TIMER_MAX_AHEAD_MS) {
+    return json({ error: "at out of range" }, 400);
+  }
+
+  const label = String((body && body.label) || "focus block").slice(0, 60);
+  await env.TASKSH_KV.put(`timer:${deviceId}`, JSON.stringify({ at, label }), {
+    // self-cleaning: a device that never comes back doesn't leave a timer
+    // sitting in KV forever
+    expirationTtl: 60 * 60 * 25,
+  });
+  return json({ ok: true, at });
+}
+
+/** Returns the payload to send, or null. Split out from the cron loop so the
+ *  "is it due, and is it sane" decision is testable without a KV or a push. */
+function dueTimerPayload(record, now) {
+  if (!record || typeof record.at !== "number") return null;
+  if (now < record.at) return null;
+  // Missed by more than ten minutes: the worker was down or the phone was
+  // off. Ringing "focus block done" an hour late is noise, not a reminder.
+  if (now - record.at > 10 * 60 * 1000) return null;
+  return {
+    title: `${record.label || "focus block"} done`,
+    body: "tap to start the next one",
+    tag: "tasksh-timer",
+    url: "./",
+    at: record.at,
+  };
+}
+
 async function handleBackupPut(request, env) {
   let body;
   try { body = await request.json(); } catch { return json({ error: "bad json" }, 400); }
@@ -149,8 +210,33 @@ async function runCheck(env) {
       env.TASKSH_KV.get(`sub:${deviceId}`),
       env.TASKSH_KV.get(`routines:${deviceId}`),
     ]);
-    if (!subRaw || !routinesRaw) {
-      console.log(`[check] device ${deviceId}: missing sub or routines, skipping`);
+    if (!subRaw) {
+      console.log(`[check] device ${deviceId}: no subscription, skipping`);
+      continue;
+    }
+
+    // Timers first, and independently of routines: a device can have a
+    // pomodoro running without ever having synced a schedule.
+    try {
+      const timerRaw = await env.TASKSH_KV.get(`timer:${deviceId}`);
+      if (timerRaw) {
+        const record = JSON.parse(timerRaw);
+        const payload = dueTimerPayload(record, Date.now());
+        if (payload) {
+          await env.TASKSH_KV.delete(`timer:${deviceId}`);   // delete first: a retry storm is worse than a missed ring
+          await webpush.sendNotification(JSON.parse(subRaw), JSON.stringify(payload));
+          console.log(`[check] device ${deviceId}: timer fired - "${payload.title}"`);
+        } else if (record.at && Date.now() - record.at > 10 * 60 * 1000) {
+          await env.TASKSH_KV.delete(`timer:${deviceId}`);
+          console.log(`[check] device ${deviceId}: timer too stale, dropped`);
+        }
+      }
+    } catch (err) {
+      console.log(`[check] device ${deviceId}: timer check failed - ${err.message || err}`);
+    }
+
+    if (!routinesRaw) {
+      console.log(`[check] device ${deviceId}: no routines synced, skipping schedule`);
       continue;
     }
 
@@ -1284,6 +1370,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/companion") return await handleCompanion(request, env);
       if (request.method === "POST" && url.pathname === "/ai-verify") return await handleAIVerify(request, env);
       if (request.method === "GET" && url.pathname === "/ai-models") return await handleAIModels(request, env);
+      if (request.method === "POST" && url.pathname === "/timer") return await handleTimer(request, env);
       if (request.method === "POST" && url.pathname === "/backup") return await handleBackupPut(request, env);
       if (request.method === "GET" && url.pathname === "/backup") return await handleBackupGet(request, env);
       // manual trigger for testing: GET /run-check-now

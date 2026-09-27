@@ -51,11 +51,19 @@ const test = async (name, fn) => {
 // Swapping the served sw.js is how a new build is simulated: the harness
 // serves real files, so this is the same event Chromium sees in production.
 const { writeFile } = await import("node:fs/promises");
-async function swapServedSW(from, to) {
+async function withNewBuild(fn) {
+  // Version-agnostic on purpose: hardcoding "v38 -> v39" here meant the test
+  // silently broke on the next release, which is the worst kind of test.
   const path = join(here, "sw.js");
-  const body = await readFile(path, "utf8");
-  if (!body.includes(from)) throw new Error(`sw.js does not contain ${from}`);
-  await writeFile(path, body.replace(from, to));
+  const original = await readFile(path, "utf8");
+  const tag = (original.match(/tasksh-v[0-9]+/) || [])[0];
+  if (!tag) throw new Error("no cache tag in sw.js");
+  try {
+    await writeFile(path, original.replace(tag, `${tag}-next`));
+    await fn();
+  } finally {
+    await writeFile(path, original);
+  }
 }
 
 const { server, port } = await serve();
@@ -260,14 +268,14 @@ await test("a genuinely new build does raise the bar", async () => {
   assert.equal(await page.locator(".update-bar").count(), 0);
 
   try {
-    await swapServedSW("tasksh-v38", "tasksh-v39");
-    await page.evaluate(() => window.__swReg && window.__swReg.update());
-    await page.waitForSelector(".update-bar", { timeout: 20000 });
-    assert.match(await page.locator(".update-bar").innerText(), /new build ready/);
+    // withNewBuild restores sw.js even if this throws: the file is tracked,
+    // and release.sh checks its cache tag.
+    await withNewBuild(async () => {
+      await page.evaluate(() => window.__swReg && window.__swReg.update());
+      await page.waitForSelector(".update-bar", { timeout: 20000 });
+      assert.match(await page.locator(".update-bar").innerText(), /new build ready/);
+    });
   } finally {
-    // This test edits a tracked file. A failure here must not leave the repo
-    // holding a cache tag nobody released -- release.sh checks that tag.
-    await swapServedSW("tasksh-v39", "tasksh-v38").catch(() => {});
     await ctx.close();
   }
 });

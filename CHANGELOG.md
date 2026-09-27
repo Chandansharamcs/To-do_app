@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v39`** | 2026-09-27 | TOOLS tab + pomodoro, inventory editing, tab bar fits seven |
 | **`v38`** | 2026-09-27 | Encrypted cloud backup, self-updating app, widget feed removed |
 | **`v37`** | 2026-09-27 | Notification badge icon + routine name as the title |
 | **`v36`** | 2026-09-27 | Routine gradient, quest reorder, harder levels, daily quests |
@@ -208,6 +209,63 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-27 — `tasksh-v39`**
+
+- **Added: a TOOLS tab, and the first tool — a pomodoro.** Work → short
+  break ×N → long break, every length editable, all four clamped
+  (`POMO_LIMITS`) so a mistyped `250` can't mint four hours of coins.
+  - **It rings with the screen off.** Android suspends JS timers and the
+    audio context the moment the app is backgrounded, so an in-app beep is
+    the nice case, not the reliable one. Starting a block posts its end time
+    to the worker (`POST /timer`), and the cron that already runs every
+    minute for routines fires a real push. Resolution is therefore one
+    minute — stated in the UI rather than hidden, because a focus timer that
+    lies about when it rang is worse than one that admits it rounds. Pausing
+    withdraws the pending push.
+  - **Time is absolute, never counted down.** The session stores `endsAt`,
+    not a remaining number, so sleeping the phone can't desynchronise it.
+  - **A finished focus block pays coins** — one a minute, capped at 60, so a
+    long block can't out-earn a hard daily quest. Breaks pay nothing.
+  - A screen wake lock is held while a block runs, which is what makes the
+    in-app ring land on the right second instead of whenever you look again.
+
+- **Fixed: an abandoned block paid out.** Catch-up ("what happened while the
+  app was closed") started life as a mount effect, and React ran the
+  per-tick completion effect in the same pass with the *pre*-catch-up
+  session still in scope. So a block that ended five hours ago took the
+  stale path AND the normal path: it rang and paid. Now `resolveBootPomodoro`
+  resolves everything *before* the first render commits, and it is pure, so
+  the six cases are unit-tested. Anything more than two hours overdue is
+  treated as abandoned — the phone was in a pocket, not on a desk.
+
+- **Added: inventory items can be edited.** Tap the label to rename or
+  change difficulty in place. Delete already existed (`✕` → `sure?`) but was
+  invisible enough to be reported missing, so every row now says
+  `tap to edit`. Changing the difficulty of an item that's in today's draw
+  now refills that slot from the rest of that difficulty, instead of leaving
+  it sitting in the old slot paying the old slot's coins.
+
+- **Fixed: the seventh tab hid two tabs.** Adding TOOLS pushed both it and
+  the pet tab off screen — measured at 100px of overflow on a 390px viewport
+  and 130px at 360px. Since `.tabs` scrolls, there was no visual clue: a
+  brand-new feature was simply invisible. Tab padding went 14px → 7px and
+  tracking 0.04em → 0.02em, which brings overflow to **0px at 360px**, and
+  `changeTab` now scrolls the active tab into view for the cases that still
+  overflow (a long pet name). A test asserts zero overflow at 360px, so an
+  eighth tab fails before it ships.
+
+- **Fixed: v38's cloud backup said "too soon" when it meant "already
+  saved".** The first automatic push fires ~2s after you turn it on, so
+  tapping *back up now* immediately hit the worker's 5-minute flood guard
+  and painted a red 429. It now reads `already saved 2m ago · next in 3m`,
+  and turning it on says `first backup running in the background…` instead
+  of doing it silently.
+
+- **Tests: 184 unit + 76 browser.** New: `pomodoro.test.mjs` (26),
+  `worker/timer.test.mjs` (16), `tools.spec.mjs` (15). Eleven mutations
+  checked, eleven reds — including one that only the browser test caught
+  (neutering the boot resolver lets an abandoned block pay out again).
 
 **2026-09-27 — `tasksh-v38`**
 

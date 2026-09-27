@@ -19,6 +19,20 @@
 
 ---
 
+
+## Budgets worth knowing before you add something
+
+- **The tab bar holds exactly seven tabs at 360px.** `.tabs` is
+  `overflow-x: auto`, so an eighth doesn't look broken — it just scrolls the
+  last one out of sight, which is how v39 shipped a brand-new TOOLS tab that
+  was invisible until measured. `tools.spec.mjs` asserts zero overflow at
+  360px. If you need an eighth, something has to merge or the labels have to
+  shrink; don't just push it on the end.
+- **Module-level `const` arrays that reference storage keys must sit below
+  those keys in `app.jsx`.** `SENSITIVE_KEYS` is evaluated at load; placing
+  the v38 cloud block above `STORAGE_KEY_AI_KEYS` crashed the whole app in
+  the temporal dead zone.
+
 ## 0 · Sixty-second orientation
 
 ```

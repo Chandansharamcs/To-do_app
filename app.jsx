@@ -4447,8 +4447,56 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
   const [diff, setDiff] = useState("mid");
   const [flash, triggerFlash] = useFlash();
   const [armed, setArmed] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [editDiff, setEditDiff] = useState("mid");
   const armTimer = useRef(null);
   useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+
+  /** An item leaving a difficulty it was drawn under leaves a hole in today's
+   *  board. Fill it from the rest of that difficulty rather than letting the
+   *  slot vanish, which reads as "the app ate my quest". */
+  const repairSlot = (itemId, slotKey) => {
+    setDaily((d) => {
+      const picks = { ...(d.picks || {}) };
+      if (picks[slotKey] !== itemId) return d;
+      const done = d.done || [];
+      const taken = Object.values(picks);
+      const pool = inventory.filter(
+        (t) => t.id !== itemId && t.diff === slotKey && !taken.includes(t.id) && !done.includes(t.id)
+      );
+      if (pool.length) picks[slotKey] = pool[Math.floor(Math.random() * pool.length)].id;
+      else delete picks[slotKey];
+      return { ...d, picks };
+    });
+  };
+
+  const slotOf = (itemId) =>
+    Object.keys(daily.picks || {}).find((k) => daily.picks[k] === itemId) || null;
+
+  const beginEdit = (t) => {
+    setArmed(null);
+    setEditId(t.id);
+    setEditText(t.text);
+    setEditDiff(t.diff);
+    sound.click();
+  };
+
+  const cancelEdit = () => { setEditId(null); sound.whoosh(); };
+
+  const saveEdit = (t) => {
+    const next = editText.trim();
+    if (!next) { triggerFlash(); sound.error(); return; }
+    // A drawn item that changes difficulty would otherwise keep sitting in
+    // its old slot, paying the old slot's coins for the new difficulty.
+    if (editDiff !== t.diff) {
+      const slot = slotOf(t.id);
+      if (slot) repairSlot(t.id, slot);
+    }
+    setInventory((prev) => prev.map((x) => (x.id === t.id ? { ...x, text: next, diff: editDiff } : x)));
+    setEditId(null);
+    sound.success();
+  };
 
   const add = () => {
     const t = text.trim();
@@ -4465,6 +4513,8 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
       armTimer.current = setTimeout(() => { setArmed(null); armTimer.current = null; }, 4000);
       return;
     }
+    const slot = slotOf(id);
+    if (slot) repairSlot(id, slot);
     setInventory((prev) => prev.filter((t) => t.id !== id));
     setArmed(null);
     sound.delete();
@@ -4568,21 +4618,54 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
             const isToday = Object.values(daily.picks || {}).includes(t.id);
             return (
               <div className={`quest-habit-card good ${isToday ? "drawn" : ""}`} key={t.id}>
-                <span className="area-dot" style={{ background: d.color }} />
-                <div className="quest-habit-main">
-                  <span className="quest-habit-label">{t.text}</span>
-                  <span className="quest-habit-meta">
-                    {d.label} · +{d.coins} coins{isToday ? " · drawn today" : ""}
-                  </span>
-                </div>
-                {armed === t.id ? (
-                  <button className="del-btn armed" onClick={() => del(t.id)}>sure?</button>
+                {editId === t.id ? (
+                  <div className="inv-edit">
+                    <input
+                      className="inv-edit-input"
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t); if (e.key === "Escape") cancelEdit(); }}
+                      aria-label="Edit inventory item"
+                      autoFocus
+                    />
+                    <div className="duration-chips inv-edit-chips">
+                      {DIFFICULTIES.map((x) => (
+                        <button
+                          key={x.key}
+                          className={editDiff === x.key ? "active" : ""}
+                          style={{ "--ac": x.color }}
+                          onClick={() => { setEditDiff(x.key); sound.click(); }}
+                        >
+                          {x.label} · {x.coins}◉
+                        </button>
+                      ))}
+                    </div>
+                    <div className="inv-edit-actions">
+                      <button className="note-btn save" onClick={() => saveEdit(t)}>save</button>
+                      <button className="note-btn" onClick={cancelEdit}>cancel</button>
+                    </div>
+                  </div>
                 ) : (
-                  <button className="del-btn" onClick={() => del(t.id)} aria-label="Remove from inventory">
-                    <svg viewBox="0 0 24 24" width="13" height="13">
-                      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                  </button>
+                  <>
+                    <span className="area-dot" style={{ background: d.color }} />
+                    {/* the whole row is the edit affordance: a pencil icon at
+                        this size is a 12px tap target next to a delete ✕ */}
+                    <button className="quest-habit-main inv-tap" onClick={() => beginEdit(t)}>
+                      <span className="quest-habit-label">{t.text}</span>
+                      <span className="quest-habit-meta">
+                        {d.label} · +{d.coins} coins{isToday ? " · drawn" : ""} · tap to edit
+                      </span>
+                    </button>
+                    {armed === t.id ? (
+                      <button className="del-btn armed" onClick={() => del(t.id)}>sure?</button>
+                    ) : (
+                      <button className="del-btn" onClick={() => del(t.id)} aria-label="Remove from inventory">
+                        <svg viewBox="0 0 24 24" width="13" height="13">
+                          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -6040,6 +6123,17 @@ async function cloudPush(cfg, plaintext) {
   });
   let body = {};
   try { body = await res.json(); } catch { /* keep the status code as the message */ }
+
+  // 429 means a push succeeded within the last five minutes -- i.e. the
+  // backup is already there. v38 painted that red and said "too soon", so
+  // tapping the button right after turning it on looked like a failure when
+  // the automatic first push had in fact just worked.
+  if (res.status === 429) {
+    const err = new Error("already saved");
+    err.alreadySaved = true;
+    err.retryInMs = body.retryInMs || 0;
+    throw err;
+  }
   if (!res.ok) throw new Error(body.error || `push failed (${res.status})`);
   return { at: body.at || Date.now(), size: body.size || blob.length };
 }
@@ -6105,7 +6199,9 @@ function useCloudAutoBackup() {
         const out = await cloudPush(cfg, buildCloudSnapshot());
         if (!stopped) writeCloudConfig({ lastAt: out.at, lastSize: out.size, lastError: null });
       } catch (err) {
-        if (!stopped) writeCloudConfig({ lastError: String(err.message || err) });
+        if (stopped) return;
+        if (err.alreadySaved) writeCloudConfig({ lastError: null });
+        else writeCloudConfig({ lastError: String(err.message || err) });
       }
     };
 
@@ -6146,6 +6242,7 @@ function CloudBackupRow() {
     const parsed = parseRecoveryKey(makeRecoveryKey());
     setCfg(writeCloudConfig({ id: parsed.id, secret: parsed.secret, lastAt: 0 }));
     setRevealed(true);
+    setMsg({ type: "ok", text: "first backup running in the background…" });
     sound.click();
   };
 
@@ -6166,7 +6263,12 @@ function CloudBackupRow() {
       setCfg(writeCloudConfig({ lastAt: out.at, lastSize: out.size, lastError: null }));
       setMsg({ type: "ok", text: `pushed ${fmtSize(out.size)}` });
     } catch (err) {
-      setMsg({ type: "err", text: String(err.message || err) });
+      if (err.alreadySaved) {
+        const mins = Math.ceil((err.retryInMs || 0) / 60000);
+        setMsg({ type: "ok", text: `already saved ${fmtAgo(cfg.lastAt, Date.now())}${mins ? ` · next in ${mins}m` : ""}` });
+      } else {
+        setMsg({ type: "err", text: String(err.message || err) });
+      }
     } finally {
       setBusy(false);
     }
@@ -6505,6 +6607,411 @@ function AppUpdateRow() {
   );
 }
 
+// ============================================================
+// TOOLS (v39)
+// ============================================================
+// A tab of small utilities that exist because the web versions are either
+// ad-choked or paywalled. The registry below is the whole extension point:
+// add an entry, get a card on the grid and a view behind it. Nothing else
+// in the app needs to know a new tool exists.
+
+const STORAGE_KEY_POMODORO = "tasksh.pomodoro.v1";
+
+const POMO_DEFAULTS = { work: 25, short: 5, long: 15, rounds: 4 };
+
+// Minutes, not milliseconds, everywhere the user can see. Bounds are here so
+// a fat-fingered "250" can't create a four-hour block that then pays out
+// four hours of coins.
+const POMO_LIMITS = { work: [1, 120], short: [1, 60], long: [1, 90], rounds: [1, 12] };
+
+// A block that ended more than this long ago is treated as abandoned rather
+// than completed: the phone was in a pocket, not on a desk. No coins, no
+// auto-advance -- just a reset. Two hours is long enough to cover "I left it
+// running through lunch" and short enough to exclude "I opened the app three
+// days later".
+const POMO_STALE_MS = 2 * 60 * 60 * 1000;
+
+const POMO_PHASES = {
+  work:  { label: "focus",       color: "var(--accent)"  },
+  short: { label: "short break", color: "var(--accent2)" },
+  long:  { label: "long break",  color: "#8B9CF7"        },
+};
+
+function sanitisePomodoroSettings(patch) {
+  const out = { ...POMO_DEFAULTS, ...(patch || {}) };
+  for (const key of Object.keys(POMO_LIMITS)) {
+    const [lo, hi] = POMO_LIMITS[key];
+    const raw = out[key];
+    // Absent is not the same as zero. Number(null) is 0, which would clamp a
+    // missing "rounds" to 1 -- a corrupted save would quietly turn a 4-round
+    // set into a 1-round one instead of falling back to the default.
+    if (raw === null || raw === undefined || raw === "") { out[key] = POMO_DEFAULTS[key]; continue; }
+    const n = Math.round(Number(raw));
+    out[key] = !isFinite(n) ? POMO_DEFAULTS[key] : Math.min(hi, Math.max(lo, n));
+  }
+  return out;
+}
+
+function pomodoroPhaseMinutes(phase, settings) {
+  const s = sanitisePomodoroSettings(settings);
+  if (phase === "short") return s.short;
+  if (phase === "long") return s.long;
+  return s.work;
+}
+
+/** work ×N with short breaks between, one long break at the end of the set,
+ *  then back to round 1. The round only advances off a SHORT break: counting
+ *  it on the work block makes the last round end on "5 of 4". */
+function nextPomodoroPhase(phase, round, settings) {
+  const s = sanitisePomodoroSettings(settings);
+  if (phase === "work") {
+    return round >= s.rounds ? { phase: "long", round } : { phase: "short", round };
+  }
+  if (phase === "short") return { phase: "work", round: Math.min(s.rounds, round + 1) };
+  return { phase: "work", round: 1 };
+}
+
+/** One coin a minute, capped. Daily quests pay 10/50/100, so a 25-minute
+ *  block at 25 coins sits deliberately between "easy" and "mid" -- focus
+ *  should be worth something, and never worth more than a hard quest. */
+function pomodoroCoins(minutes) {
+  const n = Math.round(Number(minutes) || 0);
+  return Math.min(60, Math.max(1, n));
+}
+
+function formatClock(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** What happened while the app wasn't running.
+ *
+ *  Deliberately finishes at most ONE phase. Chaining four blocks because the
+ *  phone sat in a pocket for two hours would be inventing focus that never
+ *  happened, and paying coins for it.
+ */
+function resolvePomodoroSession(session, now) {
+  if (!session || !session.running || !session.endsAt) return { finished: null, stale: false };
+  if (now < session.endsAt) return { finished: null, stale: false };
+  const overdueMs = now - session.endsAt;
+  return { finished: session.phase, overdueMs, stale: overdueMs > POMO_STALE_MS };
+}
+
+/** What the timer should look like the moment the tool opens, given what
+ *  was saved and how long ago that was.
+ *
+ *  This has to be pure and it has to run BEFORE the first render commits.
+ *  It used to be a mount effect, and React ran the per-tick completion
+ *  effect in the same pass with the pre-catch-up session still in scope --
+ *  so an abandoned block took the stale path and the normal path, rang, and
+ *  paid out. Resolving up front means the first state the component ever
+ *  holds is already correct and nothing is left running.
+ */
+function resolveBootPomodoro(stored, now) {
+  const settings = sanitisePomodoroSettings(stored && stored.settings);
+  const session = (stored && stored.session) || null;
+  const idle = (phase, round) => ({ phase, round, running: false, endsAt: null, remainingMs: null });
+
+  const r = resolvePomodoroSession(session, now);
+  if (!r.finished) return { settings, session, payout: 0, rang: false };
+  if (r.stale) return { settings, session: idle("work", 1), payout: 0, rang: false };
+
+  const round = session.round || 1;
+  const next = nextPomodoroPhase(session.phase, round, settings);
+  const payout = session.phase === "work" ? pomodoroCoins(pomodoroPhaseMinutes("work", settings)) : 0;
+  return { settings, session: idle(next.phase, next.round), payout, rang: true };
+}
+
+function loadPomodoro() {
+  const raw = loadStored(STORAGE_KEY_POMODORO, null) || {};
+  return {
+    settings: sanitisePomodoroSettings(raw.settings),
+    session: raw.session && typeof raw.session === "object" ? raw.session : null,
+  };
+}
+
+function savePomodoro(state) {
+  try { localStorage.setItem(STORAGE_KEY_POMODORO, JSON.stringify(state)); } catch {}
+}
+
+/** Hands the end time to the worker so its once-a-minute cron can fire a real
+ *  push. Android suspends timers and audio in the background, so the in-app
+ *  beep is the nice case, not the reliable one. `at = 0` cancels.
+ *
+ *  Never throws at the caller: a timer that works offline and rings quietly
+ *  beats one that shows a network error you can do nothing about.
+ */
+async function syncPomodoroTimer(at, label) {
+  try {
+    await fetch(`${NOTIFY_WORKER_URL}/timer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: getDeviceId(), at: at || 0, label: label || "focus block" }),
+    });
+  } catch { /* offline: the foreground beep still fires */ }
+}
+
+function ringAlarm() {
+  // Three rising pairs -- distinct from sound.success(), which is a single
+  // chirp you can miss from across a room.
+  playTone([
+    { freq: 660, start: 0.00, dur: 0.16, type: "sine", gain: 0.06 },
+    { freq: 880, start: 0.18, dur: 0.16, type: "sine", gain: 0.06 },
+    { freq: 660, start: 0.42, dur: 0.16, type: "sine", gain: 0.06 },
+    { freq: 880, start: 0.60, dur: 0.16, type: "sine", gain: 0.06 },
+    { freq: 990, start: 0.84, dur: 0.30, type: "sine", gain: 0.07 },
+  ]);
+  try { navigator.vibrate && navigator.vibrate([250, 120, 250, 120, 500]); } catch {}
+}
+
+function PomodoroTool({ onReward }) {
+  const boot = useRef(null);
+  if (!boot.current) boot.current = resolveBootPomodoro(loadPomodoro(), Date.now());
+  const [settings, setSettings] = useState(boot.current.settings);
+  const [session, setSession] = useState(boot.current.session);
+  const [tick, setTick] = useState(0);
+  const [editing, setEditing] = useState(null);
+  const wakeLock = useRef(null);
+
+  const phase = session?.phase || "work";
+  const round = session?.round || 1;
+  const running = !!session?.running;
+  const totalMs = pomodoroPhaseMinutes(phase, settings) * 60000;
+  const leftMs = running
+    ? Math.max(0, (session.endsAt || 0) - Date.now())
+    : (session?.remainingMs ?? totalMs);
+
+  useEffect(() => { savePomodoro({ settings, session }); }, [settings, session]);
+
+  // Screen wake lock while a block runs: a locked screen is exactly when
+  // Chrome suspends the audio context, so keeping it awake is what makes the
+  // in-app ring fire at the right second rather than whenever you look again.
+  useEffect(() => {
+    let released = false;
+    const acquire = async () => {
+      try {
+        if (running && "wakeLock" in navigator) wakeLock.current = await navigator.wakeLock.request("screen");
+      } catch { /* denied or unsupported -- the push notification covers it */ }
+    };
+    const release = () => {
+      try { wakeLock.current && wakeLock.current.release(); } catch {}
+      wakeLock.current = null;
+    };
+    if (running) acquire(); else release();
+    return () => { if (!released) { released = true; release(); } };
+  }, [running]);
+
+  const finishPhase = (finishedPhase, opts) => {
+    const silent = opts && opts.silent;
+    const paid = finishedPhase === "work" && !(opts && opts.noCoins);
+    if (paid) onReward(pomodoroCoins(pomodoroPhaseMinutes("work", settings)));
+    if (!silent) ringAlarm();
+    const next = nextPomodoroPhase(finishedPhase, round, settings);
+    // The next phase is queued but NOT started: coming back to a timer that
+    // silently rolled into a break you never took is worse than a prompt.
+    setSession({ phase: next.phase, round: next.round, running: false, endsAt: null, remainingMs: null });
+    syncPomodoroTimer(0);
+  };
+
+  // The boot resolver already advanced the phase; this only settles up the
+  // side effects it isn't allowed to have during render.
+  useEffect(() => {
+    if (boot.current.payout) onReward(boot.current.payout);
+    if (boot.current.rang || boot.current.session !== loadPomodoro().session) syncPomodoroTimer(0);
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setTick((t) => t + 1), 250);
+    return () => clearInterval(id);
+  }, [running]);
+
+  useEffect(() => {
+    if (!running || !session?.endsAt) return;
+    if (Date.now() < session.endsAt) return;
+    finishPhase(session.phase, {});
+  }, [tick, running, session]);
+
+  const start = () => {
+    const ms = session?.remainingMs ?? totalMs;
+    const endsAt = Date.now() + ms;
+    setSession({ phase, round, running: true, endsAt, remainingMs: null });
+    syncPomodoroTimer(endsAt, POMO_PHASES[phase].label);
+    sound.click();
+  };
+
+  const pause = () => {
+    setSession({ phase, round, running: false, endsAt: null, remainingMs: leftMs });
+    syncPomodoroTimer(0);
+    sound.toggle();
+  };
+
+  const reset = () => {
+    setSession({ phase, round, running: false, endsAt: null, remainingMs: null });
+    syncPomodoroTimer(0);
+    sound.delete();
+  };
+
+  const skip = () => {
+    const next = nextPomodoroPhase(phase, round, settings);
+    setSession({ phase: next.phase, round: next.round, running: false, endsAt: null, remainingMs: null });
+    syncPomodoroTimer(0);
+    sound.whoosh();
+  };
+
+  const bump = (key, by) => {
+    setSettings((s) => {
+      const nextVal = sanitisePomodoroSettings({ ...s, [key]: (s[key] || 0) + by });
+      return nextVal;
+    });
+    // An edit to the CURRENT phase's length only applies once it's idle --
+    // shortening a running block to below the elapsed time would end it
+    // retroactively, which reads as a crash.
+    if (!running) setSession((prev) => (prev ? { ...prev, remainingMs: null } : prev));
+    sound.click();
+  };
+
+  const pct = totalMs > 0 ? Math.min(1, Math.max(0, 1 - leftMs / totalMs)) : 0;
+  const R = 52;
+  const C = 2 * Math.PI * R;
+  const meta = POMO_PHASES[phase];
+
+  return (
+    <div className="pomo">
+      <div className="pomo-dial">
+        <svg viewBox="0 0 120 120" className="pomo-ring" aria-hidden="true">
+          <circle cx="60" cy="60" r={R} className="pomo-ring-track" />
+          <circle
+            cx="60" cy="60" r={R}
+            className="pomo-ring-fill"
+            style={{
+              stroke: meta.color,
+              strokeDasharray: C,
+              strokeDashoffset: C * (1 - pct),
+            }}
+          />
+        </svg>
+        <div className="pomo-centre">
+          <div className="pomo-clock">{formatClock(leftMs)}</div>
+          <div className="pomo-phase" style={{ color: meta.color }}>{meta.label}</div>
+        </div>
+      </div>
+
+      <div className="pomo-pips" aria-label={`round ${round} of ${settings.rounds}`}>
+        {Array.from({ length: settings.rounds }, (_, i) => (
+          <span
+            key={i}
+            className={`pomo-pip ${i + 1 < round ? "done" : ""} ${i + 1 === round ? "active" : ""}`}
+          />
+        ))}
+        <span className="pomo-round">round {round}/{settings.rounds}</span>
+      </div>
+
+      <div className="pomo-controls">
+        {running ? (
+          <button className="pomo-btn primary" onClick={pause}>pause</button>
+        ) : (
+          <button className="pomo-btn primary" onClick={start}>
+            {leftMs < totalMs ? "resume" : "start"}
+          </button>
+        )}
+        <button className="pomo-btn" onClick={reset}>reset</button>
+        <button className="pomo-btn" onClick={skip}>skip</button>
+      </div>
+
+      <div className="section-header"><span>LENGTHS</span></div>
+      <div className="pomo-settings">
+        {[
+          ["work", "focus", "m"],
+          ["short", "short break", "m"],
+          ["long", "long break", "m"],
+          ["rounds", "rounds", ""],
+        ].map(([key, label, unit]) => (
+          <div className={`pomo-set ${editing === key ? "open" : ""}`} key={key}>
+            <button className="pomo-set-face" onClick={() => { setEditing(editing === key ? null : key); sound.click(); }}>
+              <span className="pomo-set-label">{label}</span>
+              <span className="pomo-set-value">{settings[key]}{unit}</span>
+            </button>
+            {editing === key && (
+              <div className="pomo-stepper">
+                <button onClick={() => bump(key, -1)} aria-label={`decrease ${label}`}>−</button>
+                <button onClick={() => bump(key, -5)} disabled={key === "rounds"}>−5</button>
+                <button onClick={() => bump(key, +5)} disabled={key === "rounds"}>+5</button>
+                <button onClick={() => bump(key, +1)} aria-label={`increase ${label}`}>+</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* no hard line breaks: a <pre> with baked-in newlines re-wraps on a
+          narrow screen and the text comes out ragged */}
+      <div className="pomo-note">
+        <div>finishing a focus block pays {pomodoroCoins(settings.work)} coins.</div>
+        <div>it also rings as a notification, so it works with the screen off — up to a minute late, because the worker ticks once a minute.</div>
+      </div>
+    </div>
+  );
+}
+
+// The registry. One entry per tool; the grid and the router both read this,
+// so a new tool is a single object rather than edits in four places.
+const TOOLS = [
+  {
+    id: "pomodoro",
+    glyph: "◴",
+    name: "pomodoro",
+    desc: "focus timer with breaks · rings in the background",
+    Component: PomodoroTool,
+  },
+];
+
+function ToolsView({ onReward }) {
+  const [open, setOpen] = useState(null);
+  const tool = TOOLS.find((t) => t.id === open) || null;
+
+  if (tool) {
+    const Body = tool.Component;
+    return (
+      <div className="task-list vault-scroll">
+        <div className="section-header tool-header">
+          <button className="tool-back" onClick={() => { setOpen(null); sound.whoosh(); }}>
+            ← tools
+          </button>
+          <span>{tool.name.toUpperCase()}</span>
+        </div>
+        <Body onReward={onReward} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="task-list vault-scroll">
+      <div className="section-header"><span>TOOLS</span></div>
+      <div className="tool-grid">
+        {TOOLS.map((t) => (
+          <button key={t.id} className="tool-card" onClick={() => { setOpen(t.id); sound.click(); }}>
+            <span className="tool-glyph">{t.glyph}</span>
+            <span className="tool-name">{t.name}</span>
+            <span className="tool-desc">{t.desc}</span>
+          </button>
+        ))}
+        {/* An honest empty slot beats padding the grid with things that
+            don't exist yet. */}
+        <div className="tool-card ghost">
+          <span className="tool-glyph">+</span>
+          <span className="tool-name">more soon</span>
+          <span className="tool-desc">converters, text tools, calculators</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function loadStored(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -6708,6 +7215,13 @@ function TodoApp() {
   const changeTab = (t) => {
     if (t !== tab) sound.whoosh();
     setTab(t);
+    // With seven tabs the bar can still overflow on a narrow phone or a long
+    // pet name. Pull the selected one into view so the active tab is never
+    // the one you can't see.
+    try {
+      const el = document.getElementById(`tab-${t}`);
+      el && el.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+    } catch { /* jsdom / old webview */ }
   };
   const [tasks, setTasks] = useState(() => loadStored(STORAGE_KEY_TASKS, seedTasks));
   const [routines, setRoutines] = useState(() => loadStored(STORAGE_KEY_ROUTINES, seedRoutines));
@@ -7383,8 +7897,8 @@ function TodoApp() {
           display: flex;
           flex-shrink: 0;
           min-height: 42px;
-          gap: 2px;
-          padding: 10px 14px 0;
+          gap: 1px;
+          padding: 10px 8px 0;
           border-bottom: 1px solid var(--track);
           overflow-x: auto;
           scrollbar-width: none;
@@ -7397,10 +7911,15 @@ function TodoApp() {
           background: transparent;
           color: #7C8591;
           font-family: 'JetBrains Mono', monospace;
-          font-size: 11px;
-          letter-spacing: 0.04em;
+          /* v39: the seventh tab (tools) pushed both it and the pet tab off
+             a 390px screen -- 100px of overflow, and the bar scrolls, so a
+             brand-new feature was invisible unless you knew to swipe. Padding
+             and tracking come down rather than the font size, which keeps the
+             row legible and the tap target 30px tall. */
+          font-size: 10.5px;
+          letter-spacing: 0.02em;
           text-transform: uppercase;
-          padding: 9px 14px;
+          padding: 9px 7px;
           white-space: nowrap;
           flex-shrink: 0;
           min-height: 30px;
@@ -10038,6 +10557,121 @@ function TodoApp() {
         }
         .update-bar-icon { font-size: 9px; }
 
+        /* ---- inventory inline edit (v39) ---- */
+        .inv-tap {
+          background: transparent; border: none; padding: 0; cursor: pointer;
+          text-align: left; display: flex; flex-direction: column; gap: 2px; flex: 1;
+        }
+        .inv-edit { display: flex; flex-direction: column; gap: 7px; width: 100%; }
+        .inv-edit-input {
+          width: 100%; box-sizing: border-box;
+          background: transparent; border: 1px solid var(--accent); border-radius: 3px;
+          color: var(--text); font-family: 'JetBrains Mono', monospace;
+          font-size: 12px; padding: 6px 8px;
+        }
+        .inv-edit-input:focus { outline: none; }
+        .inv-edit-chips { margin: 0; }
+        .inv-edit-actions { display: flex; gap: 6px; }
+
+        /* ---- tools (v39) ---- */
+        .tool-grid {
+          display: grid; grid-template-columns: repeat(2, 1fr);
+          gap: 8px; padding: 4px 14px 16px;
+        }
+        .tool-card {
+          display: flex; flex-direction: column; gap: 4px;
+          padding: 12px 12px 14px; text-align: left; cursor: pointer;
+          background: transparent;
+          border: 1px solid var(--border); border-left: 2px solid var(--accent);
+          border-radius: 3px; color: var(--text);
+          font-family: 'JetBrains Mono', monospace;
+          transition: border-color 140ms ease;
+        }
+        .tool-card:active { border-color: var(--accent); }
+        .tool-card.ghost {
+          border-left-color: var(--track); opacity: 0.45; cursor: default;
+        }
+        .tool-glyph { font-size: 18px; color: var(--accent); line-height: 1; }
+        .tool-card.ghost .tool-glyph { color: var(--muted); }
+        .tool-name { font-size: 12px; letter-spacing: 0.04em; }
+        .tool-desc { font-size: 9.5px; color: var(--muted); line-height: 1.45; }
+        .tool-header { display: flex; align-items: center; gap: 10px; }
+        .tool-back {
+          background: transparent; border: none; cursor: pointer;
+          color: var(--accent); font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; letter-spacing: 0.06em; padding: 0;
+        }
+
+        /* ---- pomodoro ---- */
+        .pomo { padding: 6px 14px 20px; }
+        .pomo-dial { position: relative; width: 100%; max-width: 260px; margin: 6px auto 2px; }
+        .pomo-ring { width: 100%; display: block; transform: rotate(-90deg); }
+        .pomo-ring-track { fill: none; stroke: var(--track); stroke-width: 3; }
+        .pomo-ring-fill {
+          fill: none; stroke-width: 3; stroke-linecap: butt;
+          transition: stroke-dashoffset 260ms linear;
+        }
+        .pomo-centre {
+          position: absolute; inset: 0;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 4px;
+        }
+        .pomo-clock {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 34px; font-variant-numeric: tabular-nums;
+          letter-spacing: 0.02em; color: var(--text);
+        }
+        .pomo-phase {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+        }
+        .pomo-pips {
+          display: flex; align-items: center; gap: 5px;
+          justify-content: center; margin: 10px 0 14px;
+        }
+        .pomo-pip {
+          width: 7px; height: 7px; border-radius: 50%;
+          border: 1px solid var(--border); background: transparent;
+        }
+        .pomo-pip.done { background: var(--muted); border-color: var(--muted); }
+        .pomo-pip.active { background: var(--accent); border-color: var(--accent); }
+        .pomo-round {
+          margin-left: 6px; color: var(--muted);
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em;
+        }
+        .pomo-controls { display: flex; gap: 6px; justify-content: center; margin-bottom: 18px; }
+        .pomo-btn {
+          flex: 1; max-width: 110px; padding: 9px 0; cursor: pointer;
+          background: transparent; border: 1px solid var(--border); border-radius: 3px;
+          color: var(--muted); font-family: 'JetBrains Mono', monospace;
+          font-size: 11px; letter-spacing: 0.08em;
+          transition: color 140ms ease, border-color 140ms ease;
+        }
+        .pomo-btn.primary { color: var(--accent); border-color: var(--accent); }
+        .pomo-btn:active { border-color: var(--accent); color: var(--accent); }
+        .pomo-settings { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 12px; }
+        .pomo-set { border: 1px solid var(--border); border-radius: 3px; }
+        .pomo-set.open { border-color: var(--accent); }
+        .pomo-set-face {
+          width: 100%; display: flex; align-items: center; justify-content: space-between;
+          padding: 9px 11px; cursor: pointer; background: transparent; border: none;
+          font-family: 'JetBrains Mono', monospace;
+        }
+        .pomo-set-label { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
+        .pomo-set-value { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .pomo-stepper { display: flex; gap: 4px; padding: 0 8px 8px; }
+        .pomo-stepper button {
+          flex: 1; padding: 7px 0; cursor: pointer;
+          background: transparent; border: 1px solid var(--border); border-radius: 3px;
+          color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        }
+        .pomo-stepper button:disabled { opacity: 0.25; cursor: default; }
+        .pomo-note {
+          margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.65;
+          font-family: 'JetBrains Mono', monospace;
+          display: flex; flex-direction: column; gap: 5px;
+        }
+
         /* ---- habit slip button + paired edit fields (v35) ---- */
         .quest-slip {
           background: transparent; border: 1px solid var(--border);
@@ -11055,6 +11689,7 @@ pet, wallet and themes are always included.
             ["routines", "routines"],
             ["vault", "vault"],
             ["quest", "quest"],
+            ["tools", "tools"],
             ["pet", petCtl.pet.name.toLowerCase()],
           ].map(([id, label]) => (
             <button
@@ -11111,6 +11746,8 @@ pet, wallet and themes are always included.
             notes={notes}
             setNotes={setNotes}
           />
+        ) : tab === "tools" ? (
+          <ToolsView onReward={(c) => achCtl.addCoins(c)} />
         ) : tab === "quest" ? (
           <QuestView
             tagCtl={tagCtl}
