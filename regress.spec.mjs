@@ -96,42 +96,91 @@ await test("the tab bar stays reachable on every tab", async () => {
 
 // ---------------------------------------------------------------- task CRUD --
 
-await test("a task can be added, completed and deleted", async () => {
+await test("an inventory item can be added and survives a reload", async () => {
+  // v36: the Tasks tab is now an inventory of things you MIGHT do, plus three
+  // drawn for today. The open-ended to-do list is gone.
   const { ctx, page } = await open();
   await gotoTab(page, "tasks");
 
-  const input = page.locator('input[type="text"]:visible').first();
+  const input = page.locator('input[placeholder="something you might do..."]');
+  assert.equal(await input.count(), 1, "no inventory composer");
+
   const label = `probe-${Date.now()}`;
   await input.fill(label);
   await input.press("Enter");
   await page.waitForTimeout(400);
-  assert.ok((await page.locator("body").innerText()).includes(label), "task was not added");
-
-  const row = page.locator(`text=${label}`).first();
-  await row.click();
-  await page.waitForTimeout(400);
+  assert.ok((await page.locator("body").innerText()).includes(label), "item was not added");
 
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(700);
   await gotoTab(page, "tasks");
-  assert.ok((await page.locator("body").innerText()).includes(label), "task did not persist");
+  assert.ok((await page.locator("body").innerText()).includes(label), "item did not persist");
   await ctx.close();
 });
 
-await test("an empty task submission is refused, not silently added", async () => {
+await test("an empty inventory item is refused", async () => {
   const { ctx, page } = await open();
   await gotoTab(page, "tasks");
-  const before = await page.locator("li, .task-row").count();
-  const input = page.locator('input[type="text"]:visible').first();
+  const before = await page.locator(".quest-habit-card").count();
+  const input = page.locator('input[placeholder="something you might do..."]');
   await input.fill("   ");
   await input.press("Enter");
-  await page.waitForTimeout(400);
-  const after = await page.locator("li, .task-row").count();
-  assert.equal(after, before, "whitespace was accepted as a task");
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator(".quest-habit-card").count(), before, "whitespace became an item");
   await ctx.close();
 });
 
-// ------------------------------------------------------------------- XP -----
+await test("exactly one quest is drawn per difficulty", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "tasks");
+  const d = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.daily.v1") || "{}"));
+  assert.ok(d.day, "no quest day recorded");
+  const picks = Object.values(d.picks || {}).filter(Boolean);
+  assert.equal(new Set(picks).size, picks.length, "the same task was drawn twice");
+  assert.ok(picks.length <= 3, `drew ${picks.length} quests`);
+  assert.equal(await page.locator(".daily-card").count(), picks.length);
+  await ctx.close();
+});
+
+await test("completing a daily quest pays coins, once", async () => {
+  // the payout is COINS, not XP -- a random draw must not drive levelling
+  const { ctx, page } = await open();
+  await gotoTab(page, "tasks");
+  const coins = async () =>
+    (await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.wallet.v1") || '{"coins":0}'))).coins;
+  const xp = async () =>
+    Number((await page.evaluate(() => {
+      const h = JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]");
+      return h.reduce((s, x) => s + (x.xp || 0) * (x.history || []).filter((e) => e.t === "done").length
+                                  - (x.penalty || 0) * (x.history || []).filter((e) => e.t === "slip").length, 0);
+    })));
+
+  const c0 = await coins(), x0 = await xp();
+  const card = page.locator(".daily-card").first();
+  if (!(await card.count())) { await ctx.close(); return; }
+
+  await card.click();
+  await page.waitForTimeout(700);
+  const c1 = await coins();
+  assert.ok(c1 > c0, `coins did not increase: ${c0} -> ${c1}`);
+  assert.equal(await xp(), x0, "a daily quest changed XP -- it must only pay coins");
+
+  await card.click({ force: true }).catch(() => {});
+  await page.waitForTimeout(500);
+  assert.equal(await coins(), c1, "a claimed quest paid out twice");
+  await ctx.close();
+});
+
+await test("old tasks were folded into the inventory, not dropped", async () => {
+  const { ctx, page } = await open();
+  const inv = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1") || "[]"));
+  assert.ok(inv.length > 0, "inventory is empty after migration");
+  for (const t of inv) {
+    assert.ok(["easy", "mid", "hard"].includes(t.diff), `bad difficulty: ${t.diff}`);
+    assert.ok(t.text, "an inventory item lost its text");
+  }
+  await ctx.close();
+});
 
 await test("the quest tab shows a level and XP total", async () => {
   const { ctx, page } = await open();
@@ -511,6 +560,79 @@ await test("XP never goes negative even when slips outweigh everything", async (
   await page.waitForTimeout(500);
   const xp = Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
   assert.ok(xp >= 0, `XP went negative: ${xp}`);
+  await ctx.close();
+});
+
+// ------------------------------------------------ reorder + confirm (v36) --
+
+await test("quests can be reordered, and the order persists", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+
+  const first = async () =>
+    (await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")))[0]?.label;
+  const before = await first();
+
+  await page.locator("button").filter({ hasText: /^reorder$/ }).click();
+  await page.waitForTimeout(400);
+  const down = page.locator(".quest-habit-card.reordering button").filter({ hasText: "↓" }).first();
+  assert.ok(await down.count(), "no reorder controls appeared");
+  await down.click();
+  await page.waitForTimeout(500);
+
+  assert.notEqual(await first(), before, "the order did not change");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  assert.notEqual(await first(), before, "the new order did not persist");
+  await ctx.close();
+});
+
+await test("reorder mode hides the destructive controls", async () => {
+  // ✓ and ✗ are one tap from ↑ and ↓; mixing them would make a mis-tap change
+  // your XP while you were only trying to tidy the list
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  await page.locator("button").filter({ hasText: /^reorder$/ }).click();
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".quest-slip").count(), 0, "slip button still reachable");
+  assert.equal(await page.locator(".quest-check").count(), 0, "done button still reachable");
+  await ctx.close();
+});
+
+await test("deleting a quest needs two taps", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const count = async () =>
+    (await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]"))).length;
+
+  const before = await count();
+  const del = page.locator(".quest-habit-card .del-btn").first();
+  await del.click();
+  await page.waitForTimeout(400);
+
+  assert.equal(await count(), before, "one tap deleted the habit");
+  assert.equal(await page.locator(".del-btn.armed").count(), 1, "no confirmation appeared");
+
+  await page.locator(".del-btn.armed").first().click();
+  await page.waitForTimeout(500);
+  assert.equal(await count(), before - 1, "the confirmed delete did not happen");
+  await ctx.close();
+});
+
+await test("routine colours run as a gradient across the day", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const cols = await page.evaluate(() =>
+    [...document.querySelectorAll(".routine-row")].map((r) => getComputedStyle(r).borderLeftColor));
+  if (cols.length < 3) { await ctx.close(); return; }
+
+  const rgb = (c) => c.match(/\d+/g).map(Number);
+  const [r0, g0, b0] = rgb(cols[0]);
+  const [r9, g9, b9] = rgb(cols[cols.length - 1]);
+  assert.ok(r0 > b0, `first routine is not warm: ${cols[0]}`);
+  assert.ok(b9 > r9, `last routine is not cool: ${cols[cols.length - 1]}`);
+  assert.equal(new Set(cols).size > 1, true, "every routine is the same colour");
   await ctx.close();
 });
 

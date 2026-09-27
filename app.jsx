@@ -436,13 +436,15 @@ const STORAGE_KEY_PET = "tasksh.pet.v1";
 // Seven forms rather than twenty: each one gets real craft, and the
 // milestones stay meaningful against the v22 XP curve (level 20 ~ 103 days).
 const PET_FORMS = [
+  // v36: one evolution every 10 levels. Previously 1/3/6/10/14/17/20, which
+  // meant three evolutions inside the first fortnight and then nothing.
   { stage: 0, minLevel: 1,  name: "Spark",    title: "just hatched",        scale: 0.62 },
-  { stage: 1, minLevel: 3,  name: "Sprout",   title: "finding its feet",    scale: 0.72 },
-  { stage: 2, minLevel: 6,  name: "Drift",    title: "curious and quick",   scale: 0.82 },
-  { stage: 3, minLevel: 10, name: "Ember",    title: "steady, warm",        scale: 0.90 },
-  { stage: 4, minLevel: 14, name: "Cirrus",   title: "calm and knowing",    scale: 0.96 },
-  { stage: 5, minLevel: 17, name: "Solenn",   title: "quietly powerful",    scale: 1.0  },
-  { stage: 6, minLevel: 20, name: "Aurelis",  title: "legendary guardian",  scale: 1.06 },
+  { stage: 1, minLevel: 10, name: "Sprout",   title: "finding its feet",    scale: 0.72 },
+  { stage: 2, minLevel: 20, name: "Drift",    title: "curious and quick",   scale: 0.82 },
+  { stage: 3, minLevel: 30, name: "Ember",    title: "steady, warm",        scale: 0.90 },
+  { stage: 4, minLevel: 40, name: "Cirrus",   title: "calm and knowing",    scale: 0.96 },
+  { stage: 5, minLevel: 50, name: "Solenn",   title: "quietly powerful",    scale: 1.0  },
+  { stage: 6, minLevel: 60, name: "Aurelis",  title: "legendary guardian",  scale: 1.06 },
 ];
 
 function formForLevel(level) {
@@ -967,7 +969,7 @@ const THEMES = [
     id: "moss",
     name: "Moss",
     blurb: "quiet green, like a forest floor",
-    unlockLevel: 3,
+    unlockLevel: 10,
     colors: {
       bg: "#080D0A", panel: "#111814", track: "#19231D", border: "#1F2C25",
       text: "#E4EDE7", muted: "#67796F",
@@ -988,7 +990,7 @@ const THEMES = [
     id: "dusk",
     name: "Dusk",
     blurb: "the hour after sunset",
-    unlockLevel: 6,
+    unlockLevel: 20,
     colors: {
       bg: "#0D0912", panel: "#171122", track: "#20182E", border: "#2A2038",
       text: "#EDE7F2", muted: "#7A6E88",
@@ -1009,7 +1011,7 @@ const THEMES = [
     id: "abyss",
     name: "Abyss",
     blurb: "deep water, far from the surface",
-    unlockLevel: 10,
+    unlockLevel: 30,
     colors: {
       bg: "#050A12", panel: "#0D1520", track: "#141F2C", border: "#1B2938",
       text: "#DFEAF5", muted: "#5F7286",
@@ -1030,7 +1032,7 @@ const THEMES = [
     id: "ember",
     name: "Ember",
     blurb: "banked coals at midnight",
-    unlockLevel: 14,
+    unlockLevel: 40,
     colors: {
       bg: "#0F0906", panel: "#1A110C", track: "#241812", border: "#2F2118",
       text: "#F5E9E0", muted: "#8A7264",
@@ -1051,7 +1053,7 @@ const THEMES = [
     id: "aurora",
     name: "Aurora",
     blurb: "light over a frozen sky",
-    unlockLevel: 20,
+    unlockLevel: 50,
     colors: {
       bg: "#060A10", panel: "#0F1720", track: "#16212C", border: "#1E2B39",
       text: "#E8F4F2", muted: "#63808A",
@@ -1902,7 +1904,7 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
               // clamp so a routine running past midnight ends at the edge
               const width = Math.max(4, Math.min(rawW, trackW - left));
               const done = (r.history || []).includes(todayStr);
-              const color = colorForId(r.id);
+              const color = gradientColor(i, placed.length);
               // visible slice of this block within the scroll window
               const visL = Math.max(left, scrollX);
               const visR = Math.min(left + width, scrollX + viewportW);
@@ -2097,7 +2099,7 @@ function useRoutineStatus(routines, nowMinutes) {
 
 // compact 7-day dot strip, oldest -> newest (today last)
 
-function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave }) {
+function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday, onSave }) {
   const startMin = timeToMinutes(routine.time);
   const endMin = startMin + routine.duration;
   const { streak, freezeUsed } = streakFreezeInfo(routine.history);
@@ -2197,7 +2199,7 @@ function RoutineRow({ routine, status, index, onDelete, onToggleToday, onSave })
         style={{
           transform: `translateX(${dragX}px)`,
           transition: draggingRef.current ? "none" : "transform 220ms cubic-bezier(.65,0,.35,1)",
-          borderLeft: `3px solid ${doneToday ? "#2A2F36" : colorForId(routine.id)}`,
+          borderLeft: `3px solid ${doneToday ? "#2A2F36" : gradientColor(index, total)}`,
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -2500,6 +2502,7 @@ function RoutinesView({ routines, setRoutines }) {
             key={r.id}
             routine={r}
             index={i}
+            total={sorted.length}
             status={r.id === currentId ? "current" : r.id === nextId ? "next" : "idle"}
             onDelete={deleteRoutine}
             onToggleToday={toggleToday}
@@ -3530,6 +3533,35 @@ const CATEGORY_PALETTE = [
   "#E3B341", // gold
 ];
 
+/**
+ * Position-based colour for the day's routines: first is red, last is cyan.
+ *
+ * Interpolates HUE rather than RGB -- a straight RGB lerp from red to cyan
+ * passes through grey at the midpoint, which looks like a rendering fault
+ * rather than a gradient. Going up through the hue wheel (red → amber →
+ * green → cyan) keeps every step saturated and happens to land on the app's
+ * existing palette on the way.
+ *
+ * Saturation and lightness are pinned to the palette's own values so the
+ * gradient sits alongside CATEGORY_PALETTE without looking imported.
+ */
+function gradientColor(i, n) {
+  const t = n <= 1 ? 0 : Math.min(1, Math.max(0, i / (n - 1)));
+  const hue = (352 + t * 179) % 360;        // 352° red → 171° cyan, the warm way
+  return hslToHex(hue, 0.80, 0.64);
+}
+
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] =
+    h < 60  ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] :
+    h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  const hex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
 function colorForId(id) {
   const n = typeof id === "number" ? id : String(id).split("").reduce((s, c) => s + c.charCodeAt(0), 0);
   return CATEGORY_PALETTE[Math.abs(n) % CATEGORY_PALETTE.length];
@@ -3576,18 +3608,48 @@ function computeAreaXP(area, habits) {
 //   * level 2 still unlocks at exactly 100 XP
 //   * no level costs MORE than it did before, so no existing save can be
 //     retroactively demoted -- some players will simply level up on upgrade
+// Cumulative XP required to REACH level L (L >= 1).
+//
+// v36 REPLACED the v22 curve at the user's request, and deliberately broke the
+// old "no save can be retroactively demoted" invariant -- they asked for a
+// harder climb and accepted the drop. Grounded in measurement rather than
+// taste: their real history is 1755 XP over exactly 30 days (58.5/day), so
+// the curve is fitted so that
+//
+//     level 7   costs more than a month of their actual pace  (so they land on 6)
+//     level 60  arrives at roughly two years of the same pace
+//
+// Sub-quadratic on purpose. The old quadratic put level 60 at 48,675 XP -- and
+// doubling it to make the early game harder pushed the final pet form out to
+// four and a half years, which is not a goal, it is an asymptote.
+const LEVEL_K = 160;      // XP to reach level 2
+const LEVEL_P = 1.35;     // curve steepness
+
 function cumulativeXPForLevel(level) {
-  return 12.5 * (level - 1) * (level + 6);
+  if (level <= 1) return 0;
+  return Math.round(LEVEL_K * Math.pow(level - 1, LEVEL_P));
 }
 
 function levelFromXP(xp) {
   const clamped = Math.max(0, xp);
-  // inverse of cumulativeXPForLevel, solved for L
-  const level = Math.max(1, Math.floor((-5 + Math.sqrt(49 + 0.32 * clamped)) / 2));
+  let level = Math.max(1, Math.floor(1 + Math.pow(clamped / LEVEL_K, 1 / LEVEL_P)));
+
+  // cumulativeXPForLevel ROUNDS to whole XP, so the closed-form inverse can
+  // land a level low exactly on a boundary: level 4 costs round(705.06) = 705,
+  // but the inverse of 705 is 3.9998, which floors to 3. Standing on the
+  // threshold and being told you have not reached it is the kind of bug people
+  // notice immediately. Correct against the real table -- at most one step.
+  while (cumulativeXPForLevel(level + 1) <= clamped) level++;
+  while (level > 1 && cumulativeXPForLevel(level) > clamped) level--;
+
   const into = clamped - cumulativeXPForLevel(level);
   const span = cumulativeXPForLevel(level + 1) - cumulativeXPForLevel(level);
   return { level, into, span };
 }
+
+// Milestones now land every 10 levels, so an unlock is a real event rather
+// than something that happens twice in the first week.
+const MILESTONE_EVERY = 10;
 
 // small roman-numeral converter, used past the last named title
 // (e.g. "Eternal II", "Eternal III"...) so leveling never visually caps
@@ -3600,9 +3662,12 @@ function toRoman(num) {
   return out;
 }
 
+// 20 titles across a 60-level climb: one every three levels, so the name
+// changes often enough to notice without running out at level 21.
 function titleForLevel(lvl) {
-  if (lvl <= LEVEL_TITLES.length) return LEVEL_TITLES[lvl - 1];
-  const tier = lvl - LEVEL_TITLES.length + 1;
+  const idx = Math.floor((Math.max(1, lvl) - 1) / 3);
+  if (idx < LEVEL_TITLES.length) return LEVEL_TITLES[idx];
+  const tier = idx - LEVEL_TITLES.length + 2;
   return `${LEVEL_TITLES[LEVEL_TITLES.length - 1]} ${toRoman(tier)}`;
 }
 
@@ -3641,7 +3706,8 @@ function LifeAreaCard({ area, xp }) {
 // habit with penalty 0 behaves exactly like a v34 good habit; one with xp 0
 // behaves exactly like a v34 bad habit. The old split was never a difference
 // in kind, only in which list a row happened to live in.
-function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave }) {
+function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave,
+                    reorder = false, onMove, canUp = false, canDown = false }) {
   const today = getISTDateString(0);
   const doneToday = habitDoneOn(habit, today);
   const slipToday = habitSlipOn(habit, today);
@@ -3653,6 +3719,20 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
     normaliseHistory(habit.history).filter((e) => e.t === "done").map((e) => e.d)
   );
   const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
+
+  // Delete arms first, then confirms. A habit carries months of history and
+  // the button sits next to edit on a small row -- a single mis-tap used to
+  // destroy the lot with no undo anywhere in the app.
+  const [armed, setArmed] = useState(false);
+  const armTimer = useRef(null);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+  const askDelete = () => {
+    if (armed) { onDelete(habit.id); return; }
+    setArmed(true);
+    sound.click();
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armTimer.current = setTimeout(() => { setArmed(false); armTimer.current = null; }, 4000);
+  };
 
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
@@ -3762,6 +3842,26 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
     );
   }
 
+  // Reorder is a MODE rather than two more buttons on the row. The card
+  // already carries link, ✗, ✓, edit and delete; a sixth and seventh control
+  // pushed delete off the edge of a 360px screen when this was tried inline.
+  // Swapping the whole row out keeps every target finger-sized.
+  if (reorder) {
+    return (
+      <div className="quest-habit-card good reordering">
+        <span className="area-dot" style={{ background: area.color }} />
+        <div className="quest-habit-main">
+          <span className="quest-habit-label">{habit.label}</span>
+          <span className="quest-habit-meta">{area.label}</span>
+        </div>
+        <button className="keypool-move" disabled={!canUp}
+                onClick={() => onMove(habit.id, -1)} aria-label="Move up">↑</button>
+        <button className="keypool-move" disabled={!canDown}
+                onClick={() => onMove(habit.id, 1)} aria-label="Move down">↓</button>
+      </div>
+    );
+  }
+
   const meta = [];
   if (habitXP(habit) > 0) meta.push(`+${habitXP(habit)}`);
   if (habitPenalty(habit) > 0) meta.push(`−${habitPenalty(habit)}`);
@@ -3821,11 +3921,17 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
           <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
-      <button className="del-btn" onClick={() => onDelete(habit.id)} aria-label="Delete habit">
-        <svg viewBox="0 0 24 24" width="13" height="13">
-          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      </button>
+      {armed ? (
+        <button className="del-btn armed" onClick={askDelete} aria-label="Confirm delete habit">
+          sure?
+        </button>
+      ) : (
+        <button className="del-btn" onClick={askDelete} aria-label="Delete habit">
+          <svg viewBox="0 0 24 24" width="13" height="13">
+            <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
@@ -3952,6 +4058,30 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
       sound.error();
       petBus.emit("badHabit");
     }
+  };
+
+  const [reorderMode, setReorderMode] = useState(false);
+
+  /**
+   * Swaps a habit with its nearest VISIBLE neighbour.
+   *
+   * Skipping hidden rows matters: with an area filter on, a naive index swap
+   * trades places with a habit the user cannot see, so the list appears not to
+   * move at all and their order silently changes elsewhere.
+   */
+  const moveHabit = (id, dir) => {
+    setHabits((prev) => {
+      const i = prev.findIndex((h) => h.id === id);
+      if (i < 0) return prev;
+      const shown = (h) => areaFilter === "all" || h.area === areaFilter;
+      let j = i + dir;
+      while (j >= 0 && j < prev.length && !shown(prev[j])) j += dir;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+    sound.click();
   };
 
   const delHabit = (id) => { setHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
@@ -4143,7 +4273,15 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
 
       {showTagEditor && <TagEditor tagCtl={tagCtl} onClose={() => setShowTagEditor(false)} />}
 
-      <div className="section-header"><span>HABITS</span></div>
+      <div className="section-header habits-header">
+        <span>HABITS</span>
+        <button
+          className={`radar-edit ${reorderMode ? "on" : ""}`}
+          onClick={() => { setReorderMode((v) => !v); sound.click(); }}
+        >
+          {reorderMode ? "done" : "reorder"}
+        </button>
+      </div>
       <div className="quest-habit-list">
         {habits.length === 0 ? (
           <div className="empty-state">
@@ -4151,7 +4289,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
             <div className="msg">no habits yet</div>
           </div>
         ) : (
-          visibleHabits.map((h) => (
+          visibleHabits.map((h, i) => (
             <HabitCard
               key={h.id}
               habit={h}
@@ -4160,6 +4298,10 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
               onMark={markToday}
               onDelete={delHabit}
               onSave={saveHabit}
+              reorder={reorderMode}
+              onMove={moveHabit}
+              canUp={i > 0}
+              canDown={i < visibleHabits.length - 1}
             />
           ))
         )}
@@ -4228,6 +4370,72 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
   );
 }
 
+// ============================================================
+// DAILY QUESTS (v36)
+//
+// The Tasks tab used to be an open-ended to-do list, which grew without bound
+// and stopped being looked at. It is now an INVENTORY of things you might do,
+// plus exactly three drawn for today -- one per difficulty.
+//
+// Difficulty sets the payout, and the payout is COINS, not XP. Levelling stays
+// driven by habits; a daily draw is luck, and luck should not decide your
+// level. Coins spend in the reward centre, which is where luck belongs.
+// ============================================================
+
+const STORAGE_KEY_INVENTORY = "tasksh.inventory.v1";
+const STORAGE_KEY_DAILY = "tasksh.daily.v1";
+
+const DIFFICULTIES = [
+  { key: "easy", label: "easy", coins: 10,  color: "#7EE787" },
+  { key: "mid",  label: "mid",  coins: 50,  color: "#F5A623" },
+  { key: "hard", label: "hard", coins: 100, color: "#F0576B" },
+];
+
+const diffMeta = (k) => DIFFICULTIES.find((d) => d.key === k) || DIFFICULTIES[0];
+
+/**
+ * Which day the quest board belongs to.
+ *
+ * The board rolls over when the FIRST routine of the day starts, not at
+ * midnight. Finishing something at 01:00 should still count for the day you
+ * were awake for, and their first routine is 05:30 -- so between midnight and
+ * 05:30 the board deliberately still shows yesterday's draw.
+ */
+function questDayString(routines, nowMinutes) {
+  const starts = (routines || [])
+    .map((r) => (typeof r.time === "string" && /^\d{2}:\d{2}$/.test(r.time)
+      ? Number(r.time.slice(0, 2)) * 60 + Number(r.time.slice(3, 5)) : null))
+    .filter((n) => n !== null);
+  const reset = starts.length ? Math.min(...starts) : 0;
+  return nowMinutes < reset ? getISTDateString(-1) : getISTDateString(0);
+}
+
+/** One random task per difficulty. Tiers with an empty pool simply draw nothing. */
+function drawDaily(inventory, day) {
+  const picks = {};
+  for (const d of DIFFICULTIES) {
+    const pool = (inventory || []).filter((t) => t.diff === d.key);
+    picks[d.key] = pool.length ? pool[Math.floor(Math.random() * pool.length)].id : null;
+  }
+  return { day, picks, done: [] };
+}
+
+/** v35 tasks -> inventory. Priority maps onto difficulty; nothing is thrown away. */
+function migrateTasksToInventory(tasks) {
+  const byPrio = { high: "hard", mid: "mid", low: "easy" };
+  return (Array.isArray(tasks) ? tasks : []).map((t) => ({
+    id: t.id,
+    text: t.text,
+    diff: byPrio[t.priority] || "mid",
+  }));
+}
+
+const seedInventory = [
+  { id: 9001, text: "100 pushups", diff: "hard" },
+  { id: 9002, text: "Read 20 pages", diff: "mid" },
+  { id: 9003, text: "Water the plants", diff: "easy" },
+];
+
 const seedTasks = [
   { id: 1, text: "ship rice theme v2 captions", done: false, priority: "high", createdAt: Date.now() - 8000000 },
   { id: 2, text: "review conky widget layout", done: false, priority: "mid", createdAt: Date.now() - 5000000 },
@@ -4281,6 +4489,157 @@ function Checkbox({ checked, onChange, color }) {
         />
       </svg>
     </button>
+  );
+}
+
+function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward }) {
+  const [text, setText] = useState("");
+  const [diff, setDiff] = useState("mid");
+  const [flash, triggerFlash] = useFlash();
+  const [armed, setArmed] = useState(null);
+  const armTimer = useRef(null);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
+
+  const add = () => {
+    const t = text.trim();
+    if (!t) { triggerFlash(); sound.error(); return; }
+    setInventory((prev) => [...prev, { id: makeId(), text: t, diff }]);
+    setText("");
+    sound.click();
+  };
+
+  const del = (id) => {
+    if (armed !== id) {
+      setArmed(id); sound.click();
+      if (armTimer.current) clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => { setArmed(null); armTimer.current = null; }, 4000);
+      return;
+    }
+    setInventory((prev) => prev.filter((t) => t.id !== id));
+    setArmed(null);
+    sound.delete();
+  };
+
+  const complete = (id, coins) => {
+    if ((daily.done || []).includes(id)) return;     // paid once, never twice
+    setDaily((d) => ({ ...d, done: [...(d.done || []), id] }));
+    onReward(coins);
+    sound.success();
+    petBus.emit("habitDone");
+  };
+
+  const reroll = () => {
+    setDaily(drawDaily(inventory, daily.day));
+    sound.click();
+  };
+
+  const byId = (id) => inventory.find((t) => t.id === id) || null;
+  const doneCount = DIFFICULTIES.filter((d) => {
+    const id = daily.picks?.[d.key];
+    return id && (daily.done || []).includes(id);
+  }).length;
+  const drawn = DIFFICULTIES.filter((d) => byId(daily.picks?.[d.key])).length;
+
+  return (
+    <div className="task-list vault-scroll">
+      <div className="section-header habits-header">
+        <span>TODAY&apos;S QUESTS</span>
+        <span className="keypool-hint">{doneCount}/{drawn} done</span>
+      </div>
+
+      {drawn === 0 ? (
+        <div className="empty-state">
+          <div className="glyph">{"{ }"}</div>
+          <div className="msg">nothing in the inventory yet — add some below</div>
+        </div>
+      ) : (
+        <div className="daily-grid">
+          {DIFFICULTIES.map((d) => {
+            const task = byId(daily.picks?.[d.key]);
+            if (!task) return null;
+            const done = (daily.done || []).includes(task.id);
+            return (
+              <button
+                key={d.key}
+                className={`daily-card ${done ? "done" : ""}`}
+                style={{ "--dc": d.color }}
+                onClick={() => complete(task.id, d.coins)}
+                disabled={done}
+              >
+                <span className="daily-diff">{d.label}</span>
+                <span className="daily-text">{task.text}</span>
+                <span className="daily-coins">{done ? "✓ claimed" : `+${d.coins} ◉`}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="daily-note">
+        new draw when your first routine starts
+        {routines?.length ? ` (${[...routines].map((r) => r.time).sort()[0]})` : ""}
+        <button className="note-btn" onClick={reroll}>reroll</button>
+      </div>
+
+      <div className="section-header"><span>INVENTORY</span></div>
+
+      <div className={`composer ${flash ? "shake" : ""}`}>
+        <input
+          type="text"
+          placeholder="something you might do..."
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button className="add-btn" onClick={add} aria-label="Add to inventory">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+      <div className="duration-chips">
+        {DIFFICULTIES.map((d) => (
+          <button key={d.key} className={diff === d.key ? "active" : ""}
+                  style={{ "--ac": d.color }} onClick={() => setDiff(d.key)}>
+            {d.label} · {d.coins}◉
+          </button>
+        ))}
+      </div>
+
+      <div className="quest-habit-list">
+        {inventory.length === 0 ? (
+          <div className="empty-state">
+            <div className="glyph">{"{ }"}</div>
+            <div className="msg">inventory is empty</div>
+          </div>
+        ) : (
+          inventory.map((t) => {
+            const d = diffMeta(t.diff);
+            const isToday = Object.values(daily.picks || {}).includes(t.id);
+            return (
+              <div className={`quest-habit-card good ${isToday ? "drawn" : ""}`} key={t.id}>
+                <span className="area-dot" style={{ background: d.color }} />
+                <div className="quest-habit-main">
+                  <span className="quest-habit-label">{t.text}</span>
+                  <span className="quest-habit-meta">
+                    {d.label} · +{d.coins} coins{isToday ? " · drawn today" : ""}
+                  </span>
+                </div>
+                {armed === t.id ? (
+                  <button className="del-btn armed" onClick={() => del(t.id)}>sure?</button>
+                ) : (
+                  <button className="del-btn" onClick={() => del(t.id)} aria-label="Remove from inventory">
+                    <svg viewBox="0 0 24 24" width="13" height="13">
+                      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -5756,6 +6115,17 @@ function TodoApp() {
   const [vaultHabits, setVaultHabits] = useState(() => loadStored(STORAGE_KEY_VAULT_HABITS, seedVaultHabits));
   const [projects, setProjects] = useState(() => loadStored(STORAGE_KEY_PROJECTS, seedProjects));
   const [notes, setNotes] = useState(() => loadStored(STORAGE_KEY_NOTES, seedNotes));
+
+  // v36: the Tasks tab became an inventory + a daily draw. On the first launch
+  // after upgrading, the old task list is folded in rather than discarded --
+  // priority maps onto difficulty.
+  const [inventory, setInventory] = useState(() => {
+    const inv = loadStored(STORAGE_KEY_INVENTORY, null);
+    if (Array.isArray(inv)) return inv;
+    const old = loadStored(STORAGE_KEY_TASKS, null);
+    return Array.isArray(old) && old.length ? migrateTasksToInventory(old) : seedInventory;
+  });
+  const [daily, setDaily] = useState(() => loadStored(STORAGE_KEY_DAILY, { day: "", picks: {}, done: [] }));
   // v35 merged good+bad into one list. On first launch after the upgrade the
   // merged key is absent, so fold the two old lists together; mergeHabitLists
   // is arithmetically identity-preserving, so nobody's XP or level moves.
@@ -6087,6 +6457,22 @@ function TodoApp() {
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(notes)); } catch {}
   }, [notes]);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_INVENTORY, JSON.stringify(inventory)); } catch {}
+  }, [inventory]);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_DAILY, JSON.stringify(daily)); } catch {}
+  }, [daily]);
+
+  // Redraw when the quest day rolls over. Keyed on the day STRING rather than
+  // a timer so it also fires correctly after the app has been closed for days.
+  const questDay = questDayString(routines, nowMinutes);
+  useEffect(() => {
+    if (!questDay) return;
+    if (daily.day !== questDay) setDaily(drawDaily(inventory, questDay));
+  }, [questDay, inventory, daily.day]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY_HABITS, JSON.stringify(habits)); } catch {}
@@ -9104,6 +9490,43 @@ function TodoApp() {
           .backup-ask-backdrop { animation: none; }
         }
 
+        .del-btn.armed {
+          color: var(--bg); background: var(--danger); border-color: var(--danger);
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px;
+          white-space: nowrap;
+        }
+
+        /* ---- daily quests (v36) ---- */
+        .daily-grid { display: flex; flex-direction: column; gap: 8px; padding: 0 18px 4px; }
+        .daily-card {
+          display: flex; align-items: center; gap: 10px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-left: 3px solid var(--dc); border-radius: 10px;
+          padding: 12px; cursor: pointer; text-align: left;
+          font-family: 'JetBrains Mono', monospace;
+          transition: border-color 140ms ease, opacity 200ms ease;
+        }
+        .daily-card:hover:not(:disabled) { border-color: var(--dc); }
+        .daily-card:disabled { cursor: default; opacity: 0.45; }
+        .daily-card.done .daily-text { text-decoration: line-through; }
+        .daily-diff {
+          font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+          color: var(--dc); flex: none; width: 34px;
+        }
+        .daily-text { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); }
+        .daily-coins { font-size: 10px; color: var(--accent2); flex: none; }
+        .daily-note {
+          display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          color: var(--muted); padding: 6px 18px 12px;
+        }
+        .quest-habit-card.drawn { border-left: 2px solid var(--accent); }
+
+        .habits-header { display: flex; align-items: center; justify-content: space-between; }
+        .radar-edit.on { border-color: var(--accent); color: var(--accent); }
+        .quest-habit-card.reordering { border-style: dashed; }
+
         .note-empty {
           font-family: 'JetBrains Mono', monospace; font-size: 10px;
           color: var(--muted); padding: 10px 18px 14px;
@@ -10033,103 +10456,14 @@ pet, wallet and themes are always included.
             setTab={changeTab}
           />
         ) : tab === "tasks" ? (
-          <>
-            <div className="stats-bar stats-bar-viz">
-              <RadialProgress pct={stats.pct} size={64} stroke={5.5} label={`${stats.pct}%`} />
-              <div className="stats-row-viz">
-                <span><b><AnimatedNumber value={stats.total} /></b> total</span>
-                <span><b><AnimatedNumber value={stats.pending} /></b> pending</span>
-                <span><b><AnimatedNumber value={stats.done} /></b> done</span>
-              </div>
-            </div>
-
-            {stats.pending > 0 && (
-              <div className="donut-card">
-                <DonutChart
-                  size={96}
-                  stroke={14}
-                  centerLabel={stats.pending}
-                  centerSublabel="open"
-                  segments={prioBreakdown.map((p) => ({ key: p.key, value: p.value, color: p.color }))}
-                />
-                <div className="donut-legend">
-                  {prioBreakdown.map((p) => (
-                    <div className="donut-legend-row" key={p.key}>
-                      <span className="donut-legend-dot" style={{ background: p.color }} />
-                      <span>{p.label} priority</span>
-                      <span className="donut-legend-val">{p.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="composer">
-              <input
-                ref={inputRef}
-                type="text"
-                placeholder="add a task, press enter..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addTask()}
-              />
-              <div className="prio-select">
-                {PRIORITIES.map((p) => (
-                  <button
-                    key={p.key}
-                    className={priority === p.key ? "active" : ""}
-                    style={{ "--pc": p.color }}
-                    onClick={() => setPriority(p.key)}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-              <button className="add-btn" onClick={addTask} aria-label="Add task">
-                <svg viewBox="0 0 24 24" width="16" height="16">
-                  <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="filters">
-              {["all", "active", "done"].map((f) => (
-                <button
-                  key={f}
-                  className={filter === f ? "active" : ""}
-                  onClick={() => setFilter(f)}
-                >
-                  {f}
-                </button>
-              ))}
-              <span className="spacer" />
-              {stats.done > 0 && (
-                <button className="clear-btn" onClick={clearDone}>clear done</button>
-              )}
-            </div>
-
-            <div className="task-list">
-              {visible.length === 0 ? (
-                <div className="empty-state">
-                  <div className="glyph">{"{ }"}</div>
-                  <div className="msg">
-                    {filter === "done" ? "nothing completed yet" : "queue's empty — add something"}
-                  </div>
-                </div>
-              ) : (
-                visible.map((t, i) => (
-                  <TaskRow
-                    key={t.id}
-                    task={t}
-                    now={now}
-                    index={i}
-                    onToggle={toggleTask}
-                    onDelete={deleteTask}
-                  />
-                ))
-              )}
-            </div>
-          </>
+          <DailyView
+            inventory={inventory}
+            setInventory={setInventory}
+            daily={daily}
+            setDaily={setDaily}
+            routines={routines}
+            onReward={(c) => achCtl.addCoins(c)}
+          />
         ) : tab === "routines" ? (
           <RoutinesView routines={routines} setRoutines={setRoutines} />
         ) : tab === "vault" ? (

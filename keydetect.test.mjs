@@ -61,7 +61,12 @@ function sliceFrom(SRC, name) {
         const end = SRC.indexOf("\n", i);
         return SRC.slice(start, end === -1 ? SRC.length : end);
       }
+      continue;
     }
+    // a scalar const -- `const LEVEL_K = 160;` -- never opens a brace, so the
+    // first top-level semicolon is its end. Without this the scanner ran to
+    // EOF and reported "unbalanced".
+    if (c === ";" && depth === 0 && !seen) return SRC.slice(start, i + 1);
   }
   throw new Error(`unbalanced braces while lifting "${name}"`);
 }
@@ -232,7 +237,9 @@ const {
   cumulativeXPForLevel, levelFromXP, computeTotalXP, computeSpendableXP, computeAreaXP,
   normaliseHistory, countHist, habitXP, habitPenalty, habitNet,
   habitDoneOn, habitSlipOn, markHabit, mergeHabitLists,
+  LEVEL_K, LEVEL_P,
 } = liftApp([
+  "LEVEL_K", "LEVEL_P",
   "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeSpendableXP", "computeAreaXP",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
@@ -247,11 +254,40 @@ const habit = (xp, days, area = "work", penalty = 0, slips = 0) => ({
   ],
 });
 
-test("level 2 still unlocks at exactly 100 XP", () => {
-  // an invariant deliberately preserved across the v22 curve change
-  assert.equal(cumulativeXPForLevel(2), 100);
-  assert.equal(levelFromXP(100).level, 2);
-  assert.equal(levelFromXP(99).level, 1);
+test("level 2 unlocks at exactly LEVEL_K XP", () => {
+  // v36 DELIBERATELY broke the old "level 2 at 100 XP" invariant: the user
+  // asked for a harder climb and accepted being demoted for it. The property
+  // that still has to hold is that the boundary is exact in both directions.
+  assert.equal(cumulativeXPForLevel(2), LEVEL_K);
+  assert.equal(levelFromXP(LEVEL_K).level, 2);
+  assert.equal(levelFromXP(LEVEL_K - 1).level, 1);
+});
+
+test("the level boundary is exact at every level, despite rounding", () => {
+  // cumulativeXPForLevel rounds to whole XP while the inverse is continuous,
+  // so on a boundary the closed form can be a level low (705 -> 3.9998 -> 3).
+  // Standing exactly on a threshold must always count as having reached it.
+  for (let L = 2; L <= 60; L++) {
+    const at = cumulativeXPForLevel(L);
+    assert.equal(levelFromXP(at).level, L, `XP ${at} should be exactly level ${L}`);
+    assert.equal(levelFromXP(at - 1).level, L - 1, `XP ${at - 1} should still be level ${L - 1}`);
+  }
+});
+
+test("unlocks land every 10 levels", () => {
+  assert.ok(/const MILESTONE_EVERY = 10/.test(APP), "milestone spacing is not declared");
+  const themes = [...APP.matchAll(/unlockLevel: (\d+)/g)].map((m) => Number(m[1]));
+  assert.deepEqual(themes, [1, 10, 20, 30, 40, 50], `theme unlocks are ${themes}`);
+  const pets = [...APP.matchAll(/minLevel: (\d+)/g)].map((m) => Number(m[1]));
+  assert.deepEqual(pets, [1, 10, 20, 30, 40, 50, 60], `pet evolutions are ${pets}`);
+});
+
+test("the climb stays finite", () => {
+  // harder is the point, unreachable is not: the final pet form has to be
+  // attainable at the user's measured pace (1755 XP/month) inside ~2 years
+  const months = cumulativeXPForLevel(60) / 1755;
+  assert.ok(months < 30, `level 60 takes ${months.toFixed(0)} months`);
+  assert.ok(months > 12, `level 60 takes only ${months.toFixed(0)} months -- too easy`);
 });
 
 test("levelFromXP is the true inverse of cumulativeXPForLevel", () => {
