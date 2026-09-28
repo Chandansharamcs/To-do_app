@@ -18,6 +18,21 @@ project.
 
 ---
 
+## Captions · what leaves the device  *(v40)*
+
+| | |
+|---|---|
+| Sent | ~1.9 MB of 16 kHz mono WAV, per clip |
+| Sent to | `api.groq.com` directly — not through the worker |
+| Auth | your own Groq key, from the local pool, in an `Authorization` header |
+| Never sent | the video itself. Decoding, caption rendering and encoding all happen on the device |
+
+The audio of the clip reaches Groq, and Groq's retention policy applies to
+it — that is the trade for free word-level timings. Nothing is stored by
+this project: the worker is not in the path at all.
+
+---
+
 ## Cloud backup · what the server can and cannot see  *(v38)*
 
 The app pushes an encrypted snapshot of `localStorage` to the worker once an

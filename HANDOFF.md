@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v39   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v40   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-09-27
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -404,6 +404,34 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   counts on every render. There's no separate "current XP" field to get
   out of sync.
 
+
+## Captions tool (v40)
+
+`TOOLS → ai captions`. Clip in, captioned MP4 out, nothing server-side.
+
+```
+file → extractAudioForASR()  16kHz mono WAV, ~1.9MB    (mediabunny AudioBufferSink)
+     → transcribeAudio()     Groq whisper-large-v3-turbo, word timings
+     → chunkWords()          pure: lines of <=3 words / 22 chars
+     → drawCaptions()        pure-ish: same code for preview AND export
+     → burnCaptions()        CanvasSink → canvas → CanvasSource → Mp4OutputFormat
+```
+
+Facts worth not re-deriving:
+
+- Groq sends `access-control-allow-origin: *`, so the phone calls it
+  directly. The video never leaves the device; the audio does.
+- Free tier: 20 RPM, 2,000 RPD, 28,800 audio-seconds/day, **25 MB** upload
+  cap. That cap is why the audio is stripped rather than the file uploaded.
+- Needs a **Groq** key specifically (`gsk_`). `groqKeys()` filters the pool.
+- Audio is muxed through as **encoded packets**, never re-encoded. Do not
+  "simplify" this into an AudioEncoder — AAC encode support on Android is
+  the least reliable part of WebCodecs.
+- `window.__tasksh` exposes `burnCaptions`, `chunkWords`, `encodeProbeClip`,
+  `probeVideo`, `codecSelfTest`. That hook is how you diagnose a phone you
+  cannot hold, and the browser test drives the real pipeline through it.
+- **Bundle cost is real:** mediabunny took 446 KB → 782 KB, after trimming
+  imports from 1.0 MB. Never import `ALL_FORMATS` or `Conversion`.
 
 ## Tools (v39)
 

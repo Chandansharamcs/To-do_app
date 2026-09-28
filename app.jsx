@@ -1,5 +1,20 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import ReactDOM from "react-dom/client";
+// v40: the ONE dependency in this project. WebCodecs gives the phone's
+// hardware encoder but deliberately no container, and hand-writing an MP4
+// muxer is ~1500 lines of byte offsets where a mistake produces a file that
+// plays locally and fails on Instagram. mediabunny is MPL-2.0, zero
+// transitive deps, and tree-shakes to ~30kB. ffmpeg.wasm would have been
+// ~30MB -- 65x this whole app.
+// Imported one by one on purpose. ALL_FORMATS plus Conversion pulled in
+// every demuxer and muxer the library has and took the bundle from 446kB to
+// 1.0MB -- measured. Phone cameras write MP4/MOV, so those two input formats
+// and one output format are the whole requirement.
+import {
+  Input, Output, BlobSource, BufferTarget, MP4, QTFF,
+  Mp4OutputFormat, CanvasSink, CanvasSource, AudioBufferSink,
+  EncodedPacketSink, EncodedAudioPacketSource, canEncodeVideo, QUALITY_HIGH,
+} from "mediabunny";
 
 // ---- design tokens ----
 // bg: #0B0D10 panel: #14171C accent(cyan): #5EEAD4 accent2(amber): #F5A623
@@ -936,7 +951,7 @@ const PetCreature = React.memo(function PetCreature({
 // writes onto :root.
 //
 // Design constraint carried over from DESIGN.md: this app is flat terminal /
-// Conky, NOT glassmorphism. Themes vary hue, glow and ambience; they never
+// Conky, NOT glassmorphism. Themes vary hue and glow only; they never
 // introduce frosted panels or card shadows.
 //
 // Unlock levels are tuned against the v22 XP curve (level 20 ~= 103 days of
@@ -955,15 +970,6 @@ const THEMES = [
       accent: "#5EEAD4", accent2: "#F5A623", danger: "#F0576B",
       glow: "rgba(94,234,212,0.35)",
     },
-    ambient: {
-      blobs: [
-        ["38% 42% at 18% 12%", "rgba(94,234,212,0.065)"],
-        ["42% 38% at 82% 88%", "rgba(245,166,35,0.055)"],
-        ["35% 40% at 62% 28%", "rgba(121,192,255,0.045)"],
-      ],
-      particle: "none",
-      grain: 0.018,
-    },
   },
   {
     id: "moss",
@@ -975,15 +981,6 @@ const THEMES = [
       text: "#E4EDE7", muted: "#67796F",
       accent: "#7EE787", accent2: "#D9C36B", danger: "#E8737A",
       glow: "rgba(126,231,135,0.32)",
-    },
-    ambient: {
-      blobs: [
-        ["40% 44% at 22% 16%", "rgba(126,231,135,0.06)"],
-        ["38% 40% at 78% 82%", "rgba(217,195,107,0.045)"],
-        ["36% 38% at 55% 45%", "rgba(60,140,110,0.05)"],
-      ],
-      particle: "motes",
-      grain: 0.022,
     },
   },
   {
@@ -997,15 +994,6 @@ const THEMES = [
       accent: "#C79BFF", accent2: "#FF9E6B", danger: "#FF6B8A",
       glow: "rgba(199,155,255,0.38)",
     },
-    ambient: {
-      blobs: [
-        ["44% 40% at 16% 20%", "rgba(199,155,255,0.075)"],
-        ["40% 44% at 84% 78%", "rgba(255,158,107,0.06)"],
-        ["38% 36% at 50% 50%", "rgba(120,80,190,0.05)"],
-      ],
-      particle: "motes",
-      grain: 0.02,
-    },
   },
   {
     id: "abyss",
@@ -1017,15 +1005,6 @@ const THEMES = [
       text: "#DFEAF5", muted: "#5F7286",
       accent: "#4FC3F7", accent2: "#5EEAD4", danger: "#FF7A93",
       glow: "rgba(79,195,247,0.4)",
-    },
-    ambient: {
-      blobs: [
-        ["46% 42% at 20% 14%", "rgba(79,195,247,0.07)"],
-        ["42% 46% at 80% 86%", "rgba(94,234,212,0.05)"],
-        ["40% 38% at 60% 40%", "rgba(30,90,160,0.06)"],
-      ],
-      particle: "bubbles",
-      grain: 0.024,
     },
   },
   {
@@ -1039,15 +1018,6 @@ const THEMES = [
       accent: "#FF9F45", accent2: "#FFD166", danger: "#FF6B5B",
       glow: "rgba(255,159,69,0.4)",
     },
-    ambient: {
-      blobs: [
-        ["42% 44% at 18% 82%", "rgba(255,159,69,0.075)"],
-        ["40% 42% at 82% 18%", "rgba(255,209,102,0.05)"],
-        ["36% 38% at 50% 55%", "rgba(180,60,30,0.055)"],
-      ],
-      particle: "embers",
-      grain: 0.026,
-    },
   },
   {
     id: "aurora",
@@ -1060,19 +1030,10 @@ const THEMES = [
       accent: "#6EE7C8", accent2: "#A78BFA", danger: "#FB7185",
       glow: "rgba(110,231,200,0.45)",
     },
-    ambient: {
-      blobs: [
-        ["50% 38% at 24% 10%", "rgba(110,231,200,0.085)"],
-        ["46% 42% at 76% 86%", "rgba(167,139,250,0.07)"],
-        ["44% 40% at 52% 42%", "rgba(64,190,255,0.055)"],
-      ],
-      particle: "aurora",
-      grain: 0.02,
-    },
   },
 ];
 
-// ---- time-of-day ambience ------------------------------------------------
+// ---- time-of-day phase ------------------------------------------------
 // Layered *on top of* the active theme rather than replacing it: the theme
 // owns hue and identity, the time of day owns warmth and light level. That
 // way "Ember at night" still looks like Ember.
@@ -1093,84 +1054,10 @@ function phaseForHour(h) {
 
 function applyTimePhase(phase) {
   const r = document.documentElement;
-  r.style.setProperty("--time-warm", phase.warm);
-  r.style.setProperty("--time-light", String(phase.light));
   r.dataset.phase = phase.id;
 }
 
-/**
- * Renders the ambient background layers.
- *
- * Particle positions are generated once per (theme, phase) and memoised --
- * regenerating them every render would make them visibly jump. Counts are
- * deliberately small: this is a compositor-only effect and the whole point
- * is that it never costs frames.
- */
-const AmbientBackground = React.memo(function AmbientBackground({ theme, phase, calm, scoped = false }) {
-  const kind = theme.ambient.particle;
-  // `scoped` renders the same layers absolutely inside the panel instead of
-  // fixed behind it. Needed because .panel is opaque -- without this the
-  // ambience is invisible on phones, where the panel is full-bleed.
-  const L = scoped ? "amb-layer amb-scoped" : "amb-layer";
-
-  const dust = useMemo(() => {
-    if (kind === "none") return [];
-    const n = kind === "aurora" ? 16 : kind === "embers" ? 14 : 18;
-    return Array.from({ length: n }, (_, i) => {
-      const size = kind === "bubbles" ? 3 + (i % 4) * 2 : 2 + (i % 3);
-      return {
-        left: `${(i * 37 + 11) % 100}%`,
-        size,
-        delay: `${-(i * 2.3) % 26}s`,
-        dur: `${(kind === "bubbles" ? 20 : 30) + (i % 7) * 4}s`,
-      };
-    });
-  }, [kind]);
-
-  const stars = useMemo(() => {
-    if (!phase.stars) return [];
-    return Array.from({ length: 34 }, (_, i) => ({
-      left: `${(i * 29 + 7) % 100}%`,
-      top: `${(i * 53 + 13) % 62}%`,
-      op: 0.2 + ((i * 37) % 60) / 100,
-    }));
-  }, [phase.stars]);
-
-  return (
-    <>
-      {scoped && <div className={`${L} amb-blobs`} />}
-      <div className={`${L} amb-time`}>
-        <div className="amb-ray" />
-      </div>
-      {stars.length > 0 && (
-        <div className={`${L} amb-stars`}>
-          {stars.map((st, i) => (
-            <span key={i} style={{ left: st.left, top: st.top, opacity: st.op }} />
-          ))}
-        </div>
-      )}
-      {dust.length > 0 && (
-        <div className={`${L} amb-dust`}>
-          {dust.map((d, i) => (
-            <span
-              key={i}
-              style={{
-                left: d.left, bottom: "-6vh",
-                width: d.size, height: d.size,
-                animationDelay: d.delay, animationDuration: d.dur,
-              }}
-            />
-          ))}
-        </div>
-      )}
-      <div className={`${L} amb-grain`} />
-      {calm && <div className="calm-breath" />}
-    </>
-  );
-});
-
 const STORAGE_KEY_CALM = "tasksh.calm.v1";
-const STORAGE_KEY_AMBIENCE = "tasksh.ambience.v1";
 
 /**
  * Owns the active theme, the time-of-day phase and calm mode, and pushes all
@@ -1183,11 +1070,6 @@ function useTheme(level) {
   });
   const [calm, setCalm] = useState(() => {
     try { return localStorage.getItem(STORAGE_KEY_CALM) === "1"; } catch { return false; }
-  });
-  // Ambience toggle: on = animated gradients, off = the original flat black.
-  // Defaults on; some people just want the terminal back.
-  const [ambience, setAmbience] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY_AMBIENCE) !== "0"; } catch { return true; }
   });
   const [phase, setPhase] = useState(() => phaseForHour(getISTParts().hour));
 
@@ -1231,12 +1113,7 @@ function useTheme(level) {
     [level]
   );
 
-  useEffect(() => {
-    document.documentElement.classList.toggle("no-ambience", !ambience);
-    try { localStorage.setItem(STORAGE_KEY_AMBIENCE, ambience ? "1" : "0"); } catch {}
-  }, [ambience]);
-
-  return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm, ambience, setAmbience };
+  return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm };
 }
 
 const DEFAULT_THEME_ID = "terminal";
@@ -1268,10 +1145,6 @@ function applyTheme(theme) {
   r.style.setProperty("--accent2", c.accent2);
   r.style.setProperty("--danger", c.danger);
   r.style.setProperty("--glow", c.glow);
-  theme.ambient.blobs.forEach((b, i) => {
-    r.style.setProperty(`--blob${i + 1}`, `radial-gradient(${b[0]}, ${b[1]}, transparent 70%)`);
-  });
-  r.style.setProperty("--grain-opacity", String(theme.ambient.grain));
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", c.bg);
 }
@@ -2200,6 +2073,9 @@ function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday
           transform: `translateX(${dragX}px)`,
           transition: draggingRef.current ? "none" : "transform 220ms cubic-bezier(.65,0,.35,1)",
           borderLeft: `3px solid ${doneToday ? "#2A2F36" : gradientColor(index, total)}`,
+          // a finished routine goes grey on both the edge and the wash, so
+          // "done" still reads at a glance without reading the text
+          backgroundImage: doneToday ? "none" : cardWash(index, total),
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -3495,10 +3371,31 @@ const CATEGORY_PALETTE = [
  * Saturation and lightness are pinned to the palette's own values so the
  * gradient sits alongside CATEGORY_PALETTE without looking imported.
  */
-function gradientColor(i, n) {
+function gradientHue(i, n) {
   const t = n <= 1 ? 0 : Math.min(1, Math.max(0, i / (n - 1)));
-  const hue = (352 + t * 179) % 360;        // 352° red → 171° cyan, the warm way
-  return hslToHex(hue, 0.80, 0.64);
+  return (352 + t * 179) % 360;             // 352° red → 171° cyan, the warm way
+}
+
+function gradientColor(i, n) {
+  return hslToHex(gradientHue(i, n), 0.80, 0.64);
+}
+
+/** v40: the same ramp, as a wash BEHIND a card instead of a line beside it.
+ *
+ *  Three rules it has to obey:
+ *   - it fades out to the right, so long labels always end on flat panel
+ *     colour and never sit on the brightest part of the tint;
+ *   - alpha stays low (0.16 peak). Measured: the worst case is the amber
+ *     middle of the ramp, which at 0.16 over #14171C lands around 9.8:1
+ *     against --text. At 0.30 it drops under 7:1 and starts to look like a
+ *     highlight rather than a hint;
+ *   - lightness is 0.60, not the 0.64 the border uses -- a large area of the
+ *     same colour reads brighter than a 3px line of it.
+ */
+function cardWash(i, n, alpha = 0.16) {
+  const h = Math.round(gradientHue(i, n));
+  return `linear-gradient(100deg, hsla(${h},80%,60%,${alpha}) 0%, `
+       + `hsla(${h},80%,60%,${(alpha * 0.34).toFixed(3)}) 46%, transparent 80%)`;
 }
 
 function hslToHex(h, s, l) {
@@ -3657,7 +3554,8 @@ function LifeAreaCard({ area, xp }) {
 // behaves exactly like a v34 bad habit. The old split was never a difference
 // in kind, only in which list a row happened to live in.
 function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave,
-                    reorder = false, onMove, canUp = false, canDown = false }) {
+                    reorder = false, onMove, canUp = false, canDown = false,
+                    index = 0, total = 1 }) {
   const today = getISTDateString(0);
   const doneToday = habitDoneOn(habit, today);
   const slipToday = habitSlipOn(habit, today);
@@ -3817,7 +3715,11 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
   if (habitPenalty(habit) > 0) meta.push(`−${habitPenalty(habit)}`);
 
   return (
-    <div className={`quest-habit-card good ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`} key={`h${habit.id}`}>
+    <div
+      className={`quest-habit-card good ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
+      key={`h${habit.id}`}
+      style={{ backgroundImage: doneToday ? "none" : cardWash(index, total) }}
+    >
       {fx > 0 && <span className="xp-pop" key={fx}>+{habitXP(habit)}</span>}
       <span className="area-dot" style={{ background: area.color }} />
       <div className="quest-habit-main">
@@ -4252,6 +4154,8 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
               onMove={moveHabit}
               canUp={i > 0}
               canDown={i < visibleHabits.length - 1}
+              index={i}
+              total={visibleHabits.length}
             />
           ))
         )}
@@ -5046,24 +4950,8 @@ function ThemePicker({ ctl, level, totalXP, earned = [], coins = 0, onClose }) {
           <AchievementGrid earned={earned} coins={coins} />
         </div>
 
-        <div className="calm-toggle-row">
-          <div>
-            <div className="calm-toggle-label">ambient background</div>
-            <div className="calm-toggle-hint">
-              {ctl.ambience ? "drifting gradients and particles" : "flat black, like the old build"}
-            </div>
-          </div>
-          <button
-            className={`calm-switch ${ctl.ambience ? "on" : ""}`}
-            onClick={() => { ctl.setAmbience(!ctl.ambience); sound.click(); }}
-            aria-pressed={ctl.ambience}
-          >
-            <span className="calm-knob" />
-          </button>
-        </div>
-
         <div className="sheet-foot">
-          ambience follows the time of day · currently <b>{ctl.phase.label}</b>
+          theme colours follow your level · currently <b>{ctl.phase.label}</b>
         </div>
       </div>
     </div>
@@ -6958,8 +6846,697 @@ function PomodoroTool({ onReward }) {
   );
 }
 
+// ============================================================
+// AI CAPTIONS (v40)
+// ============================================================
+// Upload a clip under a minute, get word-timed captions burned in.
+//
+// Three things had to be true for this to be worth building, and all three
+// were checked before a line was written:
+//
+//  1. Word-level timing, free. Groq's whisper-large-v3-turbo returns it with
+//     `timestamp_granularities=word`, and the free tier is 28,800 audio
+//     seconds a day -- 8 hours, or ~480 clips of this length.
+//  2. The phone can be talked to directly. api.groq.com answers CORS
+//     preflight with `access-control-allow-origin: *`, so the audio goes
+//     straight from the device. Nothing is uploaded to our worker, and the
+//     VIDEO never leaves the phone at all -- only ~2MB of stripped audio.
+//  3. Burn-in without ffmpeg. WebCodecs is the phone's own hardware encoder;
+//     mediabunny (~30kB) supplies the MP4 container it deliberately omits.
+//     ffmpeg.wasm would have been ~30MB, 65x this entire app.
+//
+// The 60s cap isn't arbitrary: it keeps one clip inside the free audio quota,
+// inside Groq's 25MB upload cap once stripped to 16kHz mono, and inside a
+// memory budget a mid-range phone can actually hold.
+
+const STORAGE_KEY_CAPTIONS = "tasksh.captions.v1";
+const CAPTION_MAX_SECONDS = 60;
+const GROQ_ASR_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_ASR_MODEL = "whisper-large-v3-turbo";
+
+/** Styling is expressed in FRACTIONS of video height, never pixels: the same
+ *  preset has to look identical on a 720p clip and a 4K one. */
+const CAPTION_STYLES = [
+  {
+    id: "clean",
+    name: "clean",
+    hint: "white, heavy outline",
+    size: 0.055, weight: 800, tracking: 0.01, upper: false,
+    fill: "#FFFFFF", active: null, stroke: "#000000", strokeW: 0.16, pop: false,
+  },
+  {
+    id: "karaoke",
+    name: "karaoke",
+    hint: "spoken word lights up",
+    size: 0.055, weight: 800, tracking: 0.01, upper: false,
+    fill: "#FFFFFF", active: "#5EEAD4", stroke: "#000000", strokeW: 0.16, pop: false,
+  },
+  {
+    id: "pop",
+    name: "word pop",
+    hint: "one word at a time, scaling in",
+    size: 0.075, weight: 900, tracking: 0.02, upper: true,
+    fill: "#FFFFFF", active: "#F5A623", stroke: "#000000", strokeW: 0.18, pop: true,
+  },
+];
+
+const captionStyleById = (id) => CAPTION_STYLES.find((s) => s.id === id) || CAPTION_STYLES[0];
+
+/** Words -> caption lines.
+ *
+ *  This function is the difference between captions that look professional
+ *  and captions that look automatic, so every rule in it is deliberate:
+ *
+ *   - at most 3 words and 22 characters a line. Longer lines force the eye
+ *     to track sideways instead of reading in place;
+ *   - a pause longer than 350ms starts a new line, because that pause is a
+ *     phrase boundary the speaker already marked;
+ *   - a line always breaks AFTER sentence punctuation, never before;
+ *   - nothing is on screen for under 250ms, or fast speech strobes. The
+ *     extension is clipped against the next line's start so they can never
+ *     overlap and double-draw.
+ */
+function chunkWords(words, opts) {
+  const o = opts || {};
+  const maxWords = o.maxWords || 3;
+  const maxChars = o.maxChars || 22;
+  const gapBreak = o.gapBreak == null ? 0.35 : o.gapBreak;
+  const minDur = o.minDur == null ? 0.25 : o.minDur;
+
+  const out = [];
+  let cur = null;
+
+  for (const raw of words || []) {
+    const text = String((raw && (raw.word != null ? raw.word : raw.text)) || "").trim();
+    const start = Number(raw && raw.start);
+    const end = Number(raw && raw.end);
+    if (!text || !isFinite(start) || !isFinite(end) || end < start) continue;
+
+    const last = cur && cur.words[cur.words.length - 1];
+    const startsNew =
+      !cur ||
+      cur.words.length >= maxWords ||
+      (cur.text + " " + text).length > maxChars ||
+      start - cur.end > gapBreak ||
+      /[.!?]$/.test(last.text);
+
+    if (startsNew) {
+      cur = { start, end, text, words: [{ text, start, end }] };
+      out.push(cur);
+    } else {
+      cur.words.push({ text, start, end });
+      cur.end = end;
+      cur.text += " " + text;
+    }
+  }
+
+  for (let i = 0; i < out.length; i++) {
+    const c = out[i];
+    const next = out[i + 1];
+    if (c.end - c.start < minDur) c.end = c.start + minDur;
+    if (next && c.end > next.start) c.end = next.start;
+  }
+  return out;
+}
+
+/** Linear scan is correct here: 60s of speech is ~40 chunks, and a binary
+ *  search would be harder to read for a lookup that costs nothing. */
+function activeChunkAt(chunks, t) {
+  for (const c of chunks || []) {
+    if (t >= c.start && t < c.end) return c;
+  }
+  return null;
+}
+
+function activeWordIndex(chunk, t) {
+  if (!chunk) return -1;
+  for (let i = chunk.words.length - 1; i >= 0; i--) {
+    if (t >= chunk.words[i].start) return i;
+  }
+  return -1;
+}
+
+/** Draws one frame of captions onto a 2D context sized W x H.
+ *
+ *  Kept pure-ish (context in, nothing out) so the live preview and the
+ *  exporter render through exactly the same code -- a preview that doesn't
+ *  match the export is worse than no preview.
+ */
+function drawCaptions(ctx, chunk, t, style, W, H) {
+  if (!chunk) return;
+  const s = style;
+  const fontPx = Math.round(H * s.size);
+  const strokePx = Math.max(2, Math.round(fontPx * s.strokeW));
+
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.font = `${s.weight} ${fontPx}px Inter, system-ui, sans-serif`;
+
+  const idx = activeWordIndex(chunk, t);
+  const shown = s.pop
+    ? [chunk.words[Math.max(0, idx)]].filter(Boolean)
+    : chunk.words;
+  if (!shown.length) { ctx.restore(); return; }
+
+  const label = (w) => (s.upper ? w.text.toUpperCase() : w.text);
+  const gap = fontPx * (0.28 + s.tracking);
+  const widths = shown.map((w) => ctx.measureText(label(w)).width);
+  const total = widths.reduce((a, b) => a + b, 0) + gap * (shown.length - 1);
+
+  // Bottom safe area: Instagram and TikTok both put chrome over the lowest
+  // ~15% of the frame, so captions sit above it rather than under a UI bar.
+  const baseline = Math.round(H * 0.82);
+  let x = (W - total) / 2;
+
+  for (let i = 0; i < shown.length; i++) {
+    const w = shown[i];
+    const isActive = s.pop ? true : chunk.words.indexOf(w) === idx;
+    const cx = x + widths[i] / 2;
+
+    let scale = 1;
+    if (s.pop) {
+      // 120ms ease-out from 0.86 -> 1. Any longer and it lags the voice.
+      const age = Math.max(0, t - w.start);
+      const k = Math.min(1, age / 0.12);
+      scale = 0.86 + 0.14 * (1 - Math.pow(1 - k, 3));
+    }
+
+    ctx.save();
+    ctx.translate(cx, baseline);
+    ctx.scale(scale, scale);
+    ctx.lineWidth = strokePx;
+    ctx.strokeStyle = s.stroke;
+    ctx.strokeText(label(w), 0, 0);
+    ctx.fillStyle = isActive && s.active ? s.active : s.fill;
+    ctx.fillText(label(w), 0, 0);
+    ctx.restore();
+
+    x += widths[i] + gap;
+  }
+  ctx.restore();
+}
+
+/** Groq's verbose_json, flattened. Words come back under `words` when
+ *  word granularity is requested; some responses only carry `segments`, so
+ *  that is the documented fallback rather than an empty caption track. */
+function wordsFromGroqResponse(json) {
+  if (!json || typeof json !== "object") return [];
+  if (Array.isArray(json.words) && json.words.length) {
+    return json.words.map((w) => ({ text: String(w.word || w.text || ""), start: +w.start, end: +w.end }));
+  }
+  if (Array.isArray(json.segments)) {
+    return json.segments.map((sg) => ({ text: String(sg.text || "").trim(), start: +sg.start, end: +sg.end }));
+  }
+  return [];
+}
+
+function groqKeys() {
+  return getAIKeys().filter((k) => String(k).startsWith("gsk_"));
+}
+
+async function transcribeAudio(wavBlob, apiKey) {
+  const form = new FormData();
+  form.append("file", wavBlob, "audio.wav");
+  form.append("model", GROQ_ASR_MODEL);
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "word");
+
+  const res = await fetch(GROQ_ASR_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+
+  if (res.status === 401) throw new Error("that Groq key was rejected");
+  if (res.status === 429) throw new Error("Groq rate limit — wait a minute");
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json()).error?.message || ""; } catch {}
+    throw new Error(detail || `transcription failed (${res.status})`);
+  }
+  return wordsFromGroqResponse(await res.json());
+}
+
+/** Strips the video down to what Whisper actually wants: 16kHz mono.
+ *  A 60s phone clip is 60-150MB and Groq's free tier caps uploads at 25MB,
+ *  so sending the file as-is is not an option. 16kHz mono WAV is ~1.9MB a
+ *  minute, and Whisper resamples to 16kHz internally anyway -- nothing is
+ *  lost by doing it here. */
+function openVideo(file) {
+  return new Input({ source: new BlobSource(file), formats: [MP4, QTFF] });
+}
+
+/** Mono 16-bit PCM in a 44-byte WAV header. Hand-written because pulling in
+ *  the library's generic conversion pipeline for this cost 560kB of bundle,
+ *  and a WAV header is the most stable file format in computing. */
+function encodeWav(samples, sampleRate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  str(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);          // PCM header size
+  view.setUint16(20, 1, true);           // format = PCM
+  view.setUint16(22, 1, true);           // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);  // byte rate
+  view.setUint16(32, 2, true);           // block align
+  view.setUint16(34, 16, true);          // bits per sample
+  str(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return buf;
+}
+
+/** Nearest-neighbour down to 16kHz mono. Whisper resamples to 16kHz itself,
+ *  and speech has nothing above 8kHz worth keeping, so a fancier filter
+ *  would cost code and change no transcript. */
+function downmixTo16k(channels, srcRate, dstRate) {
+  const src = channels[0];
+  const n = channels.length;
+  const ratio = srcRate / dstRate;
+  const outLen = Math.floor(src.length / ratio);
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const idx = Math.floor(i * ratio);
+    let sum = 0;
+    for (let c = 0; c < n; c++) sum += channels[c][idx] || 0;
+    out[i] = sum / n;
+  }
+  return out;
+}
+
+async function extractAudioForASR(file) {
+  const input = openVideo(file);
+  const track = await input.getPrimaryAudioTrack();
+  if (!track) throw new Error("that clip has no audio track");
+
+  const sink = new AudioBufferSink(track);
+  const parts = [];
+  let rate = 16000;
+  for await (const wrapped of sink.buffers()) {
+    const ab = wrapped.buffer;
+    rate = ab.sampleRate;
+    const chans = [];
+    for (let c = 0; c < ab.numberOfChannels; c++) chans.push(ab.getChannelData(c));
+    parts.push(downmixTo16k(chans, rate, 16000));
+  }
+
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const all = new Float32Array(total);
+  let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.length; }
+
+  return new Blob([encodeWav(all, 16000)], { type: "audio/wav" });
+}
+
+async function probeVideo(file) {
+  const input = openVideo(file);
+  const track = await input.getPrimaryVideoTrack();
+  const duration = await input.computeDuration();
+  const audio = await input.getPrimaryAudioTrack();
+  return {
+    duration,
+    width: track ? track.displayWidth : 0,
+    height: track ? track.displayHeight : 0,
+    hasAudio: !!audio,
+  };
+}
+
+/** Encodes a two-second 320x180 clip and reads it back.
+ *
+ *  Capability flags lie: isConfigSupported() can say yes on a device whose
+ *  encoder then fails at finalize, which you'd otherwise discover 45 seconds
+ *  into a real export. Actually producing a file and re-parsing it is the
+ *  only answer worth trusting, and at this size it costs well under a second.
+ */
+async function encodeProbeClip(seconds = 2, fps = 12) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 180;
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+  const source = new CanvasSource(canvas, { codec: "avc", bitrate: 400000 });
+  output.addVideoTrack(source);
+  await output.start();
+
+  const frames = Math.max(2, Math.round(seconds * fps));
+  for (let i = 0; i < frames; i++) {
+    ctx.fillStyle = i % 2 ? "#101418" : "#1b2026";
+    ctx.fillRect(0, 0, 320, 180);
+    await source.add(i / fps, 1 / fps);
+  }
+  source.close();
+  await output.finalize();
+  return new Blob([output.target.buffer], { type: "video/mp4" });
+}
+
+/** Does this phone actually have the hardware path? A few seconds of checking
+ *  beats forty-five seconds of encoding that fails at the finalize step. */
+async function codecSelfTest() {
+  const result = {
+    webcodecs: typeof VideoEncoder !== "undefined",
+    encodeH264: false, decodeH264: false, roundTrip: false, ms: 0, note: "",
+  };
+  if (!result.webcodecs) { result.note = "this browser has no WebCodecs"; return result; }
+
+  try { result.encodeH264 = await canEncodeVideo("avc", { width: 1080, height: 1920 }); }
+  catch (err) { result.note = String(err.message || err); }
+
+  try {
+    const support = await VideoDecoder.isConfigSupported({ codec: "avc1.42001f", codedWidth: 1080, codedHeight: 1920 });
+    result.decodeH264 = !!support.supported;
+  } catch { /* leave false */ }
+
+  if (result.encodeH264) {
+    const t0 = Date.now();
+    try {
+      const blob = await encodeProbeClip(1, 12);
+      const back = new Input({ source: new BlobSource(blob), formats: [MP4] });
+      const track = await back.getPrimaryVideoTrack();
+      result.roundTrip = !!track && blob.size > 1000;
+      result.ms = Date.now() - t0;
+    } catch (err) {
+      result.note = `encode failed for real: ${String(err.message || err)}`;
+    }
+  }
+
+  if (!result.note && !result.encodeH264) result.note = "no H.264 encoder — export unavailable, preview still works";
+  if (!result.note && result.roundTrip) result.note = "export will work on this device";
+  return result;
+}
+
+/** Burns the captions in. Decode -> draw -> encode, all on the device's own
+ *  media hardware, with the original audio track copied across WITHOUT
+ *  re-encoding (so no quality loss and no dependence on an AAC encoder). */
+async function burnCaptions(file, chunks, style, onProgress) {
+  const input = openVideo(file);
+  const videoTrack = await input.getPrimaryVideoTrack();
+  if (!videoTrack) throw new Error("no video track in that file");
+
+  const duration = await input.computeDuration();
+  const W = videoTrack.displayWidth;
+  const H = videoTrack.displayHeight;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+  const videoSource = new CanvasSource(canvas, { codec: "avc", bitrate: QUALITY_HIGH });
+  output.addVideoTrack(videoSource);
+
+  // Audio: copy the encoded packets straight through. Re-encoding would cost
+  // quality and would depend on an AAC *encoder*, which is the one codec
+  // whose availability varies most across Android builds.
+  const audioTrack = await input.getPrimaryAudioTrack();
+  let audioSource = null;
+  if (audioTrack) {
+    try {
+      const codec = await audioTrack.getCodec();
+      if (codec) {
+        audioSource = new EncodedAudioPacketSource(codec);
+        output.addAudioTrack(audioSource);
+      }
+    } catch { audioSource = null; }   // no copyable audio: ship video-only
+  }
+
+  await output.start();
+
+  if (audioSource) {
+    const sink = new EncodedPacketSink(audioTrack);
+    const meta = await audioTrack.getDecoderConfig();
+    for await (const packet of sink.packets()) {
+      await audioSource.add(packet, { decoderConfig: meta });
+    }
+    audioSource.close();
+  }
+
+  const sink = new CanvasSink(videoTrack, { poolSize: 2 });
+  let last = 0;
+  for await (const wrapped of sink.canvases()) {
+    const t = wrapped.timestamp;
+    ctx.drawImage(wrapped.canvas, 0, 0, W, H);
+    drawCaptions(ctx, activeChunkAt(chunks, t), t, style, W, H);
+    const dur = Math.max(1 / 60, (wrapped.duration || 1 / 30));
+    await videoSource.add(t, dur);
+    last = t;
+    if (onProgress && duration) onProgress(Math.min(0.99, t / duration));
+  }
+
+  videoSource.close();
+  await output.finalize();
+  if (onProgress) onProgress(1);
+  return new Blob([output.target.buffer], { type: "video/mp4" });
+}
+
+function CaptionsTool() {
+  const [file, setFile] = useState(null);
+  const [info, setInfo] = useState(null);
+  const [chunks, setChunks] = useState([]);
+  const [styleId, setStyleId] = useState(() => {
+    const v = loadStored(STORAGE_KEY_CAPTIONS, null);
+    return (v && v.style) || "karaoke";
+  });
+  const [stage, setStage] = useState("idle");   // idle | probing | transcribing | ready | exporting
+  const [msg, setMsg] = useState(null);
+  const [progress, setProgress] = useState(0);
+  const [caps, setCaps] = useState(null);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const rafRef = useRef(null);
+  const urlRef = useRef(null);
+
+  const style = captionStyleById(styleId);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY_CAPTIONS, JSON.stringify({ style: styleId })); } catch {}
+  }, [styleId]);
+
+  useEffect(() => () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+  }, []);
+
+  // Preview: the real video element underneath, captions drawn on a canvas
+  // on top, in sync with currentTime. No encoding, so restyling is instant.
+  useEffect(() => {
+    const tick = () => {
+      const v = videoRef.current;
+      const c = canvasRef.current;
+      if (v && c) {
+        const W = c.width, H = c.height;
+        const ctx = c.getContext("2d");
+        ctx.clearRect(0, 0, W, H);
+        const t = v.currentTime;
+        drawCaptions(ctx, activeChunkAt(chunks, t), t, style, W, H);
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [chunks, style]);
+
+  const pick = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    setMsg(null);
+    setChunks([]);
+    setStage("probing");
+    try {
+      const meta = await probeVideo(f);
+      if (meta.duration > CAPTION_MAX_SECONDS + 0.5) {
+        setStage("idle");
+        setMsg({ type: "err", text: `${Math.round(meta.duration)}s — trim it under ${CAPTION_MAX_SECONDS}s first` });
+        return;
+      }
+      if (!meta.hasAudio) {
+        setStage("idle");
+        setMsg({ type: "err", text: "that clip has no audio track" });
+        return;
+      }
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = URL.createObjectURL(f);
+      setFile(f);
+      setInfo(meta);
+      setStage("picked");
+      if (canvasRef.current) {
+        canvasRef.current.width = meta.width;
+        canvasRef.current.height = meta.height;
+      }
+    } catch (err) {
+      setStage("idle");
+      setMsg({ type: "err", text: `couldn't read that file — ${String(err.message || err)}` });
+    }
+  };
+
+  const transcribe = async () => {
+    const keys = groqKeys();
+    if (!keys.length) {
+      setMsg({ type: "err", text: "needs a Groq key (gsk_…) — add one in the AI tab" });
+      return;
+    }
+    setStage("transcribing");
+    setMsg(null);
+    try {
+      const wav = await extractAudioForASR(file);
+      const words = await transcribeAudio(wav, keys[0]);
+      if (!words.length) throw new Error("no speech found in that clip");
+      setChunks(chunkWords(words));
+      setStage("ready");
+      setMsg({ type: "ok", text: `${words.length} words · ${Math.round(wav.size / 1024)} KB sent` });
+      sound.success();
+    } catch (err) {
+      setStage("picked");
+      setMsg({ type: "err", text: String(err.message || err) });
+      sound.error();
+    }
+  };
+
+  const runSelfTest = async () => {
+    setMsg(null);
+    const r = await codecSelfTest();
+    setCaps(r);
+  };
+
+  const exportVideo = async () => {
+    setStage("exporting");
+    setProgress(0);
+    setMsg(null);
+    try {
+      const blob = await burnCaptions(file, chunks, style, setProgress);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `captioned-${Date.now()}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      setStage("ready");
+      setMsg({ type: "ok", text: `exported ${(blob.size / 1048576).toFixed(1)} MB` });
+      sound.success();
+    } catch (err) {
+      setStage("ready");
+      setMsg({ type: "err", text: `export failed — ${String(err.message || err)}` });
+      sound.error();
+    }
+  };
+
+  return (
+    <div className="cap">
+      {!file && (
+        <>
+          <pre className="cap-note">
+            a clip under {CAPTION_MAX_SECONDS}s. only the audio leaves the phone
+            (~2 MB), and only to Groq for the timings. the video is captioned
+            here on the device.
+          </pre>
+          <label className="cap-drop">
+            <input type="file" accept="video/*" onChange={pick} />
+            <span className="cap-drop-glyph">▣</span>
+            <span>choose a clip</span>
+          </label>
+        </>
+      )}
+
+      {file && (
+        <div className="cap-stage">
+          <video
+            ref={videoRef}
+            src={urlRef.current}
+            className="cap-video"
+            playsInline
+            controls
+            preload="metadata"
+          />
+          <canvas ref={canvasRef} className="cap-overlay" />
+        </div>
+      )}
+
+      {file && (
+        <div className="cap-meta">
+          {info ? `${info.width}×${info.height} · ${info.duration.toFixed(1)}s` : ""}
+          {chunks.length ? ` · ${chunks.length} caption lines` : ""}
+        </div>
+      )}
+
+      {msg && <pre className={`cap-msg ${msg.type}`}>{msg.text}</pre>}
+
+      {stage === "exporting" && (
+        <div className="cap-progress">
+          <div className="cap-progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+          <span>{Math.round(progress * 100)}%</span>
+        </div>
+      )}
+
+      {file && (
+        <>
+          <div className="section-header"><span>STYLE</span></div>
+          <div className="cap-styles">
+            {CAPTION_STYLES.map((s) => (
+              <button
+                key={s.id}
+                className={`cap-style ${styleId === s.id ? "active" : ""}`}
+                onClick={() => { setStyleId(s.id); sound.click(); }}
+              >
+                <span className="cap-style-name">{s.name}</span>
+                <span className="cap-style-hint">{s.hint}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="cap-actions">
+        {file && stage !== "transcribing" && !chunks.length && (
+          <button className="pomo-btn primary" onClick={transcribe}>get captions</button>
+        )}
+        {stage === "transcribing" && <button className="pomo-btn" disabled>listening…</button>}
+        {chunks.length > 0 && stage !== "exporting" && (
+          <button className="pomo-btn primary" onClick={exportVideo}>export mp4</button>
+        )}
+        {file && stage !== "exporting" && (
+          <button className="pomo-btn" onClick={() => { setFile(null); setChunks([]); setInfo(null); setMsg(null); setStage("idle"); }}>
+            clear
+          </button>
+        )}
+        <button className="pomo-btn" onClick={runSelfTest}>check phone</button>
+      </div>
+
+      {caps && (
+        <pre className="cap-note">
+          {`webcodecs   ${caps.webcodecs ? "yes" : "no"}\n`}
+          {`h.264 encode ${caps.encodeH264 ? "yes" : "no"}\n`}
+          {`h.264 decode ${caps.decodeH264 ? "yes" : "no"}\n`}
+          {`real encode  ${caps.roundTrip ? `yes · ${caps.ms}ms for 1s` : "no"}`}
+          {caps.note ? `\n${caps.note}` : ""}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 // The registry. One entry per tool; the grid and the router both read this,
 // so a new tool is a single object rather than edits in four places.
+// Exposed deliberately: when an export fails on a device I cannot hold, the
+// difference between "it broke" and a fix is being able to run these three
+// from the address bar.
+if (typeof window !== "undefined") {
+  window.__tasksh = { burnCaptions, chunkWords, encodeProbeClip, probeVideo, codecSelfTest };
+}
+
 const TOOLS = [
   {
     id: "pomodoro",
@@ -6967,6 +7544,13 @@ const TOOLS = [
     name: "pomodoro",
     desc: "focus timer with breaks · rings in the background",
     Component: PomodoroTool,
+  },
+  {
+    id: "captions",
+    glyph: "▤",
+    name: "ai captions",
+    desc: "word-timed captions burned into a clip · under 60s",
+    Component: CaptionsTool,
   },
 ];
 
@@ -7643,7 +8227,7 @@ function TodoApp() {
   const clearDone = () => { setTasks((prev) => prev.filter((t) => !t.done)); sound.whoosh(); };
 
   return (
-    <div className="app-root" data-particle={themeCtl.theme.ambient.particle}>
+    <div className="app-root">
       {achCtl.current && (
         <AchievementToast id={achCtl.current} onDone={achCtl.shift} />
       )}
@@ -7701,10 +8285,6 @@ function TodoApp() {
           --accent2: #F5A623;
           --danger: #F0576B;
           --glow: rgba(94,234,212,0.35);
-          --blob1: radial-gradient(38% 42% at 18% 12%, rgba(94,234,212,0.065), transparent 70%);
-          --blob2: radial-gradient(42% 38% at 82% 88%, rgba(245,166,35,0.055), transparent 70%);
-          --blob3: radial-gradient(35% 40% at 62% 28%, rgba(121,192,255,0.045), transparent 70%);
-          --grain-opacity: 0.018;
           --calm: 0;              /* 0 = normal, 1 = calm mode */
           --motion-scale: 1;      /* animations multiply durations by this */
         }
@@ -7737,38 +8317,6 @@ function TodoApp() {
           overflow: hidden;
           position: relative;
           isolation: isolate;
-        }
-
-        /* Ambient background: three oversized, very low-opacity colour blooms
-           drifting on long offset cycles. Sits behind everything via a
-           pseudo-element with negative z-index so it can never affect the
-           legibility or hit-testing of the panel on top. Opacity is kept
-           under 0.07 -- at these values the shift reads as "the room's
-           lighting changed", not as an animation demanding attention. */
-        /* v25: the animated ambience now lives INSIDE the panel, where it
-           is actually visible. This is a single static gradient for the
-           margin area on wide screens -- no animation, no layer, no cost. */
-        .app-root::before {
-          content: "";
-          position: absolute;
-          inset: 0;
-          z-index: -1;
-          pointer-events: none;
-          background: var(--blob1), var(--blob2);
-        }
-
-
-
-        @keyframes ambientDrift {
-          0%   { transform: translate3d(0, 0, 0) scale(1); }
-          50%  { transform: translate3d(2.5%, -2%, 0) scale(1.06); }
-          100% { transform: translate3d(-2%, 2.5%, 0) scale(1.02); }
-        }
-
-        @keyframes ambientDriftAlt {
-          0%   { transform: translate3d(0, 0, 0) scale(1.04); opacity: 0.75; }
-          50%  { transform: translate3d(-3%, 2%, 0) scale(1); opacity: 1; }
-          100% { transform: translate3d(2%, -2.5%, 0) scale(1.05); opacity: 0.8; }
         }
 
         .panel {
@@ -8914,110 +9462,13 @@ function TodoApp() {
 
 
 
-        /* Scoped ambience: the same layers, rendered INSIDE the panel.
-           .panel is opaque, so the fixed layers behind it are invisible --
-           on phones the panel is full-bleed and covers the screen entirely.
-           These sit at z-index 0 with all real content lifted to 1. */
-        .amb-scoped {
-          position: absolute;
-          inset: 0;
-          z-index: 0;
-          border-radius: inherit;
-          /* promote each layer so the slow drift is a GPU transform instead
-             of a full-surface repaint of the panel every frame */
-          will-change: transform;
-          transform: translateZ(0);
-        }
-
-        .amb-scoped.amb-blobs {
-          /* Painted at a third of the panel's resolution and scaled up.
-             Radial gradients have no high-frequency detail, so the upscale
-             is invisible, but the rasterised surface shrinks ~9x -- this is
-             what took a 1229px-wide panel from 19fps back to 60. */
-          width: 34.5%;
-          height: 34.5%;
-          inset: 0 auto auto 0;
-          transform-origin: 0 0;
-          transform: scale(3) translateZ(0);
-          background:
-            radial-gradient(58% 42% at 14% 8%,  var(--accent),  transparent 62%),
-            radial-gradient(52% 40% at 88% 92%, var(--accent2), transparent 62%),
-            radial-gradient(46% 38% at 72% 26%, var(--accent),  transparent 66%),
-            radial-gradient(50% 44% at 26% 74%, var(--accent2), transparent 66%),
-            radial-gradient(40% 36% at 50% 50%, var(--accent),  transparent 70%);
-          /* the gradients use full-strength theme colours and are dimmed
-             here, so every theme keeps its own character */
-          opacity: 0.14;
-          animation: ambientDriftScaled calc(96s * var(--motion-scale)) ease-in-out infinite alternate;
-        }
-
-        /* drift keyframes for the downscaled layer: the parent already has
-           scale:3, so these only translate */
-        @keyframes ambientDriftScaled {
-          0%   { transform: scale(3) translate(0, 0); }
-          25%  { transform: scale(3) translate(1.8%, -1.4%); }
-          50%  { transform: scale(3) translate(2.6%, 1.2%); }
-          75%  { transform: scale(3) translate(-1.2%, 2.2%); }
-          100% { transform: scale(3) translate(-2%, -0.8%); }
-        }
-
-        /* Deliberately NO ::after here. A pseudo-element can't get its own
-           compositor layer, so animating one forces a full repaint of the
-           parent every frame -- measured at 17fps on a 1366px panel. The
-           extra gradients are folded into the parent's background instead. */
-
-        /* the time-of-day wash needs more presence inside the panel too */
-        .amb-scoped.amb-time {
-          /* same 1/3-resolution trick as the blobs: pure gradient, so the
-             upscale is free but the rasterised area drops ~9x */
-          width: 34.5%;
-          height: 34.5%;
-          inset: 0 auto auto 0;
-          transform-origin: 0 0;
-          transform: scale(3) translateZ(0);
-          background: radial-gradient(130% 78% at 50% -8%, var(--time-warm), transparent 62%);
-          opacity: calc(var(--time-light, 1) * 2.2);
-        }
-
-        /* Large panels: the ambience costs fill-rate proportional to area,
-           and the subtlest layers are the least visible on a big screen.
-           Shed them above 900px rather than dropping frames for effects
-           nobody can see. Phones keep the full stack. */
-        /* Large panels: collapse the stack to a single layer.
-           Four overlapping translucent surfaces have to be composited
-           together every frame; at 1320px that measured 25fps, while ONE
-           animated gradient of the same size runs at 60. The blobs layer
-           carries the theme colour, so it is the one we keep. Phones are
-           small enough to afford the full stack and keep it. */
-        @media (min-width: 900px) {
-          .amb-scoped.amb-grain,
-          .amb-scoped.amb-time,
-          .amb-scoped.amb-dust { display: none; }
-          .amb-scoped.amb-blobs { opacity: 0.11; }
-        }
-
-        /* Widest layout: keep the colour, drop the motion entirely. A ~2%
-           drift across a 1320px panel cannot be seen; compositing it every
-           frame can be felt. */
-        @media (min-width: 1240px) {
-          .amb-scoped.amb-blobs { animation: none; will-change: auto; }
-          .amb-ray { animation: none; }
-        }
-
-        /* Everything the user actually reads sits above the ambience. */
+        /* Content sits on its own stacking context. */
         .panel > .titlebar,
         .panel > .tabs,
         .panel > .tab-content,
         .panel > .data-msg,
         .panel > .banner { position: relative; z-index: 1; }
 
-
-
-        /* Ambience off: back to flat black. Hides every animated surface
-           rather than just dimming, so there is genuinely nothing painting. */
-        .no-ambience .amb-layer,
-        .no-ambience .calm-breath { display: none !important; }
-        .no-ambience .app-root::before { background: none !important; }
 
 
         .hero-xp-spend {
@@ -9634,146 +10085,12 @@ function TodoApp() {
           .sheet-close:hover { color: var(--text); }
         }
 
-        /* ---- ambient engine (v22) -----------------------------------
-           Four stacked layers, all pointer-events:none and behind the
-           panel. Layers are pure CSS -- no canvas, no rAF loop -- so the
-           cost is compositor-only and the main thread stays free.
-             ::before  theme blobs        (drift, 96s)
-             ::after   secondary blobs    (drift, 138s)
-             .amb-time time-of-day wash + light ray
-             .amb-dust particle field     (theme dependent)
-        */
-        .amb-layer {
-          position: fixed;
-          inset: 0;
-          z-index: -1;
-          pointer-events: none;
-          contain: strict;
-          transform: translateZ(0);
-        }
-
-        .amb-time {
-          background:
-            radial-gradient(120% 80% at 50% -10%, var(--time-warm), transparent 65%);
-          opacity: var(--time-light, 1);
-          transition: opacity 2s ease, background 2s ease;
-        }
-
-        /* a single soft diagonal shaft, very faint, slowly sweeping */
-        .amb-ray {
-          position: absolute;
-          top: -40%;
-          left: -20%;
-          width: 55%;
-          height: 190%;
-          background: linear-gradient(
-            105deg, transparent 0%, rgba(255,255,255,0.022) 45%,
-            rgba(255,255,255,0.032) 50%, rgba(255,255,255,0.022) 55%, transparent 100%);
-          filter: blur(18px);
-          transform: rotate(8deg) translateZ(0);
-          animation: raySweep calc(180s * var(--motion-scale)) ease-in-out infinite alternate;
-        }
-
-        @keyframes raySweep {
-          0%   { transform: translateX(-12%) rotate(8deg); opacity: 0.55; }
-          100% { transform: translateX(115%) rotate(8deg); opacity: 0.95; }
-        }
-
-        /* film grain: one tiny repeating SVG, no image request */
-        .amb-grain {
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
-          /* no mix-blend-mode: blending forces the compositor to re-read the
-             backdrop every frame, which cost ~6fps on a large panel for an
-             effect that is nearly invisible at this opacity anyway */
-          opacity: var(--grain-opacity, 0.018);
-        }
-
-        /* ---- particles ---- */
-        .amb-dust span {
-          position: absolute;
-          border-radius: 50%;
-          background: var(--accent);
-          opacity: 0;
-          animation: floatUp linear infinite;
-          will-change: transform, opacity;
-        }
-
-        @keyframes floatUp {
-          0%   { transform: translateY(8vh) scale(0.7); opacity: 0; }
-          12%  { opacity: 0.5; }
-          88%  { opacity: 0.4; }
-          100% { transform: translateY(-102vh) scale(1.05); opacity: 0; }
-        }
-
-        /* bubbles rise faster and wobble; embers glow warm and fade early */
-        [data-particle="bubbles"] .amb-dust span {
-          background: transparent;
-          border: 1px solid var(--accent);
-        }
-        [data-particle="embers"] .amb-dust span {
-          background: var(--accent2);
-          box-shadow: 0 0 6px var(--glow);
-        }
-        [data-particle="aurora"] .amb-dust span {
-          background: linear-gradient(180deg, var(--accent), var(--accent2));
-          filter: blur(1px);
-        }
-
-        /* stars only at night, and only as a static field so they don't
-           compete with the drifting layers */
-        /* One animation on the container rather than 34 on the children.
-           Animating opacity per-span forced ~34 repaints every frame (measured
-           at ~24fps on a 1920 panel); the field reads the same when the whole
-           layer breathes and the stars differ only in static opacity. */
-        .amb-stars {
-          animation: twinkle 4.5s ease-in-out infinite alternate;
-          will-change: opacity;
-        }
-        .amb-stars span {
-          position: absolute;
-          width: 2px; height: 2px;
-          border-radius: 50%;
-          background: #FFFFFF;
-        }
-        @keyframes twinkle {
-          from { opacity: 0.45; }
-          to   { opacity: 1; }
-        }
-
         /* ---- calm mode ----------------------------------------------
            Slows everything (via --motion-scale), lifts blur, dims accents
            and hides secondary chrome. Navigation stays fully usable. */
-        .calm-mode .amb-layer { filter: blur(14px) saturate(0.82); }
         .calm-mode .panel {
           filter: saturate(0.85) brightness(0.96);
           transition: filter 900ms ease;
-        }
-        .calm-mode .amb-grain { opacity: calc(var(--grain-opacity) * 0.4); }
-
-        .calm-breath {
-          position: fixed;
-          left: 50%; top: 50%;
-          width: 220px; height: 220px;
-          margin: -110px 0 0 -110px;
-          border-radius: 50%;
-          border: 1px solid var(--accent);
-          background: radial-gradient(circle, var(--glow), transparent 68%);
-          opacity: 0.5;
-          z-index: -1;
-          pointer-events: none;
-          animation: breathe 11s ease-in-out infinite;
-        }
-
-        @keyframes breathe {
-          0%, 100% { transform: scale(0.72); opacity: 0.30; }
-          42%      { transform: scale(1.16); opacity: 0.62; }
-          58%      { transform: scale(1.16); opacity: 0.62; }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .amb-ray, .amb-dust span, .amb-stars span, .calm-breath {
-            animation: none !important;
-          }
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -10601,6 +10918,58 @@ function TodoApp() {
           color: var(--accent); font-family: 'JetBrains Mono', monospace;
           font-size: 10px; letter-spacing: 0.06em; padding: 0;
         }
+
+        /* ---- ai captions (v40) ---- */
+        .cap { padding: 6px 14px 20px; }
+        .cap-note {
+          margin: 0 0 12px; color: var(--muted); font-size: 9.5px; line-height: 1.65;
+          white-space: pre-wrap; font-family: 'JetBrains Mono', monospace;
+        }
+        .cap-drop {
+          display: flex; flex-direction: column; align-items: center; gap: 8px;
+          padding: 30px 16px; cursor: pointer;
+          border: 1px dashed var(--border); border-radius: 4px;
+          color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          letter-spacing: 0.06em;
+        }
+        .cap-drop input { display: none; }
+        .cap-drop-glyph { font-size: 20px; color: var(--accent); }
+        .cap-stage { position: relative; width: 100%; border-radius: 4px; overflow: hidden; }
+        .cap-video { width: 100%; display: block; background: #000; }
+        .cap-overlay {
+          position: absolute; inset: 0; width: 100%; height: 100%;
+          pointer-events: none;
+        }
+        .cap-meta {
+          margin: 8px 0 4px; color: var(--muted);
+          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.05em;
+        }
+        .cap-msg { margin: 6px 0; font-size: 10px; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; }
+        .cap-msg.ok { color: var(--accent); }
+        .cap-msg.err { color: var(--danger); }
+        .cap-progress {
+          position: relative; height: 22px; margin: 8px 0;
+          border: 1px solid var(--border); border-radius: 3px; overflow: hidden;
+          display: flex; align-items: center; justify-content: center;
+          font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text);
+        }
+        .cap-progress-fill {
+          position: absolute; left: 0; top: 0; bottom: 0;
+          background: rgba(94,234,212,0.22); transition: width 200ms linear;
+        }
+        .cap-progress span { position: relative; }
+        .cap-styles { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 12px; }
+        .cap-style {
+          display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+          padding: 9px 11px; cursor: pointer; text-align: left;
+          background: transparent; border: 1px solid var(--border); border-radius: 3px;
+          font-family: 'JetBrains Mono', monospace;
+        }
+        .cap-style.active { border-color: var(--accent); }
+        .cap-style-name { font-size: 11px; color: var(--text); letter-spacing: 0.05em; }
+        .cap-style.active .cap-style-name { color: var(--accent); }
+        .cap-style-hint { font-size: 9px; color: var(--muted); }
+        .cap-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 
         /* ---- pomodoro ---- */
         .pomo { padding: 6px 14px 20px; }
@@ -11531,7 +11900,6 @@ function TodoApp() {
       `}</style>
 
       <div className="panel">
-        <AmbientBackground theme={themeCtl.theme} phase={themeCtl.phase} calm={themeCtl.calm} scoped />
         {update.pending && (
           <div
             className="update-bar"
@@ -11623,8 +11991,8 @@ function TodoApp() {
             <button
               className="titlebar-icon-btn"
               onClick={() => { setShowThemes(true); sound.click(); }}
-              aria-label="Themes and ambience"
-              title="Themes & ambience"
+              aria-label="Themes"
+              title="Themes"
             >
               <svg viewBox="0 0 24 24" width="14" height="14">
                 <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />

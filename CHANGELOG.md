@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v40`** | 2026-09-28 | AI captions tool, ambient background removed, red→cyan card wash |
 | **`v39`** | 2026-09-27 | TOOLS tab + pomodoro, inventory editing, tab bar fits seven |
 | **`v38`** | 2026-09-27 | Encrypted cloud backup, self-updating app, widget feed removed |
 | **`v37`** | 2026-09-27 | Notification badge icon + routine name as the title |
@@ -209,6 +210,71 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-28 — `tasksh-v40`**
+
+- **Removed: the ambient background, entirely.** Not the toggle — the thing.
+  `AmbientBackground`, the four `.amb-*` layers, the drifting blobs, the
+  dust, the stars, the film grain, the `--blob1..3` and `--grain-opacity`
+  variables, the per-theme `ambient` block in all six themes, and the
+  settings switch. **16.7 KB of source.** A browser test now asserts zero
+  `.amb-layer` nodes and `background-image: none` on `.app-root`, so it
+  cannot creep back.
+  - One thing to know: `--time-warm` had exactly two consumers, both ambient
+    layers. The time-of-day *phase* still exists (the companion reads it) but
+    it no longer paints anything.
+
+- **Added: a red → cyan wash behind ordered cards.** Same hue ramp v36
+  introduced for routine borders (352° → 171° the warm way round), now a
+  fill behind routines and habits, positioned by list order.
+  - Alpha peaks at **0.16** and fades out by 80% of the card width, so long
+    labels always end on flat panel colour. Measured: the amber middle of the
+    ramp at 0.16 over `#14171C` leaves roughly **9.8:1** against `--text`.
+    At 0.30 it drops under 7:1 and starts reading as a highlight.
+  - Lightness is 0.60 here versus 0.64 on the border — a large area of a
+    colour reads brighter than a 3px line of it.
+  - A completed routine or habit drops the wash along with its border, so
+    "done" still reads without reading the text.
+
+- **Added: AI CAPTIONS, the second tool.** Pick a clip under 60s, get
+  word-timed captions burned in. Three styles: clean, karaoke, word-pop.
+  - **Groq `whisper-large-v3-turbo`, called straight from the phone.**
+    Verified before building: `api.groq.com` answers CORS preflight with
+    `access-control-allow-origin: *`, so no worker proxy sits in the path.
+    Free tier is 28,800 audio-seconds/day — about 480 clips of this length.
+  - **Only the audio leaves the device, ~1.9 MB of it.** A 60s phone clip is
+    60–150 MB and Groq's free tier caps uploads at 25 MB, so the audio is
+    stripped to 16 kHz mono and packed into a hand-written 44-byte WAV
+    header. Whisper resamples to 16 kHz internally anyway.
+  - **Burn-in is local, on the phone's own encoder.** WebCodecs supplies
+    hardware H.264 but deliberately no container; `mediabunny` supplies the
+    MP4 muxer. The original audio track is **copied through without
+    re-encoding**, which also sidesteps the patchiest codec on Android — the
+    AAC *encoder*.
+  - Caption quality is the chunker, not the model: max 3 words and 22
+    characters a line, a break on any pause over 350 ms, a break after
+    sentence punctuation, a 250 ms minimum on screen clipped so two lines
+    can never overlap, and a bottom safe area at 82% of frame height so
+    Instagram's UI doesn't cover them.
+  - **"check phone" encodes a real one-second clip and re-parses it** rather
+    than trusting `isConfigSupported()`, which can say yes on hardware that
+    then fails at finalize. On the test machine: `real encode yes · 60ms`.
+
+- **The one new dependency, and why.** `mediabunny` (MPL-2.0, zero transitive
+  deps) breaks the no-dependencies rule in `AGENTS.md` deliberately. The
+  alternative was ~1,500 lines of hand-written MP4 box offsets where a
+  mistake yields a file that plays locally and fails on Instagram.
+  ffmpeg.wasm was rejected at ~30 MB — 65× this entire app.
+  - **Measured and then fixed:** importing `ALL_FORMATS` + `Conversion` took
+    the bundle from 446 KB to **1.0 MB**. Importing only `MP4`, `QTFF` and
+    the pieces actually used, and hand-writing the WAV encoder instead of
+    using the generic conversion pipeline, brought it to **782 KB**. If that
+    still feels heavy, the next step is a separate lazily-loaded bundle.
+
+- **Tests: 207 unit + 81 browser.** New: `captions.test.mjs` (23) and five
+  browser tests including a genuine end-to-end — encode a clip, burn three
+  caption lines in, re-parse the output MP4 and check its dimensions and
+  duration survived. Eight mutations checked, eight reds.
 
 **2026-09-27 — `tasksh-v39`**
 

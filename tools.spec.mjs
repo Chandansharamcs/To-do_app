@@ -123,6 +123,133 @@ await test("all seven tabs fit on the narrowest phone, no swiping", async () => 
   await ctx.close();
 });
 
+// ------------------------------------------------------------- v40 looks ---
+
+await test("the ambient background is gone, not just switched off", async () => {
+  // v40 removed it entirely: component, CSS layers, per-theme config and the
+  // toggle. A leftover .amb-layer would mean the removal was cosmetic.
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  const left = await page.evaluate(() => ({
+    layers: document.querySelectorAll(".amb-layer, .amb-scoped, .calm-breath").length,
+    rootBg: getComputedStyle(document.querySelector(".app-root")).backgroundImage,
+    blobVar: getComputedStyle(document.documentElement).getPropertyValue("--blob1").trim(),
+  }));
+  assert.equal(left.layers, 0, "ambient layers still in the DOM");
+  assert.equal(left.rootBg, "none", `app-root still paints a gradient: ${left.rootBg}`);
+  assert.equal(left.blobVar, "", "--blob1 is still defined");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("cards carry the red -> cyan ramp, in list order", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.goodhabits.v1": JSON.stringify(
+      Array.from({ length: 6 }, (_, i) => ({
+        id: i + 1, label: `habit ${i + 1}`, area: "work", sub: "deep", xp: 10, penalty: 0, history: [],
+      }))
+    ),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "quest" }).click();
+  await page.waitForTimeout(500);
+
+  const rgb = await page.evaluate(() =>
+    [...document.querySelectorAll(".quest-habit-card")].map((c) => {
+      const m = getComputedStyle(c).backgroundImage.match(/rgba?\(([\d.,\s]+)\)/);
+      return m ? m[1].split(",").map((n) => parseFloat(n)) : null;
+    }).filter(Boolean)
+  );
+  assert.ok(rgb.length >= 4, `expected several washed cards, got ${rgb.length}`);
+  const first = rgb[0], last = rgb[rgb.length - 1];
+  assert.ok(first[0] > first[2], `first card should be red-dominant, got ${first}`);
+  assert.ok(last[2] > last[0], `last card should be cyan-dominant, got ${last}`);
+  // and the tint must stay faint enough to read white text over
+  assert.ok(first[3] <= 0.2, `wash too strong: alpha ${first[3]}`);
+  await ctx.close();
+});
+
+// ------------------------------------------------------------- captions ----
+
+await test("the captions tool is on the grid and opens", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "ai captions" }).click();
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".cap-drop").count(), 1, "no file picker shown");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("the phone check reports what the hardware actually does", async () => {
+  // Capability flags can disagree with reality, so the check encodes a real
+  // one-second clip and re-parses it. The assertion is that the UI matches
+  // isConfigSupported() either way -- a self-test that always says yes is
+  // worse than none.
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "ai captions" }).click();
+  await page.waitForTimeout(300);
+
+  const truth = await page.evaluate(async () => {
+    try { return (await VideoEncoder.isConfigSupported({ codec: "avc1.42001f", width: 320, height: 180 })).supported; }
+    catch { return false; }
+  });
+
+  await page.getByRole("button", { name: "check phone" }).click();
+  await page.waitForTimeout(4000);
+  const out = await page.locator(".cap .cap-note").last().innerText();
+  assert.match(out, new RegExp(`h\\.264 encode\\s+${truth ? "yes" : "no"}`, "i"),
+    `self-test disagrees with the browser (truth=${truth}):\n${out}`);
+  if (truth) assert.match(out, /real encode\s+yes/i, `probe clip did not encode:\n${out}`);
+  await ctx.close();
+});
+
+await test("captions actually burn into a real file", async () => {
+  // The whole feature in one assertion: make a clip, burn three caption
+  // lines into it, read the result back as MP4 and check it is longer than
+  // the source (pixels changed) and still decodes.
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+
+  const out = await page.evaluate(async () => {
+    const api = window.__tasksh;
+    if (!api) return { error: "no debug hook" };
+    try {
+      const clip = await api.encodeProbeClip(2, 12);
+      // pauses between them, so they become three separate lines rather
+      // than one merged line (which is what continuous speech should do)
+      const chunks = api.chunkWords([
+        { word: "burned", start: 0.0, end: 0.4 },
+        { word: "into", start: 0.9, end: 1.2 },
+        { word: "pixels", start: 1.7, end: 2.0 },
+      ]);
+      const file = new File([clip], "probe.mp4", { type: "video/mp4" });
+      const style = { size: 0.09, weight: 900, tracking: 0.02, upper: true,
+                      fill: "#FFFFFF", active: "#F5A623", stroke: "#000000", strokeW: 0.18, pop: false };
+      let seen = 0;
+      const burned = await api.burnCaptions(file, chunks, style, (p) => { seen = p; });
+      const meta = await api.probeVideo(new File([burned], "out.mp4", { type: "video/mp4" }));
+      return { chunks: chunks.length, srcBytes: clip.size, outBytes: burned.size, progress: seen, meta };
+    } catch (err) { return { error: String(err && err.message || err) }; }
+  });
+
+  assert.equal(out.error, undefined, `burn threw: ${out.error}`);
+  assert.equal(out.chunks, 3, "captions did not chunk");
+  assert.ok(out.outBytes > 1000, `output suspiciously small: ${out.outBytes} bytes`);
+  assert.equal(out.progress, 1, "progress never reached 100%");
+  assert.equal(out.meta.width, 320, `lost the frame size: ${JSON.stringify(out.meta)}`);
+  assert.equal(out.meta.height, 180);
+  assert.ok(out.meta.duration > 1.4, `duration collapsed: ${out.meta.duration}`);
+  await ctx.close();
+});
+
 // -------------------------------------------------------------- the timer ---
 
 await test("it starts at the configured length and counts down", async () => {

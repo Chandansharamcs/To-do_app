@@ -20,6 +20,22 @@
 ---
 
 
+## The dependency rule, as amended in v40
+
+The rule was "no new runtime dependencies". It is now **one** runtime
+dependency: `mediabunny`, MPL-2.0, zero transitive deps, for MP4
+demuxing/muxing in the captions tool.
+
+It was broken deliberately and the reasoning should survive: WebCodecs gives
+you the hardware encoder but no container, hand-writing an MP4 muxer is
+~1,500 lines of byte offsets whose failure mode is a file that plays on your
+phone and fails on Instagram, and ffmpeg.wasm is ~30 MB against a 450 KB app.
+
+If you are about to add a second one, the bar is the same: no transitive
+deps, a permissive licence, and a hand-rolled alternative measured in
+weeks rather than hours. **Import surgically** — `ALL_FORMATS` and
+`Conversion` alone cost 560 KB of bundle, measured.
+
 ## Budgets worth knowing before you add something
 
 - **The tab bar holds exactly seven tabs at 360px.** `.tabs` is
