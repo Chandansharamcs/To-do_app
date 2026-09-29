@@ -164,30 +164,19 @@ await test("the ambient background is gone, not just switched off", async () => 
   await ctx.close();
 });
 
-await test("cards carry the red -> cyan ramp, in list order", async () => {
-  const { ctx, page } = await phone({
-    "tasksh.goodhabits.v1": JSON.stringify(
-      Array.from({ length: 6 }, (_, i) => ({
-        id: i + 1, label: `habit ${i + 1}`, area: "work", sub: "deep", xp: 10, penalty: 0, history: [],
-      }))
-    ),
-  });
+await test("the routine list still runs red to cyan, now on the border", async () => {
+  const { ctx, page } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "quest" }).click();
-  await page.waitForTimeout(500);
-
-  const rgb = await page.evaluate(() =>
-    [...document.querySelectorAll(".quest-habit-card")].map((c) => {
-      const m = getComputedStyle(c).backgroundImage.match(/rgba?\(([\d.,\s]+)\)/);
-      return m ? m[1].split(",").map((n) => parseFloat(n)) : null;
-    }).filter(Boolean)
+  await page.getByRole("tab", { name: "routines" }).click();
+  await page.waitForTimeout(700);
+  const hues = await page.evaluate(() =>
+    [...document.querySelectorAll(".routine-row.edge")].map((r) =>
+      Number((getComputedStyle(r).getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1]))
   );
-  assert.ok(rgb.length >= 4, `expected several washed cards, got ${rgb.length}`);
-  const first = rgb[0], last = rgb[rgb.length - 1];
-  assert.ok(first[0] > first[2], `first card should be red-dominant, got ${first}`);
-  assert.ok(last[2] > last[0], `last card should be cyan-dominant, got ${last}`);
-  // and the tint must stay faint enough to read white text over
-  assert.ok(first[3] <= 0.2, `wash too strong: alpha ${first[3]}`);
+  assert.ok(hues.length >= 4, `expected several routines, got ${hues.length}`);
+  const first = hues[0], last = hues[hues.length - 1];
+  assert.ok(first > 300 || first < 20, `first row should be red, hue ${first}`);
+  assert.ok(last > 120 && last < 220, `last row should be cyan, hue ${last}`);
   await ctx.close();
 });
 
@@ -331,6 +320,138 @@ await test("editing the style changes what is drawn, and survives a reload", asy
   await page.waitForTimeout(400);
   const reloaded = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.captions.v1")).style);
   assert.equal(reloaded.highlight, "pop", "style did not survive a reload");
+  await ctx.close();
+});
+
+await test("the delete cross is visible without a hover", async () => {
+  // It was opacity:0, revealed by .task-row:hover. A phone never hovers, so
+  // it was invisible at all times -- which is why inventory delete got
+  // reported as missing when it had shipped in v36.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await ctx.addInitScript(() => {
+    localStorage.setItem("tasksh.inventory.v1", JSON.stringify([{ id: 901, text: "watering plants", diff: "easy" }]));
+  });
+  const page = await ctx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(500);
+  const d = await page.evaluate(() => {
+    const b = document.querySelector(".del-btn");
+    if (!b) return null;
+    const cs = getComputedStyle(b), r = b.getBoundingClientRect();
+    return { opacity: Number(cs.opacity), color: cs.color, w: r.width, h: r.height };
+  });
+  assert.ok(d, "no delete button rendered");
+  assert.equal(d.opacity, 1, "the delete cross is still transparent on touch");
+  assert.ok(d.w >= 20 && d.h >= 20, `tap target is ${d.w}x${d.h}, too small`);
+  assert.match(d.color, /rgb\(155, 51, 65\)/, `expected dark red, got ${d.color}`);
+  await ctx.close();
+});
+
+await test("the now-line states its own time, inside the track", async () => {
+  // Position was already correct to the minute; a bare line just could not
+  // be checked against hour ticks from a screenshot.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, timezoneId: "Asia/Kolkata" });
+  await ctx.addInitScript(`{const F=new Date("2026-09-29T08:50:00Z").getTime();const D=Date;
+    class X extends D{constructor(...a){if(!a.length)super(F);else super(...a);} static now(){return F;}}
+    window.Date=X;}`);
+  const page = await ctx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "routines" }).click();
+  await page.waitForTimeout(900);
+
+  const m = await page.evaluate(() => {
+    const inner = document.querySelector(".timeline-inner");
+    const now = document.querySelector(".timeline-now");
+    const chip = document.querySelector(".timeline-now-time");
+    const track = document.querySelector(".timeline-track");
+    const base = inner.getBoundingClientRect().left;
+    const w = inner.getBoundingClientRect().width;
+    const cr = chip.getBoundingClientRect(), tr = track.getBoundingClientRect();
+    return {
+      // the line is centre-anchored (translateX(-1px)) so it lines up with
+      // the hour labels, which are also centred -- measure its middle
+      implied: Math.round(((now.getBoundingClientRect().left + now.getBoundingClientRect().width / 2) - base) / (w / 1440)),
+      chip: chip.textContent.trim(),
+      clipped: cr.top < tr.top - 0.5 || cr.bottom > tr.bottom + 0.5,
+    };
+  });
+  // 1 minute of tolerance: one pixel is ~0.73 min at this scale
+  assert.ok(Math.abs(m.implied - 860) <= 1, `line sits at minute ${m.implied}, expected 860`);
+  assert.match(m.chip, /2:20\s*PM/i, `chip reads "${m.chip}"`);
+  assert.equal(m.clipped, false, "the time chip is clipped by the track");
+  await ctx.close();
+});
+
+await test("cards carry a gradient border, and quest state overrides the ramp", async () => {
+  // v42: the ramp moved from a face tint (muddy) to a bloom (still busy) to
+  // one pixel of border. In quests the hue is the STATE: done is cyan,
+  // slipped is red, everything else runs the position ramp.
+  const { ctx, page } = await phone({
+    "tasksh.goodhabits.v1": JSON.stringify((() => {
+      const day = new Date().toISOString().slice(0, 10);
+      return [
+        { id: 1, label: "done one", area: "work", sub: "sleep", xp: 20, penalty: 0, history: [{ d: day, t: "done" }] },
+        { id: 2, label: "plain", area: "work", sub: "deep", xp: 20, penalty: 0, history: [] },
+        { id: 3, label: "slipped", area: "work", sub: "training", xp: 20, penalty: 10, history: [{ d: day, t: "slip" }] },
+        { id: 4, label: "plain two", area: "work", sub: "learning", xp: 20, penalty: 0, history: [] },
+      ];
+    })()),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "quest" }).click();
+  await page.waitForTimeout(700);
+
+  const cards = await page.evaluate(() =>
+    [...document.querySelectorAll(".quest-habit-card.edge")].map((c) => {
+      const cs = getComputedStyle(c);
+      return {
+        label: (c.querySelector(".quest-habit-label") || {}).textContent,
+        hue: Number((cs.getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1]),
+        layers: (cs.backgroundImage.match(/linear-gradient/g) || []).length,
+        clip: (cs.backgroundClip || cs.webkitBackgroundClip || "").replace(/\s/g, ""),
+        borderTransparent: cs.borderTopColor.replace(/\s/g, "") === "rgba(0,0,0,0)",
+      };
+    })
+  );
+  assert.ok(cards.length >= 4, `expected several cards, got ${cards.length}`);
+
+  const byLabel = (n) => cards.find((c) => (c.label || "").includes(n));
+  assert.equal(byLabel("done one").hue, 171, "a completed quest should be cyan");
+  assert.equal(byLabel("slipped").hue, 352, "a slipped quest should be red");
+
+  for (const c of cards) {
+    assert.equal(c.layers, 2, `${c.label}: the two-layer gradient border is gone`);
+    assert.equal(c.clip, "padding-box,border-box", `${c.label}: wrong background-clip`);
+    assert.ok(c.borderTransparent, `${c.label}: border is painted flat, hiding the gradient`);
+  }
+  await ctx.close();
+});
+
+await test("any pomodoro phase can be chosen directly", async () => {
+  // rounds were a cage: a long break was four skips away, and every skip
+  // also moved the round counter
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "pomodoro" }).click();
+  await page.waitForTimeout(500);
+
+  await page.locator(".pomo-chip", { hasText: "long" }).click();
+  await page.waitForTimeout(350);
+  assert.match(await page.locator(".pomo-phase").innerText(), /long break/i);
+  assert.equal(await page.locator(".pomo-clock").innerText(), "15:00");
+
+  await page.locator(".pomo-chip", { hasText: "focus" }).click();
+  await page.waitForTimeout(350);
+  assert.match(await page.locator(".pomo-phase").innerText(), /focus/i);
+  assert.equal(await page.locator(".pomo-clock").innerText(), "25:00");
+
+  // and a round can be jumped to without burning through skips
+  await page.locator(".pomo-pip").nth(2).click();
+  await page.waitForTimeout(300);
+  assert.match(await page.locator(".pomo-round").innerText(), /round 3\/4/);
   await ctx.close();
 });
 

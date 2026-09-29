@@ -53,6 +53,7 @@ const NAMES = [
   "CAPTION_MAX_SECONDS", "CAPTION_LIMITS", "CAPTION_FONTS", "CAPTION_HIGHLIGHTS",
   "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "CAPTION_SAMPLE_WORDS",
   "sanitiseCaptionStyle", "captionFontStack",
+  "NON_SPEECH_TERMS", "NON_SPEECH_RE", "NON_SPEECH_PHRASE_RE", "isNonSpeech", "stripNonSpeech", "transcriptLooksEmpty", "LYRICS_PROMPT",
   "chunkWords", "activeChunkAt", "activeWordIndex",
   "wordsFromGroqResponse", "encodeWav", "downmixTo16k",
 ];
@@ -285,6 +286,82 @@ T("words per line actually changes the line count", () => {
 
 T("the clip limit matches what the free tier and the memory budget allow", () => {
   assert.equal(M.CAPTION_MAX_SECONDS, 60);
+});
+
+
+// ---- music, not speech (v42) ----------------------------------------------
+// A short that was entirely sung came back as the single word "OUTRO MUSIC"
+// and that got burned into the video. Whisper narrates non-speech instead of
+// staying quiet, and it is documented as weaker on sung vocals than speech.
+
+T("Whisper's stage directions are not captions", () => {
+  for (const junk of ["[Music]", "(OUTRO MUSIC)", "♪♪♪", "[Applause]", "(instrumental)",
+                      "  [ music ] ", "♪", "(Background Music)", "[BLANK_AUDIO]"]) {
+    assert.equal(M.isNonSpeech(junk), true, `let through: ${junk}`);
+  }
+});
+
+T("real lyrics are never mistaken for a stage direction", () => {
+  for (const line of ["music", "the music never stops", "outro", "applause from the crowd",
+                      "I hear the sound", "silence is golden"]) {
+    assert.equal(M.isNonSpeech(line), false, `wrongly dropped: ${line}`);
+  }
+});
+
+T("the filter removes tags and keeps the song", () => {
+  const words = [
+    { text: "[Music]", start: 0, end: 4 },
+    { text: "hold", start: 4, end: 4.3 },
+    { text: "on", start: 4.3, end: 4.6 },
+    { text: "(outro music)", start: 5, end: 9 },
+  ];
+  assert.deepEqual(M.stripNonSpeech(words).map((w) => w.text), ["hold", "on"]);
+});
+
+T("an unbracketed stage direction is still a stage direction", () => {
+  // Whisper does not always bracket it -- the report that started this was
+  // literally the two words OUTRO MUSIC
+  assert.equal(M.isNonSpeech("OUTRO MUSIC"), true);
+  assert.equal(M.isNonSpeech("outro music"), true);
+  assert.equal(M.isNonSpeech("background music"), true);
+  assert.equal(M.isNonSpeech("BLANK_AUDIO"), true);
+  // but the single word stays, because at word granularity it is a lyric
+  assert.equal(M.isNonSpeech("music"), false);
+});
+
+T("a couple of words is too few, however well they cover the clip", () => {
+  // the coverage rule alone would pass this: 2 words over 1.6s of a 2s clip
+  const two = [
+    { text: "hey", start: 0.0, end: 0.8 },
+    { text: "yo", start: 0.8, end: 1.6 },
+  ];
+  assert.equal(M.transcriptLooksEmpty(two, 2), true, "two words should not count as a transcript");
+});
+
+T("a transcript that is only music counts as empty", () => {
+  const junk = [{ text: "[Music]", start: 0, end: 30 }, { text: "♪", start: 30, end: 45 }];
+  assert.equal(M.transcriptLooksEmpty(junk, 45), true);
+});
+
+T("a sparse transcript over a long clip also counts as empty", () => {
+  // three words covering 1.2s of a 45s song is a shrug, not a transcript
+  const sparse = [
+    { text: "yeah", start: 1, end: 1.4 },
+    { text: "oh", start: 20, end: 20.4 },
+    { text: "yeah", start: 40, end: 40.4 },
+  ];
+  assert.equal(M.transcriptLooksEmpty(sparse, 45), true);
+});
+
+T("a real transcript is not thrown away", () => {
+  const words = Array.from({ length: 60 }, (_, i) => ({ text: "word", start: i * 0.5, end: i * 0.5 + 0.45 }));
+  assert.equal(M.transcriptLooksEmpty(words, 32), false);
+});
+
+T("the lyrics prompt fits Groq's 224-token budget and says the right thing", () => {
+  assert.ok(M.LYRICS_PROMPT.length < 600, "prompt is too long for the 224-token cap");
+  assert.match(M.LYRICS_PROMPT, /lyric|sung/i);
+  assert.match(M.LYRICS_PROMPT, /\[Music\]/, "should tell the model not to emit the tag");
 });
 
 // ---- run -------------------------------------------------------------------

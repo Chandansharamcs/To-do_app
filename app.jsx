@@ -1914,7 +1914,14 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
               );
             })}
 
-            <div className="timeline-now" style={{ left: nowX }} />
+            {/* The line now carries its own clock. Position was measured
+                accurate to the minute at 05:30 / 14:20 / 23:10, but a bare
+                line can only be checked against hour ticks by eye -- so if
+                it ever disagrees with the titlebar, the screenshot proves
+                it instead of inviting a guess. */}
+            <div className="timeline-now" style={{ left: nowX }}>
+              <span className="timeline-now-time">{minutesToLabel(nowMinutes)}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -2176,14 +2183,14 @@ function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday
         </svg>
       </div>
       <div
-        className={`routine-row ${status}`}
+        className={`routine-row ${status} edge`}
         style={{
           transform: `translateX(${dragX}px)`,
           transition: draggingRef.current ? "none" : "transform 220ms cubic-bezier(.65,0,.35,1)",
           borderLeft: `3px solid ${doneToday ? "#2A2F36" : gradientColor(index, total)}`,
-          // a finished routine goes grey on both the edge and the wash, so
-          // "done" still reads at a glance without reading the text
-          backgroundImage: doneToday ? "none" : cardWash(index, total),
+          // a finished routine drops its colour entirely -- flat grey edge,
+          // no bloom -- so "done" reads without reading the text
+          ...cardBorderVars(index, total, doneToday ? "done" : null),
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -3520,6 +3527,32 @@ function cardWash(i, n, alpha = 0.16) {
        + `hsla(${h},80%,60%,${(alpha * 0.34).toFixed(3)}) 46%, transparent 80%)`;
 }
 
+/** v42: the ramp as a gradient BORDER.
+ *
+ *  Third attempt. A tint across the card face put colour under every label
+ *  (muddy). A bloom behind the card measured fine at 14.9:1 but still pushed
+ *  colour into the background. A border keeps every pixel of the card face
+ *  flat and puts the whole ramp in one pixel, which is what a terminal look
+ *  wants anyway.
+ *
+ *  Two stacked backgrounds rather than `border-image`, because border-image
+ *  cannot follow a border-radius and the themes range from 0px to 14px.
+ *
+ *  `state` overrides the position hue entirely:
+ *    done   -> cyan   finished
+ *    failed -> red    slipped
+ *    null   -> the red->cyan ramp by list position
+ */
+function cardBorderVars(i, n, state) {
+  const h = state === "done" ? 171 : state === "failed" ? 352 : Math.round(gradientHue(i, n));
+  const h2 = state ? h : Math.round(gradientHue(Math.min(i + 1, n - 1), n));
+  const a = state ? 0.85 : 0.62;
+  return {
+    "--edge-a": `hsla(${h}, 85%, 62%, ${a})`,
+    "--edge-b": `hsla(${h2}, 85%, 62%, ${(a * 0.55).toFixed(2)})`,
+  };
+}
+
 function hslToHex(h, s, l) {
   const c = (1 - Math.abs(2 * l - 1)) * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
@@ -3830,9 +3863,9 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
 
   return (
     <div
-      className={`quest-habit-card good ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
+      className={`quest-habit-card good edge ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
       key={`h${habit.id}`}
-      style={{ backgroundImage: doneToday ? "none" : cardWash(index, total) }}
+      style={cardBorderVars(index, total, doneToday ? "done" : slipToday ? "failed" : null)}
     >
       {fx > 0 && <span className="xp-pop" key={fx}>+{habitXP(habit)}</span>}
       <span className="area-dot" style={{ background: area.color }} />
@@ -6865,6 +6898,22 @@ function PomodoroTool({ onReward }) {
     sound.delete();
   };
 
+  /** Jump straight to a phase. The cycle still auto-advances when a block
+   *  ends, but it is no longer a cage: "long break now" used to be four
+   *  skips away, and each skip also moved the round counter. */
+  const goToPhase = (next) => {
+    setSession({ phase: next, round, running: false, endsAt: null, remainingMs: null });
+    syncPomodoroTimer(0);
+    sound.click();
+  };
+
+  const setRound = (n) => {
+    const r = Math.min(settings.rounds, Math.max(1, n));
+    setSession({ phase, round: r, running: false, endsAt: null, remainingMs: null });
+    syncPomodoroTimer(0);
+    sound.click();
+  };
+
   const skip = () => {
     const next = nextPomodoroPhase(phase, round, settings);
     setSession({ phase: next.phase, round: next.round, running: false, endsAt: null, remainingMs: null });
@@ -6910,11 +6959,26 @@ function PomodoroTool({ onReward }) {
         </div>
       </div>
 
+      <div className="pomo-phase-pick" role="group" aria-label="Choose a block">
+        {[["work", "focus"], ["short", "short"], ["long", "long"]].map(([id, label]) => (
+          <button
+            key={id}
+            className={`pomo-chip ${phase === id ? "on" : ""}`}
+            style={phase === id ? { borderColor: POMO_PHASES[id].color, color: POMO_PHASES[id].color } : undefined}
+            onClick={() => goToPhase(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="pomo-pips" aria-label={`round ${round} of ${settings.rounds}`}>
         {Array.from({ length: settings.rounds }, (_, i) => (
-          <span
+          <button
             key={i}
             className={`pomo-pip ${i + 1 < round ? "done" : ""} ${i + 1 === round ? "active" : ""}`}
+            onClick={() => setRound(i + 1)}
+            aria-label={`go to round ${i + 1}`}
           />
         ))}
         <span className="pomo-round">round {round}/{settings.rounds}</span>
@@ -6993,7 +7057,55 @@ function PomodoroTool({ onReward }) {
 const STORAGE_KEY_CAPTIONS = "tasksh.captions.v1";
 const CAPTION_MAX_SECONDS = 60;
 const GROQ_ASR_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+// turbo first (216x realtime, 12% WER), large-v3 as the rescue (189x,
+// 10.3%). Both are free on Groq, so escalating costs a second, not money.
 const GROQ_ASR_MODEL = "whisper-large-v3-turbo";
+const GROQ_ASR_MODEL_ACCURATE = "whisper-large-v3";
+
+// Whisper narrates non-speech instead of staying quiet: a sung stretch comes
+// back as "[Music]", "(OUTRO MUSIC)", "♪♪♪". Burning that into a video is
+// worse than burning nothing -- which is exactly what a music-only short got.
+const NON_SPEECH_TERMS = "music|outro music|intro music|applause|laughter|silence|inaudible|background music|singing|instrumental|no speech|sound effects|clapping|cheering|blank_audio";
+
+// Bracketed only, e.g. "[Music]" / "(OUTRO MUSIC)" / "[BLANK_AUDIO]".
+const NON_SPEECH_RE = new RegExp("^[\\s\\u266a~\\-]*[\\[\\(\\{]\\s*(" + NON_SPEECH_TERMS + ")\\s*[\\]\\)\\}][\\s\\u266a~\\-.!]*$", "i");
+
+// Unbracketed, but only when it is a whole multi-word stage direction. A
+// bare "music" is dropped nowhere: at word-level granularity that is far
+// more likely to be a lyric ("the music never stops") than a Whisper tag,
+// and a test caught exactly that.
+const NON_SPEECH_PHRASE_RE = new RegExp("^[\\s\\u266a~\\-]*(outro music|intro music|background music|no speech|blank_audio|sound effects)[\\s\\u266a~\\-.!]*$", "i");
+
+function isNonSpeech(text) {
+  const t = String(text || "").trim();
+  if (!t) return true;
+  if (NON_SPEECH_RE.test(t)) return true;
+  if (NON_SPEECH_PHRASE_RE.test(t)) return true;
+  if (/^[\[\(\{].*[\]\)\}]$/.test(t)) return true;      // any bracketed aside
+  return /^[\u266a~\-\s.]+$/.test(t);                      // just music notes
+}
+
+function stripNonSpeech(words) {
+  return (words || []).filter((w) => !isNonSpeech(w.text));
+}
+
+/** Did Whisper actually hear anything, or did it shrug?
+ *  Two cheap signals: almost nothing survives the filter, or what survives
+ *  covers a sliver of the clip. A 45s song yielding four words is a failure
+ *  even though the API returned 200. */
+function transcriptLooksEmpty(words, durationSec) {
+  const real = stripNonSpeech(words);
+  if (real.length < 3) return true;
+  if (!durationSec || durationSec <= 0) return false;
+  const covered = real.reduce((sum, w) => sum + Math.max(0, w.end - w.start), 0);
+  return covered / durationSec < 0.12;
+}
+
+// 224-token budget on Groq. A style hint, not an instruction: it biases the
+// decoder toward transcribing sung words rather than labelling them.
+const LYRICS_PROMPT =
+  "Song lyrics, sung vocals. Transcribe the words that are sung, verse by verse. "
+  + "Do not describe the music. Do not write [Music] or (outro music).";
 
 /** Words -> caption lines.
  *
@@ -7442,12 +7554,18 @@ function groqKeys() {
   return getAIKeys().filter((k) => String(k).startsWith("gsk_"));
 }
 
-async function transcribeAudio(wavBlob, apiKey) {
+async function transcribeAudio(wavBlob, apiKey, opts) {
+  const o = opts || {};
   const form = new FormData();
   form.append("file", wavBlob, "audio.wav");
-  form.append("model", GROQ_ASR_MODEL);
+  form.append("model", o.model || GROQ_ASR_MODEL);
   form.append("response_format", "verbose_json");
   form.append("timestamp_granularities[]", "word");
+  form.append("temperature", "0");
+  // Language detection is documented as less reliable on sung vocals, so
+  // state it rather than let Whisper guess.
+  if (o.language) form.append("language", o.language);
+  if (o.prompt) form.append("prompt", o.prompt);
 
   const res = await fetch(GROQ_ASR_URL, {
     method: "POST",
@@ -7762,11 +7880,34 @@ function CaptionsTool() {
     setMsg(null);
     try {
       const wav = await extractAudioForASR(file);
-      const got = await transcribeAudio(wav, keys[0]);
-      if (!got.length) throw new Error("no speech found in that clip");
-      setWords(got);
+      const dur = (info && info.duration) || 0;
+
+      let got = await transcribeAudio(wav, keys[0], { language: "en", prompt: LYRICS_PROMPT });
+      let usedModel = "turbo";
+
+      // If pass one came back as little more than "[Music]", escalate to the
+      // accurate model before giving up. Sung vocals are the documented weak
+      // spot and large-v3 is free too.
+      if (transcriptLooksEmpty(got, dur)) {
+        setMsg({ type: "ok", text: "mostly music — retrying with the accurate model…" });
+        got = await transcribeAudio(wav, keys[0], {
+          model: GROQ_ASR_MODEL_ACCURATE, language: "en", prompt: LYRICS_PROMPT,
+        });
+        usedModel = "large-v3";
+      }
+
+      const clean = stripNonSpeech(got);
+      if (!clean.length) {
+        throw new Error("no words could be made out — if it is sung, the vocals may sit too far under the mix");
+      }
+
+      setWords(clean);
       setStage("ready");
-      setMsg({ type: "ok", text: `${got.length} words · ${Math.round(wav.size / 1024)} KB sent` });
+      const dropped = got.length - clean.length;
+      setMsg({ type: "ok", text:
+        `${clean.length} words · ${usedModel}`
+        + (dropped ? ` · dropped ${dropped} music tag${dropped === 1 ? "" : "s"}` : "")
+        + ` · ${Math.round(wav.size / 1024)} KB sent` });
       sound.success();
     } catch (err) {
       setStage("picked");
@@ -9698,10 +9839,32 @@ function TodoApp() {
           top: -4px;
           bottom: -4px;
           width: 2px;
+          /* hour labels are centred on their mark (translateX(-50%)); the
+             line was anchored by its left edge, so it sat half its width
+             late against every tick */
+          transform: translateX(-1px);
           background: var(--accent2);
           box-shadow: 0 0 8px rgba(245,166,35,0.7);
           z-index: 2;
           pointer-events: none;
+        }
+
+        .timeline-now-time {
+          position: absolute;
+          /* inside the track: .timeline-track is overflow:hidden, so a chip
+             above the top edge gets sliced in half */
+          top: 5px; left: 50%;
+          transform: translateX(-50%);
+          padding: 1px 4px;
+          border-radius: 2px;
+          background: var(--accent2);
+          color: #0B0D10;
+          font-family: var(--font-mono);
+          font-size: 8px;
+          font-variant-numeric: tabular-nums;
+          letter-spacing: 0.02em;
+          white-space: nowrap;
+          z-index: 3;
         }
 
         .timeline-now::before {
@@ -10858,20 +11021,34 @@ function TodoApp() {
         .prio-label { text-transform: uppercase; letter-spacing: 0.04em; }
         .dot-sep { color: #2A2F37; }
 
+        /* The delete ✕ used to be opacity:0, revealed by .task-row:hover.
+           A touchscreen never hovers, so on a phone it was invisible at all
+           times -- which is why inventory delete got reported as missing
+           when it had been there since v36. Visible by default now, in a
+           dark red that reads as destructive without shouting, and only
+           pointer devices get the fade-in. */
         .del-btn {
           border: none;
           background: transparent;
-          color: #2A2F37;
+          color: #9B3341;
           cursor: pointer;
-          padding: 4px;
+          padding: 6px;
           display: flex;
-          opacity: 0;
-          transition: all 150ms ease;
+          opacity: 1;
+          transition: color 150ms ease, opacity 150ms ease;
           flex-shrink: 0;
         }
 
-        .task-row:hover .del-btn { opacity: 1; color: var(--muted); }
-        .del-btn:hover { color: var(--danger) !important; }
+        .del-btn:active { color: var(--danger); }
+
+        @media (hover: hover) and (pointer: fine) {
+          .del-btn { opacity: 0.6; }
+          .task-row:hover .del-btn,
+          .quest-habit-card:hover .del-btn,
+          .note-card:hover .del-btn { opacity: 1; }
+        }
+
+        .del-btn:hover { color: var(--danger); }
 
         .empty-state {
           text-align: center;
@@ -11503,8 +11680,8 @@ function TodoApp() {
           justify-content: center; margin: 10px 0 14px;
         }
         .pomo-pip {
-          width: 7px; height: 7px; border-radius: 50%;
-          border: 1px solid var(--border); background: transparent;
+          width: 11px; height: 11px; border-radius: 50%; padding: 0;
+          border: 1px solid var(--border); background: transparent; cursor: pointer;
         }
         .pomo-pip.done { background: var(--muted); border-color: var(--muted); }
         .pomo-pip.active { background: var(--accent); border-color: var(--accent); }
@@ -11512,6 +11689,14 @@ function TodoApp() {
           margin-left: 6px; color: var(--muted);
           font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
         }
+        .pomo-phase-pick { display: flex; gap: 6px; justify-content: center; margin: 2px 0 10px; }
+        .pomo-chip {
+          flex: 1; max-width: 100px; padding: 7px 0; cursor: pointer;
+          background: transparent; border: 1px solid var(--border); border-radius: var(--r-btn);
+          color: var(--muted); font-family: var(--font-mono);
+          font-size: 10.5px; letter-spacing: 0.06em;
+        }
+
         .pomo-controls { display: flex; gap: 6px; justify-content: center; margin-bottom: 18px; }
         .pomo-btn {
           flex: 1; max-width: 110px; padding: 9px 0; cursor: pointer;
@@ -12401,6 +12586,26 @@ function TodoApp() {
           .panel { max-width: 1320px; }
           .vault-grid { grid-template-columns: repeat(4, 1fr); }
         }
+        /* ---- gradient edge (v42) ------------------------------------
+           One pixel of colour around an otherwise flat card. Two stacked
+           backgrounds: panel colour clipped to the padding box, gradient
+           clipped to the border box -- the "border" is the sliver of
+           gradient the first layer does not cover. Follows border-radius,
+           which border-image cannot. */
+        .edge {
+          border: 1px solid transparent !important;
+          background-image:
+            linear-gradient(var(--panel), var(--panel)),
+            linear-gradient(115deg, var(--edge-a) 0%, var(--edge-b) 62%, var(--border) 100%);
+          background-origin: border-box;
+          background-clip: padding-box, border-box;
+          transition: background-image 220ms ease;
+        }
+
+        /* Done items keep a coloured edge -- the state IS the colour now, so
+           dropping it would lose the signal -- but sit back a little. */
+        .routine-row.done.edge, .quest-habit-card.done.edge { opacity: 0.82; }
+
       `}</style>
 
       <div className="panel">

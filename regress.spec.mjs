@@ -623,16 +623,17 @@ await test("deleting a quest needs two taps", async () => {
 await test("routine colours run as a gradient across the day", async () => {
   const { ctx, page } = await open();
   await gotoTab(page, "routines");
-  const cols = await page.evaluate(() =>
-    [...document.querySelectorAll(".routine-row")].map((r) => getComputedStyle(r).borderLeftColor));
-  if (cols.length < 3) { await ctx.close(); return; }
+  // v42: the ramp lives on --edge-a (a gradient border) rather than
+  // border-left-color, which is now transparent by design.
+  const hues = await page.evaluate(() =>
+    [...document.querySelectorAll(".routine-row")].map((r) =>
+      Number((getComputedStyle(r).getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1])));
+  if (hues.length < 3) { await ctx.close(); return; }
 
-  const rgb = (c) => c.match(/\d+/g).map(Number);
-  const [r0, g0, b0] = rgb(cols[0]);
-  const [r9, g9, b9] = rgb(cols[cols.length - 1]);
-  assert.ok(r0 > b0, `first routine is not warm: ${cols[0]}`);
-  assert.ok(b9 > r9, `last routine is not cool: ${cols[cols.length - 1]}`);
-  assert.equal(new Set(cols).size > 1, true, "every routine is the same colour");
+  const first = hues[0], last = hues[hues.length - 1];
+  assert.ok(first > 300 || first < 20, `first routine is not warm: hue ${first}`);
+  assert.ok(last > 120 && last < 220, `last routine is not cool: hue ${last}`);
+  assert.equal(new Set(hues).size > 1, true, "every routine is the same colour");
   await ctx.close();
 });
 

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v42`** | 2026-09-29 | Delete cross visible on touch, now-line labelled, bloom behind cards |
 | **`v41`** | 2026-09-28 | Themes change everything, coins buy rewards, caption editor, dead-model rescue |
 | **`v40`** | 2026-09-28 | AI captions tool, ambient background removed, red→cyan card wash |
 | **`v39`** | 2026-09-27 | TOOLS tab + pomodoro, inventory editing, tab bar fits seven |
@@ -211,6 +212,66 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-29 — `tasksh-v42`**
+
+- **Fixed: captions on a sung clip came back as "OUTRO MUSIC".** Whisper
+  narrates non-speech rather than staying quiet, and it is documented as
+  weaker on sung vocals than on speech. Three changes:
+  - the request now states `language`, pins `temperature: 0`, and carries a
+    lyrics-biased `prompt` (Groq allows 224 tokens);
+  - if the result is mostly music tags or covers under 12% of the clip, it
+    **escalates from `whisper-large-v3-turbo` to `whisper-large-v3`** — 10.3%
+    word error rate against turbo's 12%, and free on the same key;
+  - stage directions are filtered out before anything is drawn. `[Music]`,
+    `(OUTRO MUSIC)`, `♪♪♪` never become captions. A **bare** "music" is kept,
+    because at word granularity that is a lyric — a test caught me dropping
+    it. If nothing survives, it says the vocals may be too far under the mix
+    instead of burning in a shrug.
+
+- **Fixed: the pomodoro forced you through rounds.** A long break was four
+  skips away and every skip moved the round counter. Focus / short / long
+  are now three buttons, and the round pips are tappable.
+
+- **Changed: the card gradient is a border now.** Third attempt — a face
+  tint was muddy, a bloom was softer but still coloured the background, and
+  a one-pixel gradient border keeps the card face flat, which is what a
+  terminal look wants. In QUEST the hue is the **state**: cyan when done,
+  red when slipped, the position ramp otherwise. Built from two stacked
+  backgrounds rather than `border-image`, which cannot follow a radius.
+
+- **Fixed: the delete ✕ was invisible on a phone.** `.del-btn` was
+  `opacity: 0`, revealed by `.task-row:hover` — and a touchscreen never
+  hovers, so on mobile it was transparent at all times. That is also why
+  inventory delete was reported missing in v40 when it had shipped in v36.
+  Now visible by default in dark red (`#9B3341`), 25×25 tap target, with the
+  fade-in reserved for `(hover: hover) and (pointer: fine)`.
+
+- **The timeline "now" line: measured, then made checkable.** Pinning the
+  browser clock to three times showed the position was already accurate to
+  the minute (05:30 → 05:30, 14:20 → 14:20, 23:10 → 23:10), so this was not
+  the arithmetic. Two things made it impossible to confirm from a
+  screenshot, and both are fixed: the line was anchored by its left edge
+  while hour labels are centred on theirs, and it carried no reading of its
+  own. It now centres like the labels and shows its own time in a chip —
+  inside the track, because `.timeline-track` is `overflow: hidden` and the
+  first attempt sliced the chip in half. If it ever disagrees with the
+  titlebar again, the screenshot settles it.
+
+- **Changed: the routine gradient moved behind the card.** Painting it
+  across the card face put colour under every label, which is what looked
+  muddy. Now a blurred bloom leaks from the left edge and lower-right corner
+  of each row while the card face stays flat panel colour — measured label
+  contrast **14.9:1**. The hue still runs the theme ramp down the list
+  (red → cyan on Terminal). First attempt at 0.40 alpha plus a face tint
+  drowned the text; shipped at 0.22 with no face tint.
+
+- Three mutations, three reds, and the full suite re-run: **226 unit + 86
+  browser**.
+
+- Shipped as v42 rather than v41 because v41 was already deployed. Reusing a
+  cache tag means the service worker never replaces itself and the phone
+  never sees the change — the failure v38 was written to end.
 
 **2026-09-28 — `tasksh-v41`** *(continued)*
 
