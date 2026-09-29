@@ -128,7 +128,11 @@ await test("nothing blocks pointer events after importing a backup", async () =>
   await page.goto(BASE, { waitUntil: "networkidle" });
   await page.waitForTimeout(1100);
   const blocked = await page.evaluate(() => {
-    const tab = [...document.querySelectorAll('[role="tab"]')].pop();
+    // The ACTIVE tab, not the last one. Since v41 the bar scrolls on
+    // purpose, so the last tab is legitimately off screen and hit-testing
+    // it measured layout rather than the overlay bug this test is about.
+    const tab = document.querySelector('[role="tab"][aria-selected="true"]')
+             || document.querySelector('[role="tab"]');
     if (!tab) return "no tabs found";
     const r = tab.getBoundingClientRect();
     const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);

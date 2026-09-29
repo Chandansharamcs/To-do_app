@@ -320,19 +320,41 @@ async function runCheck(env) {
 // endpoint -- it does not store the snapshot, and no data touches KV.
 // ---------------------------------------------------------------------------
 
-const AI_ENDPOINT = (model, key) =>
-  `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${key}`;
-const AI_LIST_ENDPOINT = (key) =>
-  `https://generativelanguage.googleapis.com/v1beta/models?key=${key}&pageSize=200`;
+// Auth goes in the x-goog-api-key HEADER, never the query string.
+//
+// v31 shipped `?key=` on the reasoning that AQ. keys worked on the native
+// endpoint -- true in June 2026. Google has since made the header the
+// documented method, and several projects (Bazarr #3590, Lingarr #532) hit
+// 404s on the query-param form with AQ. keys. Measured here 2026-09-28:
+// both forms return the same status for an AIza key and the same status for
+// an AQ. key, so the header is not a fix on its own -- but it is what Google
+// documents, it keeps the secret out of URLs (and therefore out of any log
+// that records them), and it removes one variable from every future report.
+const AI_ENDPOINT = (model) =>
+  `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent`;
+const AI_LIST_ENDPOINT = () =>
+  `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`;
+const geminiHeaders = (key) => ({ "Content-Type": "application/json", "x-goog-api-key": key });
 
 // Google retires model IDs on a rolling basis (2.0-flash died June 2026,
 // 2.5-flash-lite was slated for mid/late 2026...), so hardcoding one ID
 // guarantees a 404 eventually. Instead we ask the key which models it can
 // actually call and pick the best match by preference order. Cheap "-latest"
 // aliases first, then concrete generations newest-first.
+// Only the fallback ORDER -- listUsableModels() asks the key what it can
+// actually call first. It matters when listing fails.
+//
+// The 2.x entries are last on purpose. Google's own forum thread
+// (discuss.ai.google.dev/t/.../179102) traced a wave of misleading
+// "401 ACCESS_TOKEN_TYPE_UNSUPPORTED" errors on AQ. keys to *model
+// deprecation*, not auth: 2.5-flash and 2.0-flash now answer 404
+// "no longer available", and the 401 was a red herring. Keeping a retired
+// model near the front of this list means a healthy key looks broken.
 const MODEL_PREFERENCES = [
   "gemini-flash-lite-latest",
   "gemini-flash-latest",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-3-flash",
   "gemini-2.5-flash-lite",
@@ -340,7 +362,7 @@ const MODEL_PREFERENCES = [
 ];
 
 async function listUsableModels(key) {
-  const res = await fetch(AI_LIST_ENDPOINT(key));
+  const res = await fetch(AI_LIST_ENDPOINT(), { headers: geminiHeaders(key) });
   if (!res.ok) {
     const detail = await res.text();
     const err = new Error(detail.slice(0, 300));
@@ -640,13 +662,13 @@ async function handlePet(request, env) {
 
   let res;
   try {
-    res = await fetch(AI_ENDPOINT(model, apiKey), {
+    res = await fetch(AI_ENDPOINT(model), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: geminiHeaders(apiKey),
       body: JSON.stringify(payload),
     });
-  } catch {
-    return json({ error: "net", message: "Couldn't reach the AI service." }, 502);
+  } catch (err) {
+    return json({ error: "net", message: `Couldn't reach the AI service: ${String(err && err.message || err)}` }, 502);
   }
 
   if (!res.ok) {
@@ -699,7 +721,9 @@ const PROVIDERS = {
     id: "groq", label: "Groq", test: (k) => /^gsk_/.test(k),
     kind: "openai", base: "https://api.groq.com/openai/v1",
     // Groq's free tier is per-model; 70b-versatile is the best general one
-    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    // Llama 3.3-70b and 3.1-8b were shut down for free/Developer tiers on
+    // 2026-08-16; these are Groq's own documented replacements.
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
     signup: "console.groq.com", resets: "utc",
   },
   cerebras: {
@@ -716,7 +740,9 @@ const PROVIDERS = {
   nvidia: {
     id: "nvidia", label: "NVIDIA NIM", test: (k) => /^nvapi-/.test(k),
     kind: "openai", base: "https://integrate.api.nvidia.com/v1",
-    models: ["meta/llama-3.3-70b-instruct", "openai/gpt-oss-120b"],
+    // Verified 2026-09-28 against integrate.api.nvidia.com/v1/models:
+    // llama-3.3-70b-instruct and gpt-oss-120b are no longer listed.
+    models: ["openai/gpt-oss-20b", "nvidia/llama-3.1-nemotron-70b-instruct"],
     // NIM model support for response_format varies per model; asking for it
     // 400s on several, so we ask for JSON in the prompt instead.
     jsonMode: false,
@@ -729,13 +755,17 @@ const PROVIDERS = {
     // "mistral:KEY" form handled in providerFor().
     test: () => false,
     kind: "openai", base: "https://api.mistral.ai/v1",
-    models: ["mistral-small-latest", "open-mistral-nemo"],
+    // Aliases only: Mistral repoints these itself, and open-mistral-nemo
+    // was listed for retirement on 2026-07-31.
+    models: ["mistral-small-latest", "mistral-medium-latest"],
     signup: "console.mistral.ai", resets: "utc",
   },
   openrouter: {
     id: "openrouter", label: "OpenRouter", test: (k) => /^sk-or-/.test(k),
     kind: "openai", base: "https://openrouter.ai/api/v1",
-    models: ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free"],
+    // Verified 2026-09-28 against openrouter.ai/api/v1/models (public):
+    // the old llama-3.3 and gemini-2.0-flash-exp free ids are both gone.
+    models: ["google/gemma-4-31b-it:free", "qwen/qwen3.8-27b:free", "nvidia/nemotron-3.5-lightning:free"],
     signup: "openrouter.ai/keys", resets: "utc",
   },
   openai: {
@@ -867,7 +897,55 @@ async function callOpenAICompatible(provider, key, systemPrompt, contents, opts 
     console.log(`[prov] ${provider.id}/${models[i]} unavailable (${res.status}), trying next model`);
   }
 
+  // Every hardcoded id failed. Before giving up, ask the provider what it
+  // serves today -- this is the branch that would have absorbed the Groq
+  // shutdown silently instead of 404ing at the user.
+  const served = await listProviderModels(provider, key);
+  const rescue = pickServedModel(models, served);
+  if (rescue && !models.includes(rescue)) {
+    console.log(`[prov] ${provider.id}: hardcoded models all gone, discovered ${rescue}`);
+    const res = await send(rescue, wantJson);
+    if (res.ok) return res;
+    last = res;
+  }
+
   return last || { ok: false, status: 502, detail: "no usable model" };
+}
+
+/** Asks an OpenAI-compatible provider which models it actually serves.
+ *
+ *  Hardcoded model ids rot, and this project has now been bitten three
+ *  times in three months: GitHub Models went 410 in July, Groq shut down
+ *  both Llama ids on 2026-08-16, and on 2026-09-28 a check against the
+ *  public catalogues found every OpenRouter and NVIDIA id in this file
+ *  already gone. Gemini has had discovery since v19 and never broke.
+ *
+ *  So: same treatment. Preference order still wins when those models exist;
+ *  otherwise the first plausible chat model the provider lists is used,
+ *  which turns a future shutdown into a slightly different answer instead
+ *  of a dead assistant.
+ */
+const NOT_CHAT = /embed|whisper|tts|audio|speech|rerank|moderation|guard|image|vision-only|diffusion|codegemma/i;
+
+function pickServedModel(preferred, served) {
+  const ids = (served || []).filter((id) => typeof id === "string");
+  for (const want of preferred || []) if (ids.includes(want)) return want;
+  const chat = ids.filter((id) => !NOT_CHAT.test(id));
+  return chat[0] || ids[0] || null;
+}
+
+async function listProviderModels(provider, key) {
+  try {
+    const r = await fetch(`${provider.base}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (!r.ok) return null;
+    const body = await r.json();
+    const data = Array.isArray(body) ? body : (body.data || body.models || []);
+    return data.map((m) => (typeof m === "string" ? m : m.id)).filter(Boolean);
+  } catch {
+    return null;   // discovery is an optimisation, never a hard dependency
+  }
 }
 
 /** Same call against Gemini, normalised to the shape above. */
@@ -880,9 +958,9 @@ async function callGemini(key, model, systemPrompt, contents, opts = {}) {
   const tc = thinkingConfigFor(model);
   if (tc) generationConfig.thinkingConfig = tc;
 
-  const send = (cfg) => fetch(AI_ENDPOINT(model, key), {
+  const send = (cfg) => fetch(AI_ENDPOINT(model), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: geminiHeaders(key),
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents, generationConfig: cfg,
@@ -1198,9 +1276,9 @@ async function handleAI(request, env) {
   }
 
   const call = (m, body) =>
-    fetch(AI_ENDPOINT(m, apiKey), {
+    fetch(AI_ENDPOINT(m), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: geminiHeaders(apiKey),
       body: JSON.stringify(body),
     });
 
@@ -1287,6 +1365,46 @@ async function handleAI(request, env) {
 // Verifies a key WITHOUT spending generation quota. ListModels is a free
 // metadata call, so pasting a key (or retrying after a typo) can never eat
 // into the daily request allowance.
+/** Turns a Gemini failure into something a human can act on.
+ *
+ *  Pure so it can be tested without a live key -- and it needed testing,
+ *  because every one of these used to collapse into "Couldn't reach Google
+ *  to check the key", which is both wrong and unactionable. Measured
+ *  2026-09-28 against the live API:
+ *
+ *    AIza-format key -> 400 INVALID_ARGUMENT  "API key not valid"
+ *    AQ.-format key  -> 401 UNAUTHENTICATED   "Expected OAuth 2 access token"
+ *
+ *  The second one is Google routing an AQ. key down its OAuth path and
+ *  refusing it as an API key at all (reason ACCESS_TOKEN_TYPE_UNSUPPORTED).
+ *  Google's forum has had open reports of it since July 2026, and one
+ *  thread traced a subset of them to calling a RETIRED MODEL rather than to
+ *  the key -- which is why MODEL_PREFERENCES now puts 3.x ahead of 2.x.
+ */
+function geminiFailureMessage(status, detail, rawKey) {
+  const d = String(detail || "");
+  const isAIza = /^AIza/.test(String(rawKey || ""));
+  const isAQ = /^AQ\./.test(String(rawKey || ""));
+
+  if (status === 400 && d.includes("API_KEY_INVALID")) {
+    return isAIza
+      ? "Google stopped accepting AIza keys in September 2026. Create a new key at aistudio.google.com/apikey — it will start with AQ."
+      : "That key was rejected — check you copied all of it.";
+  }
+  if (status === 401 && /ACCESS_TOKEN_TYPE_UNSUPPORTED|Expected OAuth 2 access token/i.test(d)) {
+    return isAQ
+      ? "Google is refusing this AQ. key at the API itself (ACCESS_TOKEN_TYPE_UNSUPPORTED). That is a known Google-side problem with some new AI Studio projects, not something this app can work around — use a Groq key (gsk_…) instead."
+      : "Google rejected that credential type. Create a fresh key at aistudio.google.com/apikey.";
+  }
+  if (status === 403) {
+    return "That key isn't authorised for the Gemini API. Enable the Generative Language API for its project.";
+  }
+  if (status === 404) {
+    return "Google says that model is gone. The app asks your key which models it can call, so this usually means the key can only see retired ones.";
+  }
+  return `Google returned ${status || "no status"}${d ? ` — ${d.slice(0, 120)}` : ""}`;
+}
+
 async function handleAIVerify(request, env) {
   const { apiKey } = await request.json();
   const raw = typeof apiKey === "string" ? apiKey.trim() : "";
@@ -1324,20 +1442,23 @@ async function handleAIVerify(request, env) {
       return json({ ok: false, message: "That key has no usable text models." }, 401);
     }
     const model = await resolveModel(key, env);
-    return json({ ok: true, provider: "Gemini", model: model.replace(/^models\//, "") });
+    return json({
+      ok: true, provider: "Gemini", model: model.replace(/^models\//, ""),
+      // it verified, but the format is on borrowed time
+      warning: /^AIza/.test(key)
+        ? "This is an old AIza key. Google began rejecting them in September 2026 — create a replacement (it will start AQ.) before it stops."
+        : undefined,
+    });
   } catch (err) {
     const detail = String(err.detail || err.message || "");
-    if (err.status === 400 && detail.includes("API_KEY_INVALID")) {
-      return json({ ok: false, message: "That key was rejected — check you copied all of it." }, 401);
-    }
-    if (err.status === 403) {
-      return json({ ok: false, message: "That key isn't authorised for the Gemini API. Enable the Generative Language API for its project." }, 401);
-    }
     if (err.status === 429) {
       return json({ ok: true, warning: "Key accepted, but it's rate limited right now." });
     }
     console.log(`[ai-verify] failed: ${err.status || ""} ${detail.slice(0, 200)}`);
-    return json({ ok: false, message: "Couldn't reach Google to check the key." }, 502);
+    const message = geminiFailureMessage(err.status, detail, key);
+    // 502 only when we genuinely could not reach Google; anything Google
+    // answered is a 401 so the UI treats it as a key problem, not an outage.
+    return json({ ok: false, message }, err.status ? 401 : 502);
   }
 }
 

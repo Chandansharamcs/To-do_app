@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v40   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v41   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-09-27
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -404,6 +404,30 @@ bucket. Don't add a new one-off max-width somewhere else in the file.
   counts on every render. There's no separate "current XP" field to get
   out of sync.
 
+
+## Caption style editor (v41)
+
+`DEFAULT_CAPTION_STYLE` + `CAPTION_LIMITS` + `sanitiseCaptionStyle()` are the
+whole contract. Anything that writes a style goes through the sanitiser, so
+a corrupt save or a future preset cannot produce an unreadable caption.
+
+- The preview and the exporter both call `drawCaptions()`. Keep it that way.
+- `CAPTION_SAMPLE_WORDS` is a 5-second loop with a pause at 2.35s so line
+  breaking is visible with no clip loaded.
+- Words-per-line is a **derived** re-chunk (`useMemo` over stored words),
+  not a stored chunk list.
+- Highlight modes: `none | colour | pop | box`. `box` draws its own rounded
+  rect; do not swap in `ctx.roundRect()`, it is missing on older Android
+  webviews.
+
+### Chrome budget (v41)
+
+- Titlebar must stay one line at 360px: 24h clock, `nowrap`, 22px icons,
+  dots hidden under 400px. Measured 47px tall, right group 173px.
+- The tab bar **scrolls on purpose** and `changeTab()` scrolls the active
+  tab into view. Do not "fix" the overflow by shrinking padding again.
+- Anything `position: fixed` near the top will cover the tabs. The
+  achievement toast did exactly that until v41.
 
 ## Captions tool (v40)
 

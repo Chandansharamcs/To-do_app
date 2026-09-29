@@ -240,13 +240,13 @@ test("deviceId is never exported or restored", () => {
 // ------------------------------------------------------------- XP + levels --
 
 const {
-  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeSpendableXP, computeAreaXP,
+  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeAreaXP,
   normaliseHistory, countHist, habitXP, habitPenalty, habitNet,
   habitDoneOn, habitSlipOn, markHabit, mergeHabitLists,
   LEVEL_K, LEVEL_P,
 } = liftApp([
   "LEVEL_K", "LEVEL_P",
-  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeSpendableXP", "computeAreaXP",
+  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeAreaXP",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
 ]);
@@ -280,10 +280,14 @@ test("the level boundary is exact at every level, despite rounding", () => {
   }
 });
 
-test("unlocks land every 10 levels", () => {
+test("unlocks land on a regular ladder", () => {
   assert.ok(/const MILESTONE_EVERY = 10/.test(APP), "milestone spacing is not declared");
-  const themes = [...APP.matchAll(/unlockLevel: (\d+)/g)].map((m) => Number(m[1]));
-  assert.deepEqual(themes, [1, 10, 20, 30, 40, 50], `theme unlocks are ${themes}`);
+  // v41: nine themes, one every five levels. Milestones and pet forms stay
+  // on tens -- what changed is that a theme now lands between them, so the
+  // gap between rewards is five levels instead of ten.
+  const themes = [...APP.matchAll(/unlockLevel: (\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  assert.equal(themes.length, 9, `expected nine themes, found ${themes.length}`);
+  assert.deepEqual(themes, [1, 5, 10, 15, 20, 25, 30, 35, 40], `theme unlocks are ${themes}`);
   const pets = [...APP.matchAll(/minLevel: (\d+)/g)].map((m) => Number(m[1]));
   assert.deepEqual(pets, [1, 10, 20, 30, 40, 50, 60], `pet evolutions are ${pets}`);
 });
@@ -322,7 +326,13 @@ test("spending XP on rewards does NOT reduce level progress", () => {
   const total = computeTotalXP(habits);
   assert.equal(total, 160, "level XP must ignore spending");
   assert.equal(levelFromXP(total).level, 2);
-  assert.equal(computeSpendableXP(habits, rewards), 10, "the wallet must reflect spending");
+  // v41: rewards are paid in coins, so the reward list cannot affect XP at
+  // all any more. computeSpendableXP existed only for XP-priced rewards and
+  // was deleted with them.
+  const withoutClaims = computeTotalXP(habits);
+  rewards[0].claimed = ["2026-01-01", "2026-01-02", "2026-01-03"];
+  assert.equal(computeTotalXP(habits), withoutClaims, "claims still move XP");
+  assert.ok(!/computeSpendableXP/.test(APP), "the XP-priced reward pot is still in the source");
 });
 
 test("total XP is never negative", () => {
@@ -332,8 +342,9 @@ test("total XP is never negative", () => {
 });
 
 test("the wallet is never negative", () => {
-  const spendable = computeSpendableXP([habit(10, 1)], [{ cost: 9999, claimed: ["x"] }]);
-  assert.ok(spendable >= 0, `computeSpendableXP returned ${spendable}`);
+  // the old failure was a negative wallet; XP itself must never go below
+  // zero either, however many penalties land
+  assert.ok(computeTotalXP([habit(1, 40)]) >= 0, "total XP went negative");
 });
 
 test("computeTotalXP takes no rewards argument", () => {
@@ -516,6 +527,43 @@ test("the radar does not clamp axis values at zero", () => {
   assert.ok(m, "could not find areaAxes");
   assert.ok(!/Math\.max\(0, compute(Area|Sub)XP/.test(m[0]),
     "axis values are still clamped at 0, which hides negative areas");
+});
+
+test("every theme changes more than the palette", () => {
+  // v41: a theme carries type, shape and its own card ramp. Adding one with
+  // colours only silently falls back to Terminal's font and corners, which
+  // looks like the theme "didn't apply".
+  // bracket-matched: TIME_PHASES sits between THEMES and THEMES.sort, and
+  // slicing on text picked up its four entries as themes
+  const from = APP.indexOf("const THEMES = [");
+  let depth = 0, end = from;
+  for (let i = APP.indexOf("[", from); i < APP.length; i++) {
+    if (APP[i] === "[") depth++;
+    else if (APP[i] === "]" && --depth === 0) { end = i; break; }
+  }
+  const table = APP.slice(from, end);
+  const ids = [...table.matchAll(/id: "(\w+)"/g)].map((m) => m[1]);
+  assert.equal(ids.length, 9, `expected nine themes, found ${ids.join(", ")}`);
+  for (const field of ["type:", "shape:", "ramp:"]) {
+    const n = table.split(field).length - 1;
+    assert.equal(n, ids.length, `${n} themes declare ${field} but there are ${ids.length}`);
+  }
+  // and the ramp has to be a real two-stop hue range
+  for (const m of table.matchAll(/ramp: \[(\d+), (\d+)\]/g)) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    assert.ok(a >= 0 && a < 360 && b >= 0 && b < 360, `ramp out of range: ${a},${b}`);
+    assert.notEqual(a, b, "a ramp with one hue is not a ramp");
+  }
+});
+
+test("rewards are paid for in coins, not XP", () => {
+  // Daily quests and pomodoro minted coins that nothing accepted, while the
+  // reward centre charged XP -- so claiming a reward dragged the number that
+  // drives levels and the pet.
+  assert.ok(/canClaim=\{coins >= r\.cost\}/.test(APP), "the claim button still gates on XP");
+  assert.ok(/if \(spend\) spend\(reward\.cost\)/.test(APP), "claiming does not debit the wallet");
+  assert.ok(/not enough coins/.test(APP), "the disabled label still says XP");
+  assert.ok(!/reward\.cost\} XP/.test(APP), "a reward is still priced in XP");
 });
 
 console.log(`  keydetect.test.mjs — ${passed} passed`);

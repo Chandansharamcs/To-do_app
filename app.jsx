@@ -970,6 +970,9 @@ const THEMES = [
       accent: "#5EEAD4", accent2: "#F5A623", danger: "#F0576B",
       glow: "rgba(94,234,212,0.35)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 3, btn: 3, chip: 3, border: 1, glow: 0 },
+    ramp: [352, 171],
   },
   {
     id: "moss",
@@ -982,54 +985,115 @@ const THEMES = [
       accent: "#7EE787", accent2: "#D9C36B", danger: "#E8737A",
       glow: "rgba(126,231,135,0.32)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 6, btn: 5, chip: 999, border: 1, glow: 0 },
+    ramp: [28, 150],
   },
   {
     id: "dusk",
     name: "Dusk",
     blurb: "the hour after sunset",
-    unlockLevel: 20,
+    unlockLevel: 15,
     colors: {
       bg: "#0D0912", panel: "#171122", track: "#20182E", border: "#2A2038",
       text: "#EDE7F2", muted: "#7A6E88",
       accent: "#C79BFF", accent2: "#FF9E6B", danger: "#FF6B8A",
       glow: "rgba(199,155,255,0.38)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "Georgia, 'Times New Roman', serif" },
+    shape: { card: 10, btn: 8, chip: 999, border: 1, glow: 1 },
+    ramp: [330, 255],
   },
   {
     id: "abyss",
     name: "Abyss",
     blurb: "deep water, far from the surface",
-    unlockLevel: 30,
+    unlockLevel: 25,
     colors: {
       bg: "#050A12", panel: "#0D1520", track: "#141F2C", border: "#1B2938",
       text: "#DFEAF5", muted: "#5F7286",
       accent: "#4FC3F7", accent2: "#5EEAD4", danger: "#FF7A93",
       glow: "rgba(79,195,247,0.4)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 2, btn: 2, chip: 2, border: 1, glow: 2 },
+    ramp: [275, 186],
   },
   {
     id: "ember",
     name: "Ember",
     blurb: "banked coals at midnight",
-    unlockLevel: 40,
+    unlockLevel: 30,
     colors: {
       bg: "#0F0906", panel: "#1A110C", track: "#241812", border: "#2F2118",
       text: "#F5E9E0", muted: "#8A7264",
       accent: "#FF9F45", accent2: "#FFD166", danger: "#FF6B5B",
       glow: "rgba(255,159,69,0.4)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 8, btn: 6, chip: 999, border: 1, glow: 2 },
+    ramp: [8, 48],
   },
   {
     id: "aurora",
     name: "Aurora",
     blurb: "light over a frozen sky",
-    unlockLevel: 50,
+    unlockLevel: 40,
     colors: {
       bg: "#060A10", panel: "#0F1720", track: "#16212C", border: "#1E2B39",
       text: "#E8F4F2", muted: "#63808A",
       accent: "#6EE7C8", accent2: "#A78BFA", danger: "#FB7185",
       glow: "rgba(110,231,200,0.45)",
     },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 12, btn: 10, chip: 999, border: 1, glow: 2 },
+    ramp: [192, 300],
+  },
+  {
+    id: "bone",
+    name: "Bone",
+    blurb: "warm paper, low light",
+    unlockLevel: 5,
+    colors: {
+      bg: "#100E0C", panel: "#1A1714", track: "#241F1A", border: "#2E2822",
+      text: "#EDE4D8", muted: "#8A7C6C",
+      accent: "#E0B080", accent2: "#C98A5B", danger: "#D2695E",
+      glow: "rgba(224,176,128,0.32)",
+    },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "Georgia, 'Times New Roman', serif" },
+    shape: { card: 7, btn: 6, chip: 999, border: 1, glow: 0 },
+    ramp: [18, 96],
+  },
+  {
+    id: "neon",
+    name: "Neon",
+    blurb: "signage after rain",
+    unlockLevel: 20,
+    colors: {
+      bg: "#07070C", panel: "#0E0E18", track: "#181826", border: "#242438",
+      text: "#EDEDFF", muted: "#6E6E94",
+      accent: "#FF4FD8", accent2: "#4FE3FF", danger: "#FF5470",
+      glow: "rgba(255,79,216,0.45)",
+    },
+    // everything square and mono: the theme is a CRT, not a card deck
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'JetBrains Mono', ui-monospace, monospace" },
+    shape: { card: 0, btn: 0, chip: 0, border: 1, glow: 3 },
+    ramp: [316, 196],
+  },
+  {
+    id: "sakura",
+    name: "Sakura",
+    blurb: "petals on dark water",
+    unlockLevel: 35,
+    colors: {
+      bg: "#0D0910", panel: "#171020", track: "#211829", border: "#2C2136",
+      text: "#F2E6F0", muted: "#8A7594",
+      accent: "#F7A8C4", accent2: "#C58BE8", danger: "#E8607F",
+      glow: "rgba(247,168,196,0.34)",
+    },
+    type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
+    shape: { card: 14, btn: 999, chip: 999, border: 1, glow: 1 },
+    ramp: [338, 278],
   },
 ];
 
@@ -1116,6 +1180,11 @@ function useTheme(level) {
   return { theme, themeId, setThemeId, themes: THEMES, unlocked, phase, calm, setCalm };
 }
 
+// Listed in unlock order, not the order they were written. v41 appended
+// three themes to the table and the picker started reading 1,10,20,30,40,
+// 50,5,25,45 -- which makes the ladder look broken.
+THEMES.sort((a, b) => a.unlockLevel - b.unlockLevel || a.id.localeCompare(b.id));
+
 const DEFAULT_THEME_ID = "terminal";
 const STORAGE_KEY_THEME = "tasksh.theme.v1";
 
@@ -1145,6 +1214,21 @@ function applyTheme(theme) {
   r.style.setProperty("--accent2", c.accent2);
   r.style.setProperty("--danger", c.danger);
   r.style.setProperty("--glow", c.glow);
+
+  // v41: a theme is no longer just a palette. Type, corner radius, border
+  // weight, glow and the card ramp all move with it -- otherwise every
+  // theme is the same app wearing a different hat.
+  const t = theme.type || {};
+  const sh = theme.shape || {};
+  r.style.setProperty("--font-mono", t.mono || "'JetBrains Mono', ui-monospace, monospace");
+  r.style.setProperty("--font-ui", t.ui || "'Inter', system-ui, sans-serif");
+  r.style.setProperty("--r-card", `${sh.card == null ? 3 : sh.card}px`);
+  r.style.setProperty("--r-btn", `${sh.btn == null ? 3 : sh.btn}px`);
+  r.style.setProperty("--r-chip", `${sh.chip == null ? 3 : sh.chip}px`);
+  r.style.setProperty("--border-w", `${sh.border == null ? 1 : sh.border}px`);
+  r.style.setProperty("--glow-w", `${sh.glow == null ? 0 : sh.glow}px`);
+  setThemeRamp(theme.ramp);
+
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", c.bg);
 }
@@ -1895,6 +1979,30 @@ function useRunningVersion() {
   }, []);
 
   return tag;
+}
+
+/** The wordmark types itself once per session, then holds a blinking block
+ *  cursor. Deliberately short (~500ms total) and deliberately once: an
+ *  animation you see on every tab change stops being charm and becomes a
+ *  wait. Honours prefers-reduced-motion by skipping straight to the end.
+ */
+function TypedName({ text = "tasks.sh" }) {
+  const reduced = typeof matchMedia === "function" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [n, setN] = useState(reduced ? text.length : 0);
+
+  useEffect(() => {
+    if (reduced || n >= text.length) return;
+    const t = setTimeout(() => setN((v) => v + 1), 55);
+    return () => clearTimeout(t);
+  }, [n, reduced, text.length]);
+
+  return (
+    <span className="titlebar-name">
+      {text.slice(0, n)}
+      <span className={`type-caret ${n >= text.length ? "idle" : ""}`} />
+    </span>
+  );
 }
 
 function VersionBadge() {
@@ -3371,9 +3479,23 @@ const CATEGORY_PALETTE = [
  * Saturation and lightness are pinned to the palette's own values so the
  * gradient sits alongside CATEGORY_PALETTE without looking imported.
  */
+// The ramp behind ordered cards. Module-level rather than threaded through
+// every component: applyTheme sets it once, and gradientHue stays a pure
+// function of (index, count) so the existing tests still hold.
+let THEME_RAMP = [352, 171];                // red → cyan, the warm way round
+function setThemeRamp(ramp) {
+  THEME_RAMP = Array.isArray(ramp) && ramp.length === 2 ? ramp : [352, 171];
+}
+
 function gradientHue(i, n) {
   const t = n <= 1 ? 0 : Math.min(1, Math.max(0, i / (n - 1)));
-  return (352 + t * 179) % 360;             // 352° red → 171° cyan, the warm way
+  const [from, to] = THEME_RAMP;
+  // always travel the short way round the wheel, or a two-stop ramp can
+  // detour through half the spectrum and look like a rainbow accident
+  let delta = (to - from) % 360;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return (from + t * delta + 360) % 360;
 }
 
 function gradientColor(i, n) {
@@ -3431,14 +3553,6 @@ function computeTotalXP(habits) {
 
 // SPENDABLE BALANCE -- what rewards actually cost against. This is the number
 // that goes down when you claim something.
-function computeSpendableXP(habits, rewards) {
-  const net = (habits || []).reduce((s, h) => s + habitNet(h), 0);
-  const spent = (rewards || []).reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
-  // floor at 0: pre-v27 data could go negative because claims weren't checked
-  // against a separate balance. Never show the user a negative wallet.
-  return Math.max(0, net - spent);
-}
-
 function computeAreaXP(area, habits) {
   return (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
 }
@@ -3846,22 +3960,27 @@ function RewardCard({ reward, canClaim, onClaim, onDelete, onSave }) {
           </button>
         </div>
       </div>
-      <span className="reward-cost">{reward.cost} XP</span>
+      <span className="reward-cost">{reward.cost} ◉</span>
       <button className="reward-claim" disabled={!canClaim} onClick={() => onClaim(reward.id)}>
-        {canClaim ? "claim reward" : "not enough XP"}
+        {canClaim ? "claim reward" : "not enough coins"}
       </button>
       {reward.claimed?.length > 0 && <span className="reward-claimed-count">claimed {reward.claimed.length}x</span>}
     </div>
   );
 }
 
-function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
+function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, spend }) {
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
   const subs = tagCtl.subs;
   const totalXP = useMemo(() => computeTotalXP(habits), [habits]);
-  // separate pot: what rewards are actually paid from
-  const spendableXP = useMemo(() => computeSpendableXP(habits, rewards), [habits, rewards]);
+  // v41: rewards are paid for in COINS, not XP.
+  //
+  // Daily quests and pomodoro blocks both minted coins and nothing anywhere
+  // accepted them, while the reward centre charged XP -- so spending a
+  // reward quietly dragged the number that also drives levels and the pet.
+  // Two currencies, one sink, and the sink was plumbed to the wrong one.
+  // XP is now progression only; coins are the spendable balance.
   const { level, into, span } = levelFromXP(totalXP);
   const levelPct = Math.round((into / span) * 100);
 
@@ -3940,7 +4059,10 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
   const saveHabit = (id, patch) => setHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
 
   const claimReward = (id) => {
+    const reward = rewards.find((r) => r.id === id);
+    if (!reward || coins < reward.cost) { sound.error(); return; }
     const today = getISTDateString(0);
+    if (spend) spend(reward.cost);
     setRewards((prev) => prev.map((r) => (r.id === id ? { ...r, claimed: [...(r.claimed || []), today] } : r)));
     sound.success();
     petBus.emit("rewardClaimed");
@@ -4040,7 +4162,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
           />
           <div className="hero-viz-stats">
             <span className="hero-xp-total"><AnimatedNumber value={totalXP} /> <small>XP</small></span>
-            {spentXP > 0 && <span className="hero-xp-spend">◉ {spendableXP} to spend</span>}
+            <span className="hero-xp-spend">◉ {coins} to spend</span>
             <span className="hero-xp-sub">{into}/{span} to next level</span>
             <div className="hero-xp-split">
               <span className="hero-xp-earned">+<AnimatedNumber value={earnedXP} /></span>
@@ -4069,19 +4191,18 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
         )}
       </div>
 
-      {(earnedXP > 0 || lostXP > 0 || spentXP > 0) && (
+      {(earnedXP > 0 || lostXP > 0) && (
         <>
           <div className="section-header"><span>XP SOURCE</span></div>
           <div className="donut-card">
             <DonutChart
               size={120}
               stroke={16}
-              centerLabel={spendableXP}
+              centerLabel={totalXP}
               centerSublabel="net XP"
               segments={[
                 { key: "earned", label: "Earned", value: earnedXP, color: "#5EEAD4" },
                 { key: "lost", label: "Lost", value: lostXP, color: "#F0576B" },
-                { key: "spent", label: "Spent", value: spentXP, color: "#F5A623" },
               ]}
             />
             <div className="donut-legend">
@@ -4097,7 +4218,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
               </div>
               <div className="donut-legend-row">
                 <span className="donut-legend-dot" style={{ background: "#F5A623" }} />
-                <span>Spent on rewards</span>
+                <span>Coins spent on rewards</span>
                 <span className="donut-legend-val"><AnimatedNumber value={spentXP} /></span>
               </div>
               <div className="donut-legend-row donut-legend-total">
@@ -4201,7 +4322,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl }) {
           </div>
         ) : (
           rewards.map((r) => (
-            <RewardCard key={r.id} reward={r} canClaim={spendableXP >= r.cost} onClaim={claimReward} onDelete={delReward} onSave={saveReward} />
+            <RewardCard key={r.id} reward={r} canClaim={coins >= r.cost} onClaim={claimReward} onDelete={delReward} onSave={saveReward} />
           ))
         )}
       </div>
@@ -6874,34 +6995,6 @@ const CAPTION_MAX_SECONDS = 60;
 const GROQ_ASR_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GROQ_ASR_MODEL = "whisper-large-v3-turbo";
 
-/** Styling is expressed in FRACTIONS of video height, never pixels: the same
- *  preset has to look identical on a 720p clip and a 4K one. */
-const CAPTION_STYLES = [
-  {
-    id: "clean",
-    name: "clean",
-    hint: "white, heavy outline",
-    size: 0.055, weight: 800, tracking: 0.01, upper: false,
-    fill: "#FFFFFF", active: null, stroke: "#000000", strokeW: 0.16, pop: false,
-  },
-  {
-    id: "karaoke",
-    name: "karaoke",
-    hint: "spoken word lights up",
-    size: 0.055, weight: 800, tracking: 0.01, upper: false,
-    fill: "#FFFFFF", active: "#5EEAD4", stroke: "#000000", strokeW: 0.16, pop: false,
-  },
-  {
-    id: "pop",
-    name: "word pop",
-    hint: "one word at a time, scaling in",
-    size: 0.075, weight: 900, tracking: 0.02, upper: true,
-    fill: "#FFFFFF", active: "#F5A623", stroke: "#000000", strokeW: 0.18, pop: true,
-  },
-];
-
-const captionStyleById = (id) => CAPTION_STYLES.find((s) => s.id === id) || CAPTION_STYLES[0];
-
 /** Words -> caption lines.
  *
  *  This function is the difference between captions that look professional
@@ -6976,27 +7069,103 @@ function activeWordIndex(chunk, t) {
   return -1;
 }
 
+/** Every caption property the editor can change, with the bounds it must
+ *  stay inside. Bounds are not decoration: a 0.2 font size is a word per
+ *  screen, a 0 stroke disappears on white backgrounds, and a baseline below
+ *  0.92 sits under Instagram's UI. */
+const CAPTION_LIMITS = {
+  size:     [0.028, 0.12],
+  weight:   [400, 900],
+  tracking: [-0.02, 0.12],
+  maxWords: [1, 5],
+  posY:     [0.25, 0.92],
+  strokeW:  [0, 0.28],
+};
+
+const CAPTION_FONTS = [
+  { id: "inter",  name: "inter",  stack: "Inter, system-ui, sans-serif" },
+  { id: "mono",   name: "mono",   stack: "var(--font-mono)" },
+  { id: "system", name: "system", stack: "system-ui, -apple-system, Roboto, 'Helvetica Neue', sans-serif" },
+  { id: "serif",  name: "serif",  stack: "Georgia, 'Times New Roman', serif" },
+];
+const captionFontStack = (id) =>
+  (CAPTION_FONTS.find((f) => f.id === id) || CAPTION_FONTS[0]).stack;
+
+/** How the word being spoken is marked. Four behaviours rather than a
+ *  colour picker alone, because "karaoke" is a motion decision as much as a
+ *  colour one. */
+const CAPTION_HIGHLIGHTS = [
+  { id: "none",   name: "none",    hint: "every word the same" },
+  { id: "colour", name: "colour",  hint: "spoken word changes colour" },
+  { id: "pop",    name: "pop",     hint: "one word at a time, scaling in" },
+  { id: "box",    name: "box",     hint: "spoken word on a filled chip" },
+];
+
+const CAPTION_SWATCHES = [
+  "#FFFFFF", "#000000", "#5EEAD4", "#F5A623", "#F0576B", "#8B9CF7", "#7EED5A", "#FFE066",
+];
+
+const DEFAULT_CAPTION_STYLE = {
+  font: "inter",
+  size: 0.055,
+  weight: 800,
+  tracking: 0.01,
+  upper: false,
+  maxWords: 3,
+  posY: 0.82,
+  align: "center",
+  fill: "#FFFFFF",
+  active: "#5EEAD4",
+  stroke: "#000000",
+  strokeW: 0.16,
+  highlight: "colour",
+  boxColor: "#5EEAD4",
+};
+
+const CAPTION_PRESETS = [
+  { id: "clean",   name: "clean",    patch: { highlight: "none",   size: 0.055, weight: 800, upper: false, fill: "#FFFFFF", strokeW: 0.16, maxWords: 3 } },
+  { id: "karaoke", name: "karaoke",  patch: { highlight: "colour", size: 0.055, weight: 800, upper: false, active: "#5EEAD4", strokeW: 0.16, maxWords: 3 } },
+  { id: "pop",     name: "word pop", patch: { highlight: "pop",    size: 0.078, weight: 900, upper: true,  active: "#F5A623", strokeW: 0.18, maxWords: 3 } },
+  { id: "chip",    name: "chip",     patch: { highlight: "box",    size: 0.05,  weight: 800, upper: true,  boxColor: "#F5A623", fill: "#FFFFFF", strokeW: 0.08, maxWords: 2 } },
+];
+
+function sanitiseCaptionStyle(patch) {
+  const out = { ...DEFAULT_CAPTION_STYLE, ...(patch || {}) };
+  for (const key of Object.keys(CAPTION_LIMITS)) {
+    const [lo, hi] = CAPTION_LIMITS[key];
+    const n = Number(out[key]);
+    out[key] = !isFinite(n) ? DEFAULT_CAPTION_STYLE[key] : Math.min(hi, Math.max(lo, n));
+  }
+  out.maxWords = Math.round(out.maxWords);
+  out.weight = Math.round(out.weight / 100) * 100;
+  if (!CAPTION_FONTS.some((f) => f.id === out.font)) out.font = DEFAULT_CAPTION_STYLE.font;
+  if (!CAPTION_HIGHLIGHTS.some((h) => h.id === out.highlight)) out.highlight = DEFAULT_CAPTION_STYLE.highlight;
+  if (["left", "center", "right"].indexOf(out.align) === -1) out.align = "center";
+  out.upper = !!out.upper;
+  return out;
+}
+
 /** Draws one frame of captions onto a 2D context sized W x H.
  *
- *  Kept pure-ish (context in, nothing out) so the live preview and the
- *  exporter render through exactly the same code -- a preview that doesn't
- *  match the export is worse than no preview.
+ *  The live preview and the exporter both call this, so what you tune is
+ *  exactly what gets burned in. A preview that renders through different
+ *  code than the export is worse than no preview at all.
  */
-function drawCaptions(ctx, chunk, t, style, W, H) {
+function drawCaptions(ctx, chunk, t, rawStyle, W, H) {
   if (!chunk) return;
-  const s = style;
+  const s = sanitiseCaptionStyle(rawStyle);
   const fontPx = Math.round(H * s.size);
-  const strokePx = Math.max(2, Math.round(fontPx * s.strokeW));
+  const strokePx = Math.round(fontPx * s.strokeW);
 
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.lineJoin = "round";
   ctx.miterLimit = 2;
-  ctx.font = `${s.weight} ${fontPx}px Inter, system-ui, sans-serif`;
+  ctx.font = `${s.weight} ${fontPx}px ${captionFontStack(s.font)}`;
 
   const idx = activeWordIndex(chunk, t);
-  const shown = s.pop
+  const shown = s.highlight === "pop"
     ? [chunk.words[Math.max(0, idx)]].filter(Boolean)
     : chunk.words;
   if (!shown.length) { ctx.restore(); return; }
@@ -7006,37 +7175,253 @@ function drawCaptions(ctx, chunk, t, style, W, H) {
   const widths = shown.map((w) => ctx.measureText(label(w)).width);
   const total = widths.reduce((a, b) => a + b, 0) + gap * (shown.length - 1);
 
-  // Bottom safe area: Instagram and TikTok both put chrome over the lowest
-  // ~15% of the frame, so captions sit above it rather than under a UI bar.
-  const baseline = Math.round(H * 0.82);
-  let x = (W - total) / 2;
+  const pad = Math.round(W * 0.06);
+  const baseline = Math.round(H * s.posY);
+  let x =
+    s.align === "left" ? pad :
+    s.align === "right" ? W - pad - total :
+    (W - total) / 2;
 
   for (let i = 0; i < shown.length; i++) {
     const w = shown[i];
-    const isActive = s.pop ? true : chunk.words.indexOf(w) === idx;
+    const isActive = s.highlight === "pop" ? true : chunk.words.indexOf(w) === idx;
     const cx = x + widths[i] / 2;
 
     let scale = 1;
-    if (s.pop) {
-      // 120ms ease-out from 0.86 -> 1. Any longer and it lags the voice.
+    if (s.highlight === "pop" || (s.highlight === "box" && isActive)) {
+      // 120ms ease-out. Longer than that and the motion lags the voice.
       const age = Math.max(0, t - w.start);
       const k = Math.min(1, age / 0.12);
-      scale = 0.86 + 0.14 * (1 - Math.pow(1 - k, 3));
+      scale = 0.88 + 0.12 * (1 - Math.pow(1 - k, 3));
     }
 
     ctx.save();
     ctx.translate(cx, baseline);
     ctx.scale(scale, scale);
-    ctx.lineWidth = strokePx;
-    ctx.strokeStyle = s.stroke;
-    ctx.strokeText(label(w), 0, 0);
-    ctx.fillStyle = isActive && s.active ? s.active : s.fill;
+
+    if (s.highlight === "box" && isActive) {
+      const bw = widths[i] + fontPx * 0.36;
+      const bh = fontPx * 1.24;
+      const r = Math.min(bh / 2, fontPx * 0.22);
+      const bx = -bw / 2;
+      const by = -fontPx * 0.92;
+      ctx.beginPath();
+      // hand-rolled rounded rect: roundRect() is still missing on enough
+      // Android webviews to be worth four lines
+      ctx.moveTo(bx + r, by);
+      ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+      ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+      ctx.arcTo(bx, by + bh, bx, by, r);
+      ctx.arcTo(bx, by, bx + bw, by, r);
+      ctx.closePath();
+      ctx.fillStyle = s.boxColor;
+      ctx.fill();
+    }
+
+    if (strokePx > 0) {
+      ctx.lineWidth = strokePx;
+      ctx.strokeStyle = s.stroke;
+      ctx.strokeText(label(w), 0, 0);
+    }
+    ctx.fillStyle =
+      s.highlight === "box" && isActive ? s.fill :
+      isActive && s.highlight !== "none" ? s.active :
+      s.fill;
     ctx.fillText(label(w), 0, 0);
     ctx.restore();
 
     x += widths[i] + gap;
   }
   ctx.restore();
+}
+
+/** Five seconds of fake speech for the editor, with realistic word lengths
+ *  and a pause in the middle so line breaking is visible while tuning. */
+const CAPTION_SAMPLE_WORDS = [
+  { word: "this", start: 0.10, end: 0.42 },
+  { word: "is", start: 0.42, end: 0.62 },
+  { word: "exactly", start: 0.62, end: 1.16 },
+  { word: "how", start: 1.16, end: 1.40 },
+  { word: "it", start: 1.40, end: 1.58 },
+  { word: "burns", start: 1.58, end: 2.05 },
+  { word: "in.", start: 2.05, end: 2.35 },
+  { word: "tune", start: 2.95, end: 3.30 },
+  { word: "it", start: 3.30, end: 3.48 },
+  { word: "here", start: 3.48, end: 3.85 },
+  { word: "first", start: 3.85, end: 4.35 },
+];
+const CAPTION_SAMPLE_LOOP = 5;
+
+function CaptionPreview({ chunks, style, video, aspect }) {
+  const ref = useRef(null);
+  const raf = useRef(null);
+
+  useEffect(() => {
+    const draw = () => {
+      const c = ref.current;
+      if (c) {
+        const ctx = c.getContext("2d");
+        const W = c.width, H = c.height;
+        const v = video && video.current;
+        const live = v && v.readyState >= 2 && !v.paused;
+
+        if (v && v.readyState >= 2) {
+          try { ctx.drawImage(v, 0, 0, W, H); } catch { /* tainted or not ready */ }
+        } else {
+          // Stand-in backdrop. Mid-grey rather than black: white captions
+          // over black always look good, which is exactly why it is the
+          // wrong thing to design against.
+          const g = ctx.createLinearGradient(0, 0, 0, H);
+          g.addColorStop(0, "#2A3138");
+          g.addColorStop(1, "#14171C");
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, W, H);
+          ctx.fillStyle = "rgba(255,255,255,0.05)";
+          for (let i = 0; i < 7; i++) ctx.fillRect(0, (H / 7) * i, W, 1);
+        }
+
+        const t = live ? v.currentTime : (performance.now() / 1000) % CAPTION_SAMPLE_LOOP;
+        drawCaptions(ctx, activeChunkAt(chunks, t), t, style, W, H);
+      }
+      raf.current = requestAnimationFrame(draw);
+    };
+    raf.current = requestAnimationFrame(draw);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
+  }, [chunks, style, video]);
+
+  const h = Math.round(300 * (aspect || 16 / 9));
+  return <canvas ref={ref} className="cap-preview" width={300} height={h} />;
+}
+
+function Stepper({ label, value, onLess, onMore, wide }) {
+  return (
+    <div className={`cap-row ${wide ? "wide" : ""}`}>
+      <span className="cap-row-label">{label}</span>
+      <div className="cap-step">
+        <button onClick={onLess} aria-label={`decrease ${label}`}>−</button>
+        <span className="cap-step-val">{value}</span>
+        <button onClick={onMore} aria-label={`increase ${label}`}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function ColourRow({ label, value, onChange }) {
+  return (
+    <div className="cap-row wide">
+      <span className="cap-row-label">{label}</span>
+      <div className="cap-swatches">
+        {CAPTION_SWATCHES.map((c) => (
+          <button
+            key={c}
+            className={`cap-swatch ${value.toLowerCase() === c.toLowerCase() ? "on" : ""}`}
+            style={{ background: c }}
+            onClick={() => onChange(c)}
+            aria-label={`${label} ${c}`}
+          />
+        ))}
+        <label className="cap-swatch custom" aria-label={`${label} custom colour`}>
+          <input type="color" value={value} onChange={(e) => onChange(e.target.value)} />
+          <span>+</span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function CaptionEditor({ style, setStyle }) {
+  const set = (patch) => setStyle(sanitiseCaptionStyle({ ...style, ...patch }));
+  const pct = (v) => `${Math.round(v * 100)}%`;
+
+  return (
+    <div className="cap-editor">
+      <div className="section-header"><span>PRESETS</span></div>
+      <div className="cap-chips">
+        {CAPTION_PRESETS.map((p) => (
+          <button key={p.id} className="cap-chip" onClick={() => { set(p.patch); sound.click(); }}>
+            {p.name}
+          </button>
+        ))}
+        <button className="cap-chip" onClick={() => { setStyle({ ...DEFAULT_CAPTION_STYLE }); sound.click(); }}>
+          reset
+        </button>
+      </div>
+
+      <div className="section-header"><span>TYPE</span></div>
+      <div className="cap-chips">
+        {CAPTION_FONTS.map((f) => (
+          <button
+            key={f.id}
+            className={`cap-chip ${style.font === f.id ? "on" : ""}`}
+            style={{ fontFamily: f.stack }}
+            onClick={() => { set({ font: f.id }); sound.click(); }}
+          >
+            {f.name}
+          </button>
+        ))}
+      </div>
+      <Stepper label="size" value={pct(style.size)}
+               onLess={() => set({ size: style.size - 0.005 })}
+               onMore={() => set({ size: style.size + 0.005 })} />
+      <Stepper label="weight" value={style.weight}
+               onLess={() => set({ weight: style.weight - 100 })}
+               onMore={() => set({ weight: style.weight + 100 })} />
+      <Stepper label="spacing" value={pct(style.tracking)}
+               onLess={() => set({ tracking: style.tracking - 0.01 })}
+               onMore={() => set({ tracking: style.tracking + 0.01 })} />
+      <Stepper label="words / line" value={style.maxWords}
+               onLess={() => set({ maxWords: style.maxWords - 1 })}
+               onMore={() => set({ maxWords: style.maxWords + 1 })} />
+      <div className="cap-row">
+        <span className="cap-row-label">caps</span>
+        <button className={`cap-chip ${style.upper ? "on" : ""}`} onClick={() => { set({ upper: !style.upper }); sound.click(); }}>
+          {style.upper ? "UPPERCASE" : "as spoken"}
+        </button>
+      </div>
+
+      <div className="section-header"><span>POSITION</span></div>
+      <Stepper label="height" value={pct(style.posY)}
+               onLess={() => set({ posY: style.posY - 0.02 })}
+               onMore={() => set({ posY: style.posY + 0.02 })} />
+      <div className="cap-row">
+        <span className="cap-row-label">align</span>
+        <div className="cap-chips tight">
+          {["left", "center", "right"].map((a) => (
+            <button key={a} className={`cap-chip ${style.align === a ? "on" : ""}`}
+                    onClick={() => { set({ align: a }); sound.click(); }}>
+              {a}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="section-header"><span>HIGHLIGHT</span></div>
+      <div className="cap-chips">
+        {CAPTION_HIGHLIGHTS.map((h) => (
+          <button key={h.id} className={`cap-chip ${style.highlight === h.id ? "on" : ""}`}
+                  onClick={() => { set({ highlight: h.id }); sound.click(); }}>
+            {h.name}
+          </button>
+        ))}
+      </div>
+      <div className="cap-hint">
+        {(CAPTION_HIGHLIGHTS.find((h) => h.id === style.highlight) || {}).hint}
+      </div>
+
+      <div className="section-header"><span>COLOUR</span></div>
+      <ColourRow label="text" value={style.fill} onChange={(c) => set({ fill: c })} />
+      {style.highlight !== "none" && style.highlight !== "box" && (
+        <ColourRow label="spoken" value={style.active} onChange={(c) => set({ active: c })} />
+      )}
+      {style.highlight === "box" && (
+        <ColourRow label="chip" value={style.boxColor} onChange={(c) => set({ boxColor: c })} />
+      )}
+      <ColourRow label="outline" value={style.stroke} onChange={(c) => set({ stroke: c })} />
+      <Stepper label="outline width" value={pct(style.strokeW)}
+               onLess={() => set({ strokeW: style.strokeW - 0.02 })}
+               onMore={() => set({ strokeW: style.strokeW + 0.02 })} />
+    </div>
+  );
 }
 
 /** Groq's verbose_json, flattened. Words come back under `words` when
@@ -7303,57 +7688,46 @@ async function burnCaptions(file, chunks, style, onProgress) {
 function CaptionsTool() {
   const [file, setFile] = useState(null);
   const [info, setInfo] = useState(null);
-  const [chunks, setChunks] = useState([]);
-  const [styleId, setStyleId] = useState(() => {
+  const [words, setWords] = useState([]);
+  const [style, setStyle] = useState(() => {
     const v = loadStored(STORAGE_KEY_CAPTIONS, null);
-    return (v && v.style) || "karaoke";
+    return sanitiseCaptionStyle(v && v.style);
   });
-  const [stage, setStage] = useState("idle");   // idle | probing | transcribing | ready | exporting
+  const [stage, setStage] = useState("idle");
   const [msg, setMsg] = useState(null);
   const [progress, setProgress] = useState(0);
   const [caps, setCaps] = useState(null);
+  const [playing, setPlaying] = useState(false);
 
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const rafRef = useRef(null);
   const urlRef = useRef(null);
 
-  const style = captionStyleById(styleId);
-
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_CAPTIONS, JSON.stringify({ style: styleId })); } catch {}
-  }, [styleId]);
+    try { localStorage.setItem(STORAGE_KEY_CAPTIONS, JSON.stringify({ style })); } catch {}
+  }, [style]);
 
-  useEffect(() => () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-  }, []);
+  useEffect(() => () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); }, []);
 
-  // Preview: the real video element underneath, captions drawn on a canvas
-  // on top, in sync with currentTime. No encoding, so restyling is instant.
-  useEffect(() => {
-    const tick = () => {
-      const v = videoRef.current;
-      const c = canvasRef.current;
-      if (v && c) {
-        const W = c.width, H = c.height;
-        const ctx = c.getContext("2d");
-        ctx.clearRect(0, 0, W, H);
-        const t = v.currentTime;
-        drawCaptions(ctx, activeChunkAt(chunks, t), t, style, W, H);
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [chunks, style]);
+  // Re-chunking is cheap and has to follow words-per-line, so it is derived
+  // rather than stored -- storing it meant the setting silently did nothing
+  // until you re-transcribed.
+  const realChunks = useMemo(
+    () => chunkWords(words, { maxWords: style.maxWords }),
+    [words, style.maxWords]
+  );
+  const sampleChunks = useMemo(
+    () => chunkWords(CAPTION_SAMPLE_WORDS, { maxWords: style.maxWords }),
+    [style.maxWords]
+  );
+  const previewChunks = realChunks.length ? realChunks : sampleChunks;
+  const aspect = info && info.width ? info.height / info.width : 16 / 9;
 
   const pick = async (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = "";
     if (!f) return;
     setMsg(null);
-    setChunks([]);
+    setWords([]);
     setStage("probing");
     try {
       const meta = await probeVideo(f);
@@ -7372,10 +7746,6 @@ function CaptionsTool() {
       setFile(f);
       setInfo(meta);
       setStage("picked");
-      if (canvasRef.current) {
-        canvasRef.current.width = meta.width;
-        canvasRef.current.height = meta.height;
-      }
     } catch (err) {
       setStage("idle");
       setMsg({ type: "err", text: `couldn't read that file — ${String(err.message || err)}` });
@@ -7392,11 +7762,11 @@ function CaptionsTool() {
     setMsg(null);
     try {
       const wav = await extractAudioForASR(file);
-      const words = await transcribeAudio(wav, keys[0]);
-      if (!words.length) throw new Error("no speech found in that clip");
-      setChunks(chunkWords(words));
+      const got = await transcribeAudio(wav, keys[0]);
+      if (!got.length) throw new Error("no speech found in that clip");
+      setWords(got);
       setStage("ready");
-      setMsg({ type: "ok", text: `${words.length} words · ${Math.round(wav.size / 1024)} KB sent` });
+      setMsg({ type: "ok", text: `${got.length} words · ${Math.round(wav.size / 1024)} KB sent` });
       sound.success();
     } catch (err) {
       setStage("picked");
@@ -7405,10 +7775,11 @@ function CaptionsTool() {
     }
   };
 
-  const runSelfTest = async () => {
-    setMsg(null);
-    const r = await codecSelfTest();
-    setCaps(r);
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+    sound.click();
   };
 
   const exportVideo = async () => {
@@ -7416,7 +7787,7 @@ function CaptionsTool() {
     setProgress(0);
     setMsg(null);
     try {
-      const blob = await burnCaptions(file, chunks, style, setProgress);
+      const blob = await burnCaptions(file, realChunks, style, setProgress);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = `captioned-${Date.now()}.mp4`;
@@ -7436,41 +7807,45 @@ function CaptionsTool() {
 
   return (
     <div className="cap">
-      {!file && (
-        <>
-          <pre className="cap-note">
-            a clip under {CAPTION_MAX_SECONDS}s. only the audio leaves the phone
-            (~2 MB), and only to Groq for the timings. the video is captioned
-            here on the device.
-          </pre>
-          <label className="cap-drop">
-            <input type="file" accept="video/*" onChange={pick} />
-            <span className="cap-drop-glyph">▣</span>
-            <span>choose a clip</span>
-          </label>
-        </>
-      )}
+      {/* The preview is always on, with or without a clip: the whole point
+          is that you can design the look before you have footage, and the
+          five-second sample loop is long enough to show a line break. */}
+      <div className="cap-preview-wrap">
+        <CaptionPreview chunks={previewChunks} style={style} video={videoRef} aspect={aspect} />
+        {!file && <div className="cap-preview-tag">sample · 5s loop</div>}
+      </div>
 
       {file && (
-        <div className="cap-stage">
-          <video
-            ref={videoRef}
-            src={urlRef.current}
-            className="cap-video"
-            playsInline
-            controls
-            preload="metadata"
-          />
-          <canvas ref={canvasRef} className="cap-overlay" />
-        </div>
+        <video
+          ref={videoRef}
+          src={urlRef.current}
+          className="cap-source"
+          playsInline
+          loop
+          muted={false}
+          onEnded={() => setPlaying(false)}
+        />
       )}
 
-      {file && (
-        <div className="cap-meta">
-          {info ? `${info.width}×${info.height} · ${info.duration.toFixed(1)}s` : ""}
-          {chunks.length ? ` · ${chunks.length} caption lines` : ""}
-        </div>
-      )}
+      <div className="cap-actions">
+        <label className="pomo-btn primary cap-file">
+          <input type="file" accept="video/*" onChange={pick} />
+          {file ? "change clip" : "choose clip"}
+        </label>
+        {file && <button className="pomo-btn" onClick={togglePlay}>{playing ? "pause" : "play"}</button>}
+        {file && !realChunks.length && stage !== "transcribing" && (
+          <button className="pomo-btn primary" onClick={transcribe}>get captions</button>
+        )}
+        {stage === "transcribing" && <button className="pomo-btn" disabled>listening…</button>}
+        {realChunks.length > 0 && stage !== "exporting" && (
+          <button className="pomo-btn primary" onClick={exportVideo}>export mp4</button>
+        )}
+      </div>
+
+      <div className="cap-meta">
+        {info ? `${info.width}×${info.height} · ${info.duration.toFixed(1)}s` : `no clip yet · under ${CAPTION_MAX_SECONDS}s`}
+        {realChunks.length ? ` · ${realChunks.length} lines` : ""}
+      </div>
 
       {msg && <pre className={`cap-msg ${msg.type}`}>{msg.text}</pre>}
 
@@ -7481,40 +7856,12 @@ function CaptionsTool() {
         </div>
       )}
 
-      {file && (
-        <>
-          <div className="section-header"><span>STYLE</span></div>
-          <div className="cap-styles">
-            {CAPTION_STYLES.map((s) => (
-              <button
-                key={s.id}
-                className={`cap-style ${styleId === s.id ? "active" : ""}`}
-                onClick={() => { setStyleId(s.id); sound.click(); }}
-              >
-                <span className="cap-style-name">{s.name}</span>
-                <span className="cap-style-hint">{s.hint}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      <CaptionEditor style={style} setStyle={setStyle} />
 
+      <div className="section-header"><span>DEVICE</span></div>
       <div className="cap-actions">
-        {file && stage !== "transcribing" && !chunks.length && (
-          <button className="pomo-btn primary" onClick={transcribe}>get captions</button>
-        )}
-        {stage === "transcribing" && <button className="pomo-btn" disabled>listening…</button>}
-        {chunks.length > 0 && stage !== "exporting" && (
-          <button className="pomo-btn primary" onClick={exportVideo}>export mp4</button>
-        )}
-        {file && stage !== "exporting" && (
-          <button className="pomo-btn" onClick={() => { setFile(null); setChunks([]); setInfo(null); setMsg(null); setStage("idle"); }}>
-            clear
-          </button>
-        )}
-        <button className="pomo-btn" onClick={runSelfTest}>check phone</button>
+        <button className="pomo-btn" onClick={async () => { setCaps(await codecSelfTest()); }}>check phone</button>
       </div>
-
       {caps && (
         <pre className="cap-note">
           {`webcodecs   ${caps.webcodecs ? "yes" : "no"}\n`}
@@ -7524,12 +7871,14 @@ function CaptionsTool() {
           {caps.note ? `\n${caps.note}` : ""}
         </pre>
       )}
+      <pre className="cap-note">
+        only the audio leaves the phone (~2 MB), and only to Groq for the
+        timings. the video is captioned here on the device.
+      </pre>
     </div>
   );
 }
 
-// The registry. One entry per tool; the grid and the router both read this,
-// so a new tool is a single object rather than edits in four places.
 // Exposed deliberately: when an export fails on a device I cannot hold, the
 // difference between "it broke" and a fix is being able to run these three
 // from the address bar.
@@ -7637,8 +7986,8 @@ function collectMaxId(data) {
 // combined "today" dashboard: next/current routine, top open tasks, and
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
-function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab }) {
-  const spendableXP = useMemo(() => computeSpendableXP(habits, rewards), [habits, rewards]);
+function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0 }) {
+  const spendableXP = coins;   // v41: rewards cost coins, XP is progression only
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
   const { sorted, currentId, nextId } = useRoutineStatus(routines, nowMinutes);
@@ -8285,6 +8634,13 @@ function TodoApp() {
           --accent2: #F5A623;
           --danger: #F0576B;
           --glow: rgba(94,234,212,0.35);
+          --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+          --font-ui: 'Inter', system-ui, sans-serif;
+          --r-card: 3px;          /* theme-driven: sharp terminal -> soft aurora */
+          --r-btn: 3px;
+          --r-chip: 3px;
+          --border-w: 1px;
+          --glow-w: 0px;          /* accent bloom on focus/active surfaces */
           --calm: 0;              /* 0 = normal, 1 = calm mode */
           --motion-scale: 1;      /* animations multiply durations by this */
         }
@@ -8308,7 +8664,7 @@ function TodoApp() {
           height: 100dvh;
           width: 100vw;
           background: var(--bg);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           color: var(--text);
           display: flex;
           align-items: center;
@@ -8328,7 +8684,7 @@ function TodoApp() {
           background: var(--panel);
           isolation: isolate;
           border: 1px solid var(--border);
-          border-radius: 14px;
+          border-radius: calc(var(--r-card) + 8px);
           overflow: hidden;
           box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
           animation: panelIn 480ms cubic-bezier(.16,1,.3,1);
@@ -8365,20 +8721,22 @@ function TodoApp() {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 14px 18px;
+          gap: 8px;
+          padding: 12px 14px;
           border-bottom: 1px solid var(--track);
         }
 
         .titlebar-left { display: flex; align-items: center; gap: 8px; }
 
         .dots { display: flex; gap: 6px; }
+        @media (max-width: 400px) { .dots { display: none; } }
         .dot { width: 9px; height: 9px; border-radius: 50%; }
         .dot.red { background: var(--danger); }
         .dot.amber { background: var(--accent2); }
         .dot.green { background: var(--accent); }
 
         .titlebar-name {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           letter-spacing: 0.06em;
           color: var(--muted);
@@ -8388,7 +8746,7 @@ function TodoApp() {
         /* Which build is actually running. Deliberately quiet -- it is a
            diagnostic, not a feature, and should never compete with the tabs. */
         .version-badge {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           letter-spacing: 0.06em;
           color: var(--muted);
@@ -8399,22 +8757,28 @@ function TodoApp() {
         }
 
         .clock {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: #4B5563;
+          /* 12-hour time wrapped onto two lines at 360px and dragged the
+             whole titlebar to 55px. 24h is shorter, never wraps, and matches
+             the routines timeline. */
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
         }
 
-        .titlebar-right { display: flex; align-items: center; gap: 10px; }
+        .titlebar-right { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
         .titlebar-icon-btn {
           display: flex;
           align-items: center;
           justify-content: center;
-          width: 24px;
-          height: 24px;
+          width: 22px;
+          height: 22px;
+          flex: 0 0 auto;
           padding: 0;
           border: 1px solid var(--border);
-          border-radius: 6px;
+          border-radius: var(--r-btn);
           background: var(--panel);
           color: var(--muted);
           cursor: pointer;
@@ -8429,7 +8793,7 @@ function TodoApp() {
           margin: 10px 18px 0;
           padding: 8px 12px;
           border-radius: 8px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11.5px;
           text-align: center;
           border: 1px solid var(--border);
@@ -8445,8 +8809,13 @@ function TodoApp() {
           display: flex;
           flex-shrink: 0;
           min-height: 42px;
-          gap: 1px;
-          padding: 10px 8px 0;
+          gap: 2px;
+          padding: 10px 14px 0;
+          scroll-behavior: smooth;
+          -webkit-overflow-scrolling: touch;
+          /* the last tab fades out instead of being cut in half */
+          mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
+          -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
           border-bottom: 1px solid var(--track);
           overflow-x: auto;
           scrollbar-width: none;
@@ -8458,16 +8827,16 @@ function TodoApp() {
           border: none;
           background: transparent;
           color: #7C8591;
-          font-family: 'JetBrains Mono', monospace;
-          /* v39: the seventh tab (tools) pushed both it and the pet tab off
-             a 390px screen -- 100px of overflow, and the bar scrolls, so a
-             brand-new feature was invisible unless you knew to swipe. Padding
-             and tracking come down rather than the font size, which keeps the
-             row legible and the tap target 30px tall. */
-          font-size: 10.5px;
-          letter-spacing: 0.02em;
+          font-family: var(--font-mono);
+          /* v41: back to comfortable spacing. v39 squeezed seven tabs into
+             360px by halving the padding, which fixed the overflow and made
+             the row look crushed. The bar scrolls instead, with a fade at
+             the right edge so it reads as scrollable rather than clipped,
+             and changeTab() pulls the active tab into view. */
+          font-size: 11px;
+          letter-spacing: 0.04em;
           text-transform: uppercase;
-          padding: 9px 7px;
+          padding: 9px 13px;
           white-space: nowrap;
           flex-shrink: 0;
           min-height: 30px;
@@ -8500,7 +8869,7 @@ function TodoApp() {
           padding: 16px 18px;
           background: linear-gradient(160deg, #171B21, var(--panel));
           border: 1px solid var(--border);
-          border-radius: 12px;
+          border-radius: calc(var(--r-card) + 5px);
           display: flex;
           flex-direction: column;
           gap: 2px;
@@ -8513,7 +8882,7 @@ function TodoApp() {
         }
 
         .hero-clock {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 30px;
           font-weight: 700;
           color: var(--text);
@@ -8529,7 +8898,7 @@ function TodoApp() {
         }
 
         .hero-tz {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           color: var(--accent);
           letter-spacing: 0.06em;
@@ -8540,7 +8909,7 @@ function TodoApp() {
         }
 
         .hero-date {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--muted);
           margin-top: 2px;
@@ -8553,7 +8922,7 @@ function TodoApp() {
         }
 
         .hero-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--muted);
           letter-spacing: 0.08em;
@@ -8586,7 +8955,7 @@ function TodoApp() {
         }
 
         .hero-sub {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--muted);
           margin-top: 6px;
@@ -8610,7 +8979,7 @@ function TodoApp() {
           border-radius: 8px;
           padding: 9px 10px;
           color: var(--text);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 12.5px;
           outline: none;
           color-scheme: dark;
@@ -8710,13 +9079,13 @@ function TodoApp() {
         }
 
         .routine-time {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--muted);
         }
 
         .live-tag {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           letter-spacing: 0.06em;
           color: var(--bg);
@@ -8727,7 +9096,7 @@ function TodoApp() {
         }
 
         .streak-tag {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--accent2);
         }
@@ -8757,7 +9126,7 @@ function TodoApp() {
 
         .routine-span {
           display: block;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: #4B5563;
           margin-top: 3px;
@@ -8798,7 +9167,7 @@ function TodoApp() {
           border-radius: 7px;
           padding: 8px 10px;
           color: var(--text);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           font-size: 13px;
           outline: none;
         }
@@ -8818,13 +9187,13 @@ function TodoApp() {
           border-radius: 7px;
           padding: 8px 8px;
           color: var(--text);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           outline: none;
         }
 
         .edit-unit {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--muted);
         }
@@ -8839,7 +9208,7 @@ function TodoApp() {
           border: none;
           border-radius: 6px;
           padding: 6px 12px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           cursor: pointer;
         }
@@ -8887,7 +9256,7 @@ function TodoApp() {
         }
 
         .quest-stat-value {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 17px;
           font-weight: 700;
           color: var(--text);
@@ -8902,7 +9271,7 @@ function TodoApp() {
         }
 
         .quest-stat-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           color: var(--muted);
           letter-spacing: 0.04em;
@@ -8918,7 +9287,7 @@ function TodoApp() {
           top: 50%;
           left: 50%;
           transform: translate(-50%, -50%);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9.5px;
           font-weight: 700;
           color: var(--accent);
@@ -8941,7 +9310,7 @@ function TodoApp() {
         }
 
         .hero-xp-total {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 26px;
           font-weight: 700;
           color: var(--text);
@@ -8951,7 +9320,7 @@ function TodoApp() {
         .hero-xp-total small { font-size: 12px; color: var(--muted); font-weight: 500; }
 
         .hero-xp-sub {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           color: var(--muted);
         }
@@ -8959,7 +9328,7 @@ function TodoApp() {
         .hero-xp-split { display: flex; gap: 12px; margin-top: 6px; }
 
         .hero-xp-earned, .hero-xp-lost {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           padding: 3px 8px;
           border-radius: 6px;
@@ -8980,14 +9349,14 @@ function TodoApp() {
         }
 
         .radial-progress-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 15px;
           font-weight: 700;
           color: var(--text);
         }
 
         .radial-progress-sublabel {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8.5px;
           color: var(--muted);
           letter-spacing: 0.04em;
@@ -9016,7 +9385,7 @@ function TodoApp() {
         .radar-fill { fill: rgba(94,234,212,0.16); stroke: var(--accent); stroke-width: 1.5; }
         .radar-label {
           fill: #9CA3AF;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8px;
           letter-spacing: -0.01em;
         }
@@ -9057,14 +9426,14 @@ function TodoApp() {
         }
 
         .donut-center-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 17px;
           font-weight: 700;
           color: var(--text);
         }
 
         .donut-center-sublabel {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8px;
           color: var(--muted);
           text-transform: uppercase;
@@ -9085,7 +9454,7 @@ function TodoApp() {
 
         .donut-legend-val {
           margin-left: auto;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--text);
         }
@@ -9124,7 +9493,7 @@ function TodoApp() {
           align-items: center;
           gap: 4px;
           margin-top: 10px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           color: var(--muted);
         }
@@ -9158,7 +9527,7 @@ function TodoApp() {
         }
 
         .timeline-title {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           letter-spacing: 0.12em;
           text-transform: uppercase;
@@ -9166,7 +9535,7 @@ function TodoApp() {
         }
 
         .timeline-count {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--accent);
           font-variant-numeric: tabular-nums;
@@ -9178,7 +9547,7 @@ function TodoApp() {
           border: 1px solid #2C323A;
           border-radius: 999px;
           color: var(--accent2);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           letter-spacing: 0.1em;
           text-transform: uppercase;
@@ -9235,7 +9604,7 @@ function TodoApp() {
           position: absolute;
           top: 0;
           transform: translateX(-50%);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8.5px;
           color: #4B5563;
           white-space: nowrap;
@@ -9312,7 +9681,7 @@ function TodoApp() {
 
         .timeline-block-label {
           padding: 0 8px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9.5px;
           font-weight: 600;
           color: var(--bg);
@@ -9349,7 +9718,7 @@ function TodoApp() {
         }
 
         .timeline-hint {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8.5px;
           letter-spacing: 0.06em;
           color: #4B5563;
@@ -9414,7 +9783,7 @@ function TodoApp() {
         .xp-pop {
           position: absolute;
           right: 12px; top: 50%;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; font-weight: 700;
           color: var(--accent);
           text-shadow: 0 0 10px var(--glow);
@@ -9472,7 +9841,7 @@ function TodoApp() {
 
 
         .hero-xp-spend {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           color: var(--accent2); margin-left: 10px;
         }
         .donut-legend-total {
@@ -9482,7 +9851,7 @@ function TodoApp() {
         }
 
         .keypool-prov {
-          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          font-family: var(--font-mono); font-size: 8.5px;
           letter-spacing: 0.06em; text-transform: uppercase;
           color: var(--accent); flex-shrink: 0; width: 76px;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -9496,7 +9865,7 @@ function TodoApp() {
         }
         .prov-chip-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
         .prov-name {
-          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          font-family: var(--font-mono); font-size: 11px;
           font-weight: 600; color: var(--accent);
         }
         .prov-where {
@@ -9504,12 +9873,12 @@ function TodoApp() {
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .prov-free {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--accent2); text-align: right; flex-shrink: 0; max-width: 44%;
           line-height: 1.35;
         }
         .prov-detected {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           color: var(--accent); margin: 6px 0 0; letter-spacing: 0.04em;
         }
         .prov-detected-warn { color: var(--accent2); letter-spacing: 0; line-height: 1.5; }
@@ -9524,7 +9893,7 @@ function TodoApp() {
         .keypool { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--track); }
         .keypool-head {
           display: flex; justify-content: space-between; align-items: baseline;
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           color: var(--text); margin-bottom: 8px;
         }
         .keypool-hint { color: var(--muted); font-size: 8.5px; }
@@ -9534,16 +9903,16 @@ function TodoApp() {
           background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
         }
         .keypool-num {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--accent); width: 12px; flex-shrink: 0;
         }
         .keypool-val {
-          flex: 1; font-family: 'JetBrains Mono', monospace;
+          flex: 1; font-family: var(--font-mono);
           font-size: 10.5px; color: var(--muted); letter-spacing: 0.04em;
         }
         .keypool-del {
           background: transparent; border: none; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--danger); flex-shrink: 0;
         }
         .keypool-note {
@@ -9562,7 +9931,7 @@ function TodoApp() {
 
         .link-intro { font-size: 11px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
         .link-empty {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           color: var(--muted); text-align: center; padding: 14px 0;
         }
         .link-list { display: flex; flex-direction: column; gap: 6px; }
@@ -9575,7 +9944,7 @@ function TodoApp() {
         .link-candidate { cursor: pointer; transition: border-color 150ms ease; }
         .link-row.stale { opacity: 0.5; }
         .link-kind {
-          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          font-family: var(--font-mono); font-size: 8.5px;
           letter-spacing: 0.08em; text-transform: uppercase;
           color: var(--accent); flex-shrink: 0; min-width: 46px;
         }
@@ -9583,7 +9952,7 @@ function TodoApp() {
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .link-remove {
           background: transparent; border: none; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--danger); letter-spacing: 0.06em; flex-shrink: 0;
         }
         .link-plus { color: var(--accent); font-size: 14px; flex-shrink: 0; }
@@ -9592,7 +9961,7 @@ function TodoApp() {
           width: 100%; margin-top: 12px; padding: 11px 0;
           background: transparent; border: 1px dashed var(--border);
           border-radius: 9px; color: var(--accent); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          font-family: var(--font-mono); font-size: 11px;
         }
 
         /* tag editor */
@@ -9600,14 +9969,14 @@ function TodoApp() {
         .tag-group-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
         .tag-dot { width: 8px; height: 8px; border-radius: 50%; }
         .tag-group-name {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           letter-spacing: 0.1em; text-transform: uppercase; color: var(--text);
         }
         .tag-row { display: flex; gap: 6px; margin-bottom: 5px; }
         .tag-input {
           flex: 1; background: var(--bg); border: 1px solid var(--border);
           border-radius: 7px; color: var(--text); font-size: 12px;
-          padding: 8px 10px; outline: none; font-family: 'Inter', sans-serif;
+          padding: 8px 10px; outline: none; font-family: var(--font-ui);
         }
         .tag-input:focus { border-color: var(--accent); }
         .tag-del {
@@ -9617,14 +9986,14 @@ function TodoApp() {
         .tag-del:disabled { opacity: 0.3; cursor: not-allowed; }
         .tag-add {
           background: transparent; border: none; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           color: var(--accent); padding: 4px 0;
         }
         .tag-reset {
           display: block; margin: 8px auto 0; background: transparent;
           border: 1px solid var(--border); border-radius: 999px;
           color: var(--muted); cursor: pointer; padding: 5px 12px;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
         }
 
         /* radar controls + area filter */
@@ -9633,7 +10002,7 @@ function TodoApp() {
           gap: 10px; padding: 0 4px 10px;
         }
         .radar-note {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8.5px;
           line-height: 1.5;
           color: var(--muted);
@@ -9645,7 +10014,7 @@ function TodoApp() {
         .radar-mode button, .radar-edit {
           background: transparent; border: 1px solid var(--border);
           border-radius: 999px; color: var(--muted); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.06em; padding: 5px 11px;
           transition: all 150ms ease;
         }
@@ -9662,7 +10031,7 @@ function TodoApp() {
         .area-filter button {
           background: transparent; border: 1px solid var(--border);
           border-radius: 999px; color: var(--muted); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           padding: 5px 12px; transition: all 150ms ease;
         }
         .area-filter button.active {
@@ -9691,7 +10060,7 @@ function TodoApp() {
           flex-shrink: 0; align-self: flex-start; margin-top: 6px;
           background: transparent; border: 1px solid var(--border);
           border-radius: 999px; color: var(--muted); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 10px;
           transition: border-color 150ms ease, color 150ms ease;
         }
@@ -9705,7 +10074,7 @@ function TodoApp() {
         }
         .cmp-greeting { opacity: 0.9; font-style: italic; }
         .cmp-elapsed {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums;
         }
 
@@ -9720,7 +10089,7 @@ function TodoApp() {
 
         .cmp-key-link {
           background: transparent; border: none; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.06em; color: var(--muted);
           padding: 0 16px 16px; text-align: center; width: 100%;
         }
@@ -9731,8 +10100,13 @@ function TodoApp() {
         }
 
         /* ---- achievements + rewards (v24) ---- */
+        /* v41: moved off the top. It is position:fixed and tappable, so
+           at top:16px it sat over the titlebar AND the tab bar and ate taps
+           for its whole lifetime -- caught by the pointer-events gate test
+           once that test started hit-testing a tab that was actually on
+           screen. Bottom is where the app's other toasts live anyway. */
         .ach-toast {
-          position: fixed; left: 50%; top: 16px;
+          position: fixed; left: 50%; bottom: 18px;
           transform: translateX(-50%);
           z-index: 90; width: calc(100% - 32px); max-width: 380px;
           display: flex; align-items: center; gap: 11px;
@@ -9744,8 +10118,8 @@ function TodoApp() {
           animation: achIn 420ms cubic-bezier(.16,1,.3,1);
         }
         @keyframes achIn {
-          from { transform: translate(-50%, -20px); opacity: 0; }
-          to   { transform: translate(-50%, 0);     opacity: 1; }
+          from { transform: translate(-50%, 20px); opacity: 0; }
+          to   { transform: translate(-50%, 0);    opacity: 1; }
         }
         .ach-toast-icon {
           font-size: 20px; color: var(--accent);
@@ -9753,13 +10127,13 @@ function TodoApp() {
         }
         .ach-toast-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
         .ach-toast-kicker {
-          font-family: 'JetBrains Mono', monospace; font-size: 8px;
+          font-family: var(--font-mono); font-size: 8px;
           letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent);
         }
         .ach-toast-name { font-size: 13px; font-weight: 600; color: var(--text); }
         .ach-toast-desc { font-size: 10px; color: var(--muted); }
         .ach-toast-coins {
-          font-family: 'JetBrains Mono', monospace; font-size: 12px;
+          font-family: var(--font-mono); font-size: 12px;
           font-weight: 700; color: var(--accent2); flex-shrink: 0;
         }
 
@@ -9777,11 +10151,11 @@ function TodoApp() {
           animation: sheetUp 520ms cubic-bezier(.16,1,.3,1);
         }
         .lvl-kicker {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           letter-spacing: 0.3em; text-transform: uppercase; color: var(--accent2);
         }
         .lvl-num {
-          font-family: 'JetBrains Mono', monospace; font-size: 62px; font-weight: 700;
+          font-family: var(--font-mono); font-size: 62px; font-weight: 700;
           line-height: 1.05; color: var(--accent);
           text-shadow: 0 0 26px var(--glow); margin: 6px 0 2px;
         }
@@ -9795,7 +10169,7 @@ function TodoApp() {
         .lvl-reward-text { font-size: 12px; color: var(--text); }
         .lvl-reward-text b { color: var(--accent); }
         .lvl-next {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--muted); margin-top: 12px;
         }
 
@@ -9803,7 +10177,7 @@ function TodoApp() {
         .ach-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--track); }
         .ach-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
         .ach-count {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--accent2);
+          font-family: var(--font-mono); font-size: 9.5px; color: var(--accent2);
         }
         .ach-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
         @media (min-width: 520px) { .ach-grid { grid-template-columns: repeat(3, 1fr); } }
@@ -9817,16 +10191,16 @@ function TodoApp() {
         .ach-icon { font-size: 15px; color: var(--muted); }
         .ach-card.got .ach-icon { color: var(--accent); text-shadow: 0 0 10px var(--glow); }
         .ach-name {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           font-weight: 600; color: var(--text);
         }
         .ach-desc { font-size: 8.5px; color: var(--muted); line-height: 1.35; }
         .ach-coins {
-          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          font-family: var(--font-mono); font-size: 8.5px;
           color: var(--accent2); margin-top: 2px;
         }
         .ach-hidden-note {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--muted); text-align: center; margin-top: 10px; font-style: italic;
         }
 
@@ -9876,12 +10250,12 @@ function TodoApp() {
         }
         .pet-id { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: -6px; }
         .pet-name, .pet-name-input {
-          font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 700;
+          font-family: var(--font-mono); font-size: 17px; font-weight: 700;
           color: var(--text); background: transparent; border: none; cursor: pointer;
           text-align: center; padding: 2px 6px; border-radius: 6px;
         }
         .pet-name-input { border: 1px solid var(--accent); width: 130px; outline: none; }
-        .pet-form { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--accent); }
+        .pet-form { font-family: var(--font-mono); font-size: 10px; color: var(--accent); }
         .pet-bond { font-size: 9.5px; color: var(--muted); }
 
         .pet-speech {
@@ -9897,15 +10271,15 @@ function TodoApp() {
         }
         .pet-stat-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
         .pet-stat-label {
-          font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+          font-family: var(--font-mono); font-size: 8.5px;
           letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
         }
-        .pet-stat-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text); }
+        .pet-stat-val { font-family: var(--font-mono); font-size: 10px; color: var(--text); }
         .pet-stat-track { height: 4px; background: var(--track); border-radius: 3px; overflow: hidden; }
         .pet-stat-fill { height: 100%; border-radius: 3px; transition: width 700ms cubic-bezier(.16,1,.3,1); }
 
         .pet-next {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           color: var(--muted); text-align: center; padding: 0 16px 12px;
         }
 
@@ -9926,14 +10300,14 @@ function TodoApp() {
         .pet-composer { display: flex; gap: 8px; padding: 12px 16px 18px; }
         .pet-input {
           flex: 1; background: var(--bg); border: 1px solid var(--border);
-          border-radius: 8px; color: var(--text); font-family: 'Inter', sans-serif;
+          border-radius: 8px; color: var(--text); font-family: var(--font-ui);
           font-size: 12.5px; padding: 10px 12px; outline: none;
           transition: border-color 140ms ease;
         }
         .pet-input:focus { border-color: var(--accent); }
         .pet-send {
           background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
-          font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+          font-family: var(--font-mono); font-size: 11px; font-weight: 700;
           letter-spacing: 0.06em; padding: 0 18px; cursor: pointer;
         }
         .pet-send:disabled { opacity: 0.35; cursor: default; }
@@ -9953,7 +10327,7 @@ function TodoApp() {
           animation: sheetUp 480ms cubic-bezier(.16,1,.3,1);
         }
         .evo-kicker {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           letter-spacing: 0.28em; text-transform: uppercase; color: var(--accent2);
           margin-bottom: 14px;
         }
@@ -9967,7 +10341,7 @@ function TodoApp() {
           margin-top: 20px; width: 100%;
           background: var(--accent); color: var(--bg); border: none;
           border-radius: 9px; padding: 11px 0; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          font-family: var(--font-mono); font-size: 11px;
           font-weight: 700; letter-spacing: 0.08em;
         }
 
@@ -10001,7 +10375,7 @@ function TodoApp() {
 
         .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
         .sheet-title {
-          font-family: 'JetBrains Mono', monospace; font-size: 12px;
+          font-family: var(--font-mono); font-size: 12px;
           letter-spacing: 0.12em; text-transform: uppercase; color: var(--text);
         }
         .sheet-close {
@@ -10009,7 +10383,7 @@ function TodoApp() {
           font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px;
         }
         .sheet-sub, .sheet-foot {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           color: var(--muted); text-align: center; margin-top: 12px;
         }
         .sheet-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--track); }
@@ -10041,12 +10415,12 @@ function TodoApp() {
           background: #fff; box-shadow: 0 0 6px rgba(255,255,255,0.9);
         }
         .theme-name {
-          font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+          font-family: var(--font-mono); font-size: 10.5px;
           font-weight: 600; color: var(--text); margin-top: 2px;
         }
         .theme-blurb { font-size: 9px; color: var(--muted); line-height: 1.35; }
         .theme-req {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--accent2);
+          font-family: var(--font-mono); font-size: 9px; color: var(--accent2);
         }
         .theme-bar {
           width: 100%; height: 3px; background: var(--track);
@@ -10056,7 +10430,7 @@ function TodoApp() {
           display: block; height: 100%; background: var(--accent2);
           border-radius: 2px; transition: width 600ms cubic-bezier(.16,1,.3,1);
         }
-        .theme-pct { font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--muted); }
+        .theme-pct { font-family: var(--font-mono); font-size: 8px; color: var(--muted); }
 
         /* ---- calm toggle ---- */
         .calm-toggle-row {
@@ -10064,7 +10438,7 @@ function TodoApp() {
           margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--track);
         }
         .calm-toggle-label {
-          font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text);
+          font-family: var(--font-mono); font-size: 11px; color: var(--text);
         }
         .calm-toggle-hint { font-size: 9.5px; color: var(--muted); margin-top: 2px; }
         .calm-switch {
@@ -10117,7 +10491,7 @@ function TodoApp() {
           border: 1px solid var(--border);
           background: #0F1215;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           padding: 5px 10px;
           border-radius: 6px;
@@ -10138,7 +10512,7 @@ function TodoApp() {
           border-radius: 6px;
           padding: 5px 8px;
           color: var(--text);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           outline: none;
         }
@@ -10158,7 +10532,7 @@ function TodoApp() {
           display: flex;
           flex-direction: column;
           gap: 6px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           color: #9CA3AF;
         }
@@ -10173,14 +10547,14 @@ function TodoApp() {
         }
 
         .stats-title {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           color: var(--muted);
           letter-spacing: 0.04em;
         }
 
         .stats-pct {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 20px;
           font-weight: 700;
           color: var(--accent);
@@ -10206,7 +10580,7 @@ function TodoApp() {
           display: flex;
           gap: 16px;
           margin-top: 10px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--muted);
         }
@@ -10227,7 +10601,7 @@ function TodoApp() {
           border-radius: 8px;
           padding: 10px 12px;
           color: var(--text);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           font-size: 13.5px;
           outline: none;
           transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -10256,7 +10630,7 @@ function TodoApp() {
           border-radius: 8px;
           padding: 0 12px;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           cursor: pointer;
           transition: all 150ms ease;
@@ -10293,7 +10667,7 @@ function TodoApp() {
           border-radius: 6px;
           padding: 8px 10px;
           color: var(--text);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           font-size: 12.5px;
           outline: none;
         }
@@ -10318,7 +10692,7 @@ function TodoApp() {
           background: transparent;
           border: none;
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           cursor: pointer;
           padding: 2px 0;
@@ -10333,7 +10707,7 @@ function TodoApp() {
           background: transparent;
           padding: 7px 9px;
           border-radius: 6px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           color: var(--muted);
           cursor: pointer;
@@ -10373,7 +10747,7 @@ function TodoApp() {
           border: none;
           background: transparent;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           padding: 5px 10px;
           border-radius: 6px;
@@ -10392,7 +10766,7 @@ function TodoApp() {
           border: none;
           background: transparent;
           color: #4B5563;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           cursor: pointer;
           transition: color 150ms ease;
@@ -10411,7 +10785,7 @@ function TodoApp() {
           align-items: center;
           gap: 11px;
           padding: 10px 8px;
-          border-radius: 8px;
+          border-radius: var(--r-card);
           animation: rowIn 320ms cubic-bezier(.16,1,.3,1) backwards;
           transition: background 150ms ease;
         }
@@ -10475,7 +10849,7 @@ function TodoApp() {
           display: flex;
           align-items: center;
           gap: 5px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: #4B5563;
         }
@@ -10506,7 +10880,7 @@ function TodoApp() {
         }
 
         .empty-state .glyph {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 26px;
           color: #2A2F37;
           margin-bottom: 8px;
@@ -10527,7 +10901,7 @@ function TodoApp() {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           letter-spacing: 0.06em;
           color: var(--muted);
@@ -10539,7 +10913,7 @@ function TodoApp() {
           border: none;
           background: transparent;
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           cursor: pointer;
           padding: 0;
@@ -10547,7 +10921,7 @@ function TodoApp() {
 
         .today-xp-total {
           color: var(--accent2);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
         }
 
         .today-card {
@@ -10562,7 +10936,7 @@ function TodoApp() {
         .today-card-row { display: flex; align-items: baseline; gap: 10px; }
 
         .today-card-time {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           color: var(--accent);
         }
@@ -10577,7 +10951,7 @@ function TodoApp() {
           margin-top: 4px;
           font-size: 11.5px;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
         }
 
         .today-mark-btn {
@@ -10588,7 +10962,7 @@ function TodoApp() {
           border-radius: 8px;
           background: transparent;
           color: #9CA3AF;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11.5px;
           cursor: pointer;
           transition: border-color 140ms ease, color 140ms ease;
@@ -10647,7 +11021,7 @@ function TodoApp() {
           border: none;
           background: transparent;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           text-align: left;
           padding: 6px 12px;
@@ -10657,7 +11031,7 @@ function TodoApp() {
         .today-more:hover { color: var(--accent); }
 
         .today-reward-cost {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--accent2);
           flex-shrink: 0;
@@ -10668,7 +11042,7 @@ function TodoApp() {
           border-radius: 6px;
           background: transparent;
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           padding: 5px 10px;
           cursor: pointer;
@@ -10706,7 +11080,7 @@ function TodoApp() {
 
         .quest-banner-icon {
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 13px;
           flex-shrink: 0;
         }
@@ -10722,7 +11096,7 @@ function TodoApp() {
 
         .quest-banner-text b {
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-weight: 700;
           margin-right: 4px;
         }
@@ -10747,7 +11121,7 @@ function TodoApp() {
         }
 
         .section-header span {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           letter-spacing: 0.08em;
           color: var(--muted);
@@ -10776,9 +11150,9 @@ function TodoApp() {
 
         .note-card {
           background: var(--panel);
-          border: 1px solid var(--border);
+          border: var(--border-w) solid var(--border);
           border-left: 2px solid var(--accent);
-          border-radius: 6px;
+          border-radius: var(--r-card);
           padding: 10px 12px;
           cursor: pointer;
           transition: border-color 140ms ease;
@@ -10789,7 +11163,7 @@ function TodoApp() {
 
         .note-head {
           display: flex; align-items: baseline; gap: 6px;
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           margin-bottom: 6px;
         }
         .note-prompt { color: var(--accent); opacity: 0.75; }
@@ -10799,7 +11173,7 @@ function TodoApp() {
         /* pre, not div: a note is text the user typed, and their line breaks
            and indentation are part of what they meant */
         .note-body {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; line-height: 1.65; color: var(--muted);
           white-space: pre-wrap; word-break: break-word;
           margin: 0; max-height: 220px; overflow: hidden;
@@ -10819,7 +11193,7 @@ function TodoApp() {
         .note-title-input, .note-body-input {
           background: var(--bg); border: 1px solid var(--border);
           border-radius: 4px; color: var(--text);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           outline: none; width: 100%;
         }
         .note-title-input { font-size: 10px; padding: 3px 6px; font-weight: 600; }
@@ -10832,8 +11206,8 @@ function TodoApp() {
         .note-actions { display: flex; gap: 6px; margin-top: 8px; }
         .note-btn {
           background: transparent; border: 1px solid var(--border);
-          border-radius: 4px; color: var(--muted); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          border-radius: var(--r-btn); color: var(--muted); cursor: pointer;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.06em; padding: 4px 10px;
           transition: all 140ms ease;
         }
@@ -10853,7 +11227,7 @@ function TodoApp() {
         .cloud-input {
           width: 100%; box-sizing: border-box; margin: 6px 0 2px;
           background: transparent; border: 1px solid var(--border);
-          color: var(--accent); font-family: 'JetBrains Mono', monospace;
+          color: var(--accent); font-family: var(--font-mono);
           font-size: 11px; letter-spacing: 0.02em; padding: 6px 8px;
           border-radius: 3px;
         }
@@ -10869,7 +11243,7 @@ function TodoApp() {
           border: 1px solid var(--accent2);
           border-radius: 3px;
           color: var(--accent2);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; letter-spacing: 0.03em;
         }
         .update-bar-icon { font-size: 9px; }
@@ -10883,7 +11257,7 @@ function TodoApp() {
         .inv-edit-input {
           width: 100%; box-sizing: border-box;
           background: transparent; border: 1px solid var(--accent); border-radius: 3px;
-          color: var(--text); font-family: 'JetBrains Mono', monospace;
+          color: var(--text); font-family: var(--font-mono);
           font-size: 12px; padding: 6px 8px;
         }
         .inv-edit-input:focus { outline: none; }
@@ -10899,9 +11273,9 @@ function TodoApp() {
           display: flex; flex-direction: column; gap: 4px;
           padding: 12px 12px 14px; text-align: left; cursor: pointer;
           background: transparent;
-          border: 1px solid var(--border); border-left: 2px solid var(--accent);
-          border-radius: 3px; color: var(--text);
-          font-family: 'JetBrains Mono', monospace;
+          border: var(--border-w) solid var(--border); border-left: 2px solid var(--accent);
+          border-radius: var(--r-card); color: var(--text);
+          font-family: var(--font-mono);
           transition: border-color 140ms ease;
         }
         .tool-card:active { border-color: var(--accent); }
@@ -10915,7 +11289,7 @@ function TodoApp() {
         .tool-header { display: flex; align-items: center; gap: 10px; }
         .tool-back {
           background: transparent; border: none; cursor: pointer;
-          color: var(--accent); font-family: 'JetBrains Mono', monospace;
+          color: var(--accent); font-family: var(--font-mono);
           font-size: 10px; letter-spacing: 0.06em; padding: 0;
         }
 
@@ -10923,13 +11297,13 @@ function TodoApp() {
         .cap { padding: 6px 14px 20px; }
         .cap-note {
           margin: 0 0 12px; color: var(--muted); font-size: 9.5px; line-height: 1.65;
-          white-space: pre-wrap; font-family: 'JetBrains Mono', monospace;
+          white-space: pre-wrap; font-family: var(--font-mono);
         }
         .cap-drop {
           display: flex; flex-direction: column; align-items: center; gap: 8px;
           padding: 30px 16px; cursor: pointer;
           border: 1px dashed var(--border); border-radius: 4px;
-          color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 11px;
+          color: var(--muted); font-family: var(--font-mono); font-size: 11px;
           letter-spacing: 0.06em;
         }
         .cap-drop input { display: none; }
@@ -10942,16 +11316,16 @@ function TodoApp() {
         }
         .cap-meta {
           margin: 8px 0 4px; color: var(--muted);
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.05em;
+          font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em;
         }
-        .cap-msg { margin: 6px 0; font-size: 10px; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; }
+        .cap-msg { margin: 6px 0; font-size: 10px; font-family: var(--font-mono); white-space: pre-wrap; }
         .cap-msg.ok { color: var(--accent); }
         .cap-msg.err { color: var(--danger); }
         .cap-progress {
           position: relative; height: 22px; margin: 8px 0;
           border: 1px solid var(--border); border-radius: 3px; overflow: hidden;
           display: flex; align-items: center; justify-content: center;
-          font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text);
+          font-family: var(--font-mono); font-size: 10px; color: var(--text);
         }
         .cap-progress-fill {
           position: absolute; left: 0; top: 0; bottom: 0;
@@ -10963,13 +11337,143 @@ function TodoApp() {
           display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
           padding: 9px 11px; cursor: pointer; text-align: left;
           background: transparent; border: 1px solid var(--border); border-radius: 3px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
         }
         .cap-style.active { border-color: var(--accent); }
         .cap-style-name { font-size: 11px; color: var(--text); letter-spacing: 0.05em; }
         .cap-style.active .cap-style-name { color: var(--accent); }
         .cap-style-hint { font-size: 9px; color: var(--muted); }
         .cap-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+
+        /* ---- v41 polish: borders, focus, press ----------------------
+           Three things were inconsistent across the app: every surface had
+           a hand-picked radius, nothing showed a keyboard focus ring, and
+           taps had no acknowledgement other than the action happening. */
+
+        /* One focus treatment everywhere, and only for keyboards -- a mouse
+           or thumb tap should not leave a ring behind. */
+        :focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+          border-radius: var(--r-btn);
+        }
+
+        /* Buttons acknowledge the press itself. 60ms is under the threshold
+           where it reads as lag but over the one where it reads as nothing. */
+        button:not(:disabled):active {
+          transform: translateY(0.5px) scale(0.985);
+          transition: transform 60ms ease;
+        }
+
+        /* Cards lift their border rather than their shadow -- DESIGN.md
+           forbids raised cards, and on a dark UI a brighter hairline reads
+           as "live" more clearly than a shadow does anyway. */
+        .note-card, .quest-habit-card, .tool-card, .daily-card, .routine-row {
+          transition: border-color 160ms ease, background-color 160ms ease;
+        }
+        .tool-card:active, .note-card:active { border-color: var(--accent); }
+
+        /* Themes with a glow budget get one, on the accent surfaces only. */
+        .pomo-btn.primary, .cap-chip.on {
+          box-shadow: 0 0 var(--glow-w) var(--glow);
+        }
+        .tabs button.active::after { box-shadow: 0 0 calc(var(--glow-w) * 2) var(--glow); }
+
+        .type-caret {
+          display: inline-block;
+          width: 6px; height: 1em;
+          margin-left: 2px;
+          vertical-align: -0.12em;
+          background: var(--accent);
+          animation: caretBlink 1.1s steps(1) infinite;
+        }
+        .type-caret.idle { opacity: 0.45; }
+        @keyframes caretBlink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) {
+          .type-caret { animation: none; opacity: 0.45; }
+        }
+
+        /* Section headers get a hairline that runs to the edge -- cheap,
+           and it stops long lists reading as one undifferentiated column. */
+        .section-header:not(.habits-header):not(.tool-header) {
+          display: flex; align-items: center; gap: 10px;
+        }
+        /* Plain headers only. habits-header and tool-header already carry a
+           control on the right, and a rule drawn after it reads as a stray
+           line rather than a divider. */
+        .section-header:not(.habits-header):not(.tool-header)::after {
+          content: ""; flex: 1 1 auto; height: 1px;
+          background: linear-gradient(to right, var(--track), transparent);
+        }
+
+        /* ---- captions editor (v41) ---- */
+        .cap-preview-wrap {
+          position: relative; display: flex; justify-content: center;
+          margin: 4px 0 10px;
+        }
+        /* Capped by HEIGHT, not width: a 9:16 clip at 300px wide is 533px
+           tall, which pushed every control below the fold on a phone. */
+        .cap-preview {
+          max-width: 100%; max-height: 42vh; width: auto; height: auto; display: block;
+          border: 1px solid var(--border); border-radius: var(--r-card); background: #000;
+        }
+        .cap-preview-tag {
+          position: absolute; top: 6px; right: 8px;
+          padding: 2px 5px; border-radius: 2px;
+          background: rgba(11,13,16,0.72);
+          font-family: var(--font-mono); font-size: 8.5px;
+          color: var(--muted); letter-spacing: 0.08em;
+        }
+        /* the real clip is the pixel source for the preview canvas, never
+           shown directly -- one surface, so what you tune is what you see */
+        .cap-source { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+        .cap-file { position: relative; overflow: hidden; text-align: center; line-height: 1.1; }
+        .cap-file input { position: absolute; inset: 0; opacity: 0; width: 100%; }
+        .cap-editor { margin-top: 4px; }
+        .cap-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 8px; }
+        .cap-chips.tight { padding: 0; }
+        .cap-chip {
+          padding: 6px 10px; cursor: pointer; border-radius: var(--r-chip);
+          background: transparent; border: 1px solid var(--border); color: var(--muted);
+          font-size: 10.5px; letter-spacing: 0.04em;
+          font-family: var(--font-mono);
+        }
+        .cap-chip.on { border-color: var(--accent); color: var(--accent); }
+        .cap-row {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 10px; padding: 5px 0;
+        }
+        .cap-row.wide { flex-direction: column; align-items: stretch; gap: 5px; }
+        .cap-row-label {
+          font-family: var(--font-mono); font-size: 10.5px;
+          color: var(--muted); letter-spacing: 0.05em;
+        }
+        .cap-step { display: flex; align-items: center; gap: 4px; }
+        .cap-step button {
+          width: 30px; height: 28px; cursor: pointer; border-radius: 3px;
+          background: transparent; border: 1px solid var(--border); color: var(--text);
+          font-family: var(--font-mono); font-size: 13px;
+        }
+        .cap-step-val {
+          min-width: 54px; text-align: center; color: var(--accent);
+          font-family: var(--font-mono); font-size: 11px;
+          font-variant-numeric: tabular-nums;
+        }
+        .cap-swatches { display: flex; flex-wrap: wrap; gap: 5px; }
+        .cap-swatch {
+          width: 26px; height: 26px; border-radius: 3px; cursor: pointer;
+          border: 1px solid var(--border); padding: 0;
+        }
+        .cap-swatch.on { border-color: var(--accent); border-width: 2px; }
+        .cap-swatch.custom {
+          position: relative; display: flex; align-items: center; justify-content: center;
+          background: transparent; color: var(--muted); font-size: 13px;
+        }
+        .cap-swatch.custom input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; }
+        .cap-hint {
+          color: var(--muted); font-size: 9.5px; padding-bottom: 6px;
+          font-family: var(--font-mono);
+        }
 
         /* ---- pomodoro ---- */
         .pomo { padding: 6px 14px 20px; }
@@ -10986,12 +11490,12 @@ function TodoApp() {
           gap: 4px;
         }
         .pomo-clock {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 34px; font-variant-numeric: tabular-nums;
           letter-spacing: 0.02em; color: var(--text);
         }
         .pomo-phase {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
         }
         .pomo-pips {
@@ -11006,13 +11510,13 @@ function TodoApp() {
         .pomo-pip.active { background: var(--accent); border-color: var(--accent); }
         .pomo-round {
           margin-left: 6px; color: var(--muted);
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em;
+          font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
         }
         .pomo-controls { display: flex; gap: 6px; justify-content: center; margin-bottom: 18px; }
         .pomo-btn {
           flex: 1; max-width: 110px; padding: 9px 0; cursor: pointer;
-          background: transparent; border: 1px solid var(--border); border-radius: 3px;
-          color: var(--muted); font-family: 'JetBrains Mono', monospace;
+          background: transparent; border: 1px solid var(--border); border-radius: var(--r-btn);
+          color: var(--muted); font-family: var(--font-mono);
           font-size: 11px; letter-spacing: 0.08em;
           transition: color 140ms ease, border-color 140ms ease;
         }
@@ -11024,7 +11528,7 @@ function TodoApp() {
         .pomo-set-face {
           width: 100%; display: flex; align-items: center; justify-content: space-between;
           padding: 9px 11px; cursor: pointer; background: transparent; border: none;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
         }
         .pomo-set-label { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
         .pomo-set-value { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
@@ -11032,12 +11536,12 @@ function TodoApp() {
         .pomo-stepper button {
           flex: 1; padding: 7px 0; cursor: pointer;
           background: transparent; border: 1px solid var(--border); border-radius: 3px;
-          color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 12px;
+          color: var(--text); font-family: var(--font-mono); font-size: 12px;
         }
         .pomo-stepper button:disabled { opacity: 0.25; cursor: default; }
         .pomo-note {
           margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.65;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           display: flex; flex-direction: column; gap: 5px;
         }
 
@@ -11058,7 +11562,7 @@ function TodoApp() {
         .edit-xp-row { display: flex; gap: 10px; align-items: center; }
         .edit-xp-field, .new-xp-field { display: flex; align-items: center; gap: 5px; }
         .edit-xp-tag {
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.06em; color: var(--muted);
         }
         .edit-xp-tag.gain { color: var(--accent); }
@@ -11068,7 +11572,7 @@ function TodoApp() {
         .edit-opp-select {
           flex: 1; min-width: 0; background: var(--bg);
           border: 1px solid var(--border); border-radius: 4px;
-          color: var(--text); font-family: 'JetBrains Mono', monospace;
+          color: var(--text); font-family: var(--font-mono);
           font-size: 10px; padding: 4px 6px; outline: none;
         }
         .edit-opp-select:focus { border-color: var(--accent); }
@@ -11098,15 +11602,15 @@ function TodoApp() {
         }
         .backup-ask-head {
           display: flex; align-items: baseline; gap: 6px;
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           margin-bottom: 8px;
         }
         .backup-ask-body {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           line-height: 1.6; color: var(--muted); white-space: pre-wrap; margin: 0;
         }
         .backup-ask-warn {
-          font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+          font-family: var(--font-mono); font-size: 9.5px;
           line-height: 1.6; color: var(--accent2);
           border: 1px solid var(--border); border-radius: 4px;
           padding: 7px 8px; margin-top: 10px;
@@ -11119,7 +11623,7 @@ function TodoApp() {
 
         .del-btn.armed {
           color: var(--bg); background: var(--danger); border-color: var(--danger);
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px;
           white-space: nowrap;
         }
@@ -11128,10 +11632,10 @@ function TodoApp() {
         .daily-grid { display: flex; flex-direction: column; gap: 8px; padding: 0 18px 4px; }
         .daily-card {
           display: flex; align-items: center; gap: 10px;
-          background: var(--panel); border: 1px solid var(--border);
-          border-left: 3px solid var(--dc); border-radius: 10px;
+          background: var(--panel); border: var(--border-w) solid var(--border);
+          border-left: 3px solid var(--dc); border-radius: var(--r-card);
           padding: 12px; cursor: pointer; text-align: left;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           transition: border-color 140ms ease, opacity 200ms ease;
         }
         .daily-card:hover:not(:disabled) { border-color: var(--dc); }
@@ -11145,7 +11649,7 @@ function TodoApp() {
         .daily-coins { font-size: 10px; color: var(--accent2); flex: none; }
         .daily-note {
           display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-          font-family: 'JetBrains Mono', monospace; font-size: 9px;
+          font-family: var(--font-mono); font-size: 9px;
           color: var(--muted); padding: 6px 18px 12px;
         }
         .quest-habit-card.drawn { border-left: 2px solid var(--accent); }
@@ -11155,7 +11659,7 @@ function TodoApp() {
         .quest-habit-card.reordering { border-style: dashed; }
 
         .note-empty {
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
           color: var(--muted); padding: 10px 18px 14px;
         }
 
@@ -11199,7 +11703,7 @@ function TodoApp() {
         }
 
         .vault-card-goal {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--muted);
           margin-top: 2px;
@@ -11221,7 +11725,7 @@ function TodoApp() {
         .month-grid-wrap { display: flex; flex-direction: column; gap: 5px; }
 
         .month-grid-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           color: #4B5563;
           letter-spacing: 0.04em;
@@ -11257,7 +11761,7 @@ function TodoApp() {
         }
 
         .vault-card-pct {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--text);
         }
@@ -11266,7 +11770,7 @@ function TodoApp() {
           border: 1.5px solid var(--border);
           background: transparent;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           padding: 8px;
           border-radius: 7px;
@@ -11304,7 +11808,7 @@ function TodoApp() {
         }
 
         .project-due {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--accent2);
           width: fit-content;
@@ -11342,7 +11846,7 @@ function TodoApp() {
           border-radius: 7px;
           padding: 7px 9px;
           color: var(--text);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           font-size: 12px;
           outline: none;
         }
@@ -11379,7 +11883,7 @@ function TodoApp() {
         }
 
         .area-xp {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           color: var(--muted);
         }
@@ -11401,8 +11905,8 @@ function TodoApp() {
              rather than dropping a control. */
           gap: 6px;
           background: var(--panel);
-          border: 1px solid var(--border);
-          border-radius: 10px;
+          border: var(--border-w) solid var(--border);
+          border-radius: var(--r-card);
           padding: 10px 10px;
         }
         /* the label is the only thing that should shrink */
@@ -11428,7 +11932,7 @@ function TodoApp() {
         }
 
         .quest-habit-meta {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--muted);
         }
@@ -11458,7 +11962,7 @@ function TodoApp() {
         .reward-label { font-size: 13px; font-weight: 600; color: var(--text); }
 
         .reward-cost {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px;
           color: var(--accent2);
         }
@@ -11467,7 +11971,7 @@ function TodoApp() {
           border: 1.5px solid var(--border);
           background: transparent;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           padding: 8px;
           border-radius: 7px;
@@ -11486,7 +11990,7 @@ function TodoApp() {
         }
 
         .reward-claimed-count {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9.5px;
           color: #4B5563;
         }
@@ -11499,7 +12003,7 @@ function TodoApp() {
         }
 
         .xp-bar-label {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px;
           color: var(--muted);
         }
@@ -11533,7 +12037,7 @@ function TodoApp() {
           border-radius: 6px;
           padding: 6px 8px;
           color: var(--text);
-          font-family: 'Inter', sans-serif;
+          font-family: var(--font-ui);
           font-size: 12.5px;
           outline: none;
         }
@@ -11544,7 +12048,7 @@ function TodoApp() {
           border: 1px solid var(--border);
           background: #0F1215;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px;
           letter-spacing: 0.03em;
           padding: 4px 9px;
@@ -11563,7 +12067,7 @@ function TodoApp() {
           border: 1px solid var(--border);
           background: #0F1215;
           color: var(--muted);
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px;
           padding: 5px 10px;
           border-radius: 6px;
@@ -11623,7 +12127,7 @@ function TodoApp() {
           gap: 10px; margin-bottom: 5px;
         }
         .ai-intro-title {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 13px; font-weight: 600; color: var(--text);
           letter-spacing: 0.04em;
         }
@@ -11633,7 +12137,7 @@ function TodoApp() {
           display: inline-flex; align-items: center; gap: 5px;
           background: transparent; border: 1px solid var(--border);
           border-radius: 999px; color: var(--muted); cursor: pointer;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
           padding: 4px 10px; flex-shrink: 0;
           transition: border-color 140ms ease, color 140ms ease;
@@ -11647,7 +12151,7 @@ function TodoApp() {
           text-shadow: 0 0 14px rgba(94,234,212,0.5);
         }
         .ai-gate-title {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 14px; font-weight: 600; color: var(--text);
           letter-spacing: 0.04em; margin-bottom: 6px;
         }
@@ -11664,7 +12168,7 @@ function TodoApp() {
         }
         .ai-gate-steps li::marker {
           color: var(--accent);
-          font-family: 'JetBrains Mono', monospace; font-size: 10px;
+          font-family: var(--font-mono); font-size: 10px;
         }
         .ai-gate-steps a {
           color: var(--accent); text-decoration: none;
@@ -11674,7 +12178,7 @@ function TodoApp() {
         .ai-key-input {
           width: 100%; box-sizing: border-box;
           background: #0E1116; border: 1px solid var(--border); border-radius: 8px;
-          color: var(--text); font-family: 'JetBrains Mono', monospace;
+          color: var(--text); font-family: var(--font-mono);
           font-size: 12px; letter-spacing: 0.06em;
           padding: 11px 12px; outline: none;
           transition: border-color 140ms ease;
@@ -11694,7 +12198,7 @@ function TodoApp() {
         .ai-input {
           width: 100%; box-sizing: border-box; resize: vertical; min-height: 62px;
           background: #0E1116; border: 1px solid var(--border); border-radius: 8px;
-          color: var(--text); font-family: 'Inter', sans-serif;
+          color: var(--text); font-family: var(--font-ui);
           font-size: 12.5px; line-height: 1.5; padding: 10px 12px;
           outline: none; transition: border-color 140ms ease;
         }
@@ -11705,7 +12209,7 @@ function TodoApp() {
         .ai-send {
           align-self: flex-end; background: var(--accent); color: #07100E;
           border: none; border-radius: 7px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
           padding: 8px 20px; cursor: pointer;
           transition: opacity 140ms ease, transform 140ms ease;
@@ -11727,7 +12231,7 @@ function TodoApp() {
         }
         .ai-dots { display: flex; gap: 5px; }
         .ai-elapsed {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10px; color: var(--muted); letter-spacing: 0.05em;
           font-variant-numeric: tabular-nums;
         }
@@ -11766,13 +12270,13 @@ function TodoApp() {
           margin-bottom: 7px;
         }
         .ai-diff-title {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9.5px; letter-spacing: 0.1em;
           text-transform: uppercase; color: var(--muted);
         }
         .ai-diff-counts {
           display: flex; gap: 8px;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 10.5px; font-weight: 600;
         }
         .ai-diff-counts .c-add { color: #7EE787; }
@@ -11795,19 +12299,19 @@ function TodoApp() {
         .ai-diff-row.skipped { opacity: 0.38; }
         .ai-diff-row.skipped .ai-diff-text { text-decoration: line-through; }
 
-        .ai-sign { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; line-height: 1; }
+        .ai-sign { font-family: var(--font-mono); font-size: 13px; font-weight: 700; line-height: 1; }
         .ai-diff-row.add .ai-sign    { color: #7EE787; }
         .ai-diff-row.edit .ai-sign   { color: var(--accent2); }
         .ai-diff-row.remove .ai-sign { color: var(--danger); }
 
         .ai-surface {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 9px; letter-spacing: 0.06em;
           text-transform: uppercase; color: var(--muted);
         }
         .ai-diff-text { font-size: 12px; color: var(--text); line-height: 1.4; word-break: break-word; }
         .ai-skip-mark {
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 8.5px; letter-spacing: 0.08em;
           text-transform: uppercase; color: var(--muted);
         }
@@ -11816,7 +12320,7 @@ function TodoApp() {
         .ai-apply {
           flex: 1; background: var(--accent); color: #07100E; border: none;
           border-radius: 7px; padding: 10px 0; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
           transition: opacity 140ms ease, transform 140ms ease;
         }
@@ -11826,7 +12330,7 @@ function TodoApp() {
           background: transparent; color: #9AA3AF;
           border: 1px solid var(--border); border-radius: 7px;
           padding: 10px 18px; cursor: pointer;
-          font-family: 'JetBrains Mono', monospace;
+          font-family: var(--font-mono);
           font-size: 11px; letter-spacing: 0.06em;
           transition: border-color 140ms ease, color 140ms ease;
         }
@@ -11939,7 +12443,7 @@ function TodoApp() {
               <span className="dot amber" />
               <span className="dot green" />
             </div>
-            <span className="titlebar-name">tasks.sh</span>
+            <TypedName />
             <VersionBadge />
           </div>
           <div className="titlebar-right">
@@ -12010,7 +12514,7 @@ function TodoApp() {
               </svg>
             </button>
             <span className="clock">
-              {new Date(now).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true })}
+              {new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}
             </span>
           </div>
         </div>
@@ -12092,6 +12596,7 @@ pet, wallet and themes are always included.
             rewards={rewards}
             setRewards={setRewards}
             totalXP={totalXP}
+            coins={achCtl.coins}
             setTab={changeTab}
           />
         ) : tab === "tasks" ? (
@@ -12123,6 +12628,8 @@ pet, wallet and themes are always included.
             setHabits={setHabits}
             rewards={rewards}
             setRewards={setRewards}
+            coins={achCtl.coins}
+            spend={(n) => achCtl.addCoins(-n)}
           />
         ) : (
           <CompanionView

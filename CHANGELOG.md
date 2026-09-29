@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v41`** | 2026-09-28 | Themes change everything, coins buy rewards, caption editor, dead-model rescue |
 | **`v40`** | 2026-09-28 | AI captions tool, ambient background removed, red→cyan card wash |
 | **`v39`** | 2026-09-27 | TOOLS tab + pomodoro, inventory editing, tab bar fits seven |
 | **`v38`** | 2026-09-27 | Encrypted cloud backup, self-updating app, widget feed removed |
@@ -210,6 +211,99 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-28 — `tasksh-v41`** *(continued)*
+
+- **Themes now change type, shape and gradient, not just colour.** Each of
+  the nine carries `type` (mono + UI font), `shape` (card/button/chip radius,
+  border weight, glow budget) and its own two-stop `ramp` for the card wash.
+  172 hardcoded `'JetBrains Mono'` literals became `var(--font-mono)`.
+  Neon is square-cornered with a mono UI and a magenta bloom; Sakura is 14px
+  rounded and pink; Bone is serif. Three new themes, and the ladder is now
+  one every five levels (1, 5, 10 … 40) instead of every ten — milestones
+  and pet forms stay on tens.
+
+- **Fixed: coins were a currency nothing accepted.** Daily quests and
+  pomodoro blocks minted them; the reward centre charged **XP**. So claiming
+  a reward dragged the same number that drives levels, the pet and theme
+  unlocks — two currencies, one sink, plumbed to the wrong one. Rewards now
+  cost coins, `computeSpendableXP` is deleted, and the XP-source donut lost
+  its "Spent" slice because XP is no longer spent.
+  - Existing rewards keep their numbers, so a reward that cost 150 XP now
+    costs 150 coins. Worth re-pricing once the balance is visible.
+
+- **Fixed: every non-Gemini model ID in the app was dead.** Groq retired
+  both Llamas on 2026-08-16; checking the public catalogues found the
+  OpenRouter and NVIDIA IDs gone too. Replaced with current ones, and —
+  because this is the third model shutdown in three months — every
+  OpenAI-compatible provider now does what Gemini has done since v19: when
+  the hardcoded IDs all fail, ask the provider what it serves and use that,
+  skipping anything that can't hold a conversation.
+
+- **Fixed: Gemini auth and error reporting.** The key moved from `?key=` to
+  the `x-goog-api-key` header (keeps a secret out of URLs and logs), 3.x
+  models moved ahead of the retired 2.x ones, and failures now report
+  Google's actual reason instead of "Couldn't reach Google" — including
+  naming the `AQ.` key bug and pointing at a provider that works.
+
+- **Polish.** One keyboard-only focus ring, a 60ms press response, cards
+  that lift their border instead of a shadow, section-header hairlines
+  (excluded from headers that already carry a control), and a wordmark that
+  types itself once on boot with a blinking cursor. All motion respects
+  `prefers-reduced-motion`.
+
+- **Audit before release:** every tab in all nine themes at 360px — no
+  console errors, no page errors, no loose overflow. The 45 elements past
+  the right edge on the routines tab are all inside `timeline-scroll` and
+  the tab bar, which is what a horizontal scroller is.
+
+- **Tests: 226 unit + 84 browser.**
+
+**2026-09-28 — `tasksh-v41`**
+
+- **Added: a real caption style editor with a live 5-second preview.** The
+  preview runs with or without a clip — a sample loop with a deliberate
+  pause in it, so line breaking is visible while you tune — and it renders
+  through **the same `drawCaptions` the exporter uses**. A preview drawn by
+  different code than the export is worse than no preview.
+  - Editable: font (4 stacks), size, weight, letter spacing, words per line,
+    uppercase, vertical position, alignment, text/spoken/chip/outline
+    colours (8 swatches plus a native picker) and outline width.
+  - **Four highlight behaviours**, because "karaoke" is a motion decision as
+    much as a colour one: none, colour, pop (one word at a time, scaling in
+    over 120ms) and chip (spoken word on a filled rounded rect, drawn by
+    hand because `roundRect()` is still missing on enough Android webviews).
+  - Every value is clamped by `CAPTION_LIMITS` and weights snap to hundreds;
+    a 0.2 font size is one word per screen and a baseline past 0.92 sits
+    under Instagram's UI.
+  - Words-per-line **re-chunks live** rather than being baked at transcribe
+    time — it was stored before, which meant the setting silently did
+    nothing until you re-transcribed.
+
+- **Fixed: the titlebar was squashed.** Measured at 360px: the 12-hour clock
+  was wrapping onto two lines, which made the whole bar **55px** tall and
+  left the right-hand controls 197px wide. Now 24-hour, `nowrap`, tabular
+  figures; icons 24→22px with a 6px gap; the three decorative mac dots hide
+  below 400px. **Bar is 47px, clock is one 13px line, controls 173px.**
+
+- **Changed: the tab bar scrolls again, on purpose.** v39 fitted seven tabs
+  into 360px by halving the padding, which fixed overflow and made the row
+  look crushed. Padding is back to 13px and the bar scrolls, with a fade
+  mask on the right edge so it reads as scrollable rather than clipped, and
+  `changeTab()` pulls the active tab fully into view. The v39 "zero
+  overflow" test was replaced by one asserting the opposite contract.
+
+- **Fixed: the achievement toast was eating taps on the whole top bar.** It
+  is `position: fixed; top: 16px` and clickable, so for its entire lifetime
+  it covered the titlebar and the tab bar. This is exactly what
+  gate.spec's pointer-events test is for — it missed it because it
+  hit-tested the *last* tab, which has been legitimately off screen since
+  the bar started scrolling, so it was measuring empty space. Now it
+  hit-tests the **active** tab, immediately went red, and the toast moved to
+  the bottom where the app's other toasts already live.
+
+- **Tests: 214 unit + 84 browser.** Four more mutations on the style
+  sanitiser, four reds.
 
 **2026-09-28 — `tasksh-v40`**
 

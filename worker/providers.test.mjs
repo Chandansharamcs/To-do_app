@@ -227,4 +227,51 @@ test("NVIDIA opts out of json mode", () => {
   assert.equal(PROVIDERS.nvidia.jsonMode, false);
 });
 
+
+// ---- model rot (v41) -------------------------------------------------------
+// Three shutdowns in three months. These tests are the tripwire.
+
+await test("no provider points at a model that is known to be dead", () => {
+  const M = new Function([sliceDecl("PROVIDERS"), "return PROVIDERS;"].join("\n"))();
+  // Every id here was verified dead on 2026-09-28: Groq's deprecation page
+  // for the Llamas, and the public catalogues of OpenRouter and NVIDIA for
+  // the rest.
+  const GRAVEYARD = [
+    "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+    "meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free",
+    "meta/llama-3.3-70b-instruct", "openai/gpt-oss-120b-nvidia",
+    "open-mistral-nemo", "gemma2-9b-it", "mixtral-8x7b-32768",
+  ];
+  for (const prov of Object.values(M)) {
+    for (const model of prov.models || []) {
+      assert.ok(!GRAVEYARD.includes(model), `${prov.id} still lists retired model ${model}`);
+    }
+  }
+});
+
+await test("preference order wins when the provider serves it", () => {
+  const M = new Function([sliceDecl("NOT_CHAT"), sliceDecl("pickServedModel"), "return pickServedModel;"].join("\n"))();
+  assert.equal(M(["a", "b"], ["z", "b", "a"]), "a");
+  assert.equal(M(["a", "b"], ["z", "b"]), "b");
+});
+
+await test("when every preferred model is gone, a served chat model is used", () => {
+  const M = new Function([sliceDecl("NOT_CHAT"), sliceDecl("pickServedModel"), "return pickServedModel;"].join("\n"))();
+  // exactly the Groq situation: both hardcoded ids retired overnight
+  assert.equal(M(["llama-3.3-70b-versatile"], ["openai/gpt-oss-120b", "whisper-large-v3"]), "openai/gpt-oss-120b");
+});
+
+await test("discovery never picks a model that cannot hold a conversation", () => {
+  const M = new Function([sliceDecl("NOT_CHAT"), sliceDecl("pickServedModel"), "return pickServedModel;"].join("\n"))();
+  const served = ["whisper-large-v3-turbo", "text-embedding-3-small", "llama-guard-4-12b",
+                  "playai-tts", "qwen/qwen3.6-27b"];
+  assert.equal(M([], served), "qwen/qwen3.6-27b");
+});
+
+await test("no models at all is null, not a crash", () => {
+  const M = new Function([sliceDecl("NOT_CHAT"), sliceDecl("pickServedModel"), "return pickServedModel;"].join("\n"))();
+  assert.equal(M(["a"], []), null);
+  assert.equal(M(["a"], null), null);
+});
+
 console.log(`  providers.test.mjs — ${passed} passed`);

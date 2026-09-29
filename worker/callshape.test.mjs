@@ -298,4 +298,76 @@ await test("the pool reports the last error when every key fails", async () => {
   assert.equal(res.status, 429);
 });
 
+// ---- gemini auth transport (v41) -----------------------------------------
+// The key used to travel in the query string. Secrets in URLs end up in
+// access logs, proxy logs and error reports, and Google now documents the
+// header instead. This asserts the shape rather than the behaviour, because
+// the behaviour needs a live key.
+
+await test("the Gemini key travels in a header, never in the URL", () => {
+  // Asserted against the source rather than by lifting: these are one-line
+  // arrow consts sitting next to each other, and the brace-matched slicer
+  // swallows all three as one declaration.
+  const endpoint = SRC.match(/const AI_ENDPOINT = [^;]+;/)[0];
+  const listing  = SRC.match(/const AI_LIST_ENDPOINT = [^;]+;/)[0];
+  for (const decl of [endpoint, listing]) {
+    assert.ok(!/[?&]key=\$\{/.test(decl), `key is still in the URL: ${decl}`);
+    assert.ok(decl.includes("generativelanguage.googleapis.com"), decl);
+  }
+  const headers = SRC.match(/const geminiHeaders = [^;]+;/)[0];
+  assert.ok(headers.includes('"x-goog-api-key": key'), `no header auth: ${headers}`);
+  assert.ok(headers.includes('"Content-Type": "application/json"'), headers);
+});
+
+await test("no call site puts the key back in the query string", () => {
+  // the slice test above only covers the builders; this covers every caller
+  assert.equal(/AI_ENDPOINT\([^)]*,\s*\w+\)/.test(SRC), false, "a call site still passes a key to AI_ENDPOINT");
+  assert.equal(/AI_LIST_ENDPOINT\(\w+\)/.test(SRC), false, "a call site still passes a key to AI_LIST_ENDPOINT");
+  const calls = SRC.match(/fetch\(AI_(?:LIST_)?ENDPOINT\([^)]*\)[^)]*\)/gs) || [];
+  assert.ok(calls.length >= 4, `expected the four Gemini call sites, found ${calls.length}`);
+});
+
+await test("retired Gemini generations sit at the back of the fallback list", () => {
+  // A 2.5-flash near the front produced 404s that surfaced as misleading
+  // 401 auth errors -- Google's own forum traced a wave of "bad AQ key"
+  // reports to exactly that.
+  const M = new Function([sliceDecl("MODEL_PREFERENCES"), "return MODEL_PREFERENCES;"].join("\n"))();
+  const idx = (p) => M.findIndex((m) => m.startsWith(p));
+  assert.ok(idx("gemini-3") !== -1, "no 3.x model in the list");
+  assert.ok(idx("gemini-3") < idx("gemini-2"), "a 2.x model is preferred over a 3.x one");
+  assert.equal(M[0].includes("latest"), true, "the -latest alias should lead");
+});
+
+await test("a Gemini failure explains itself instead of blaming the network", () => {
+  const M = new Function([sliceDecl("geminiFailureMessage"), "return geminiFailureMessage;"].join("\n"))();
+
+  // the retired format
+  assert.match(M(400, "API_KEY_INVALID", "AIzaSyabc"), /September 2026/);
+  assert.match(M(400, "API_KEY_INVALID", "AQ.Abxyz"), /copied all of it/);
+
+  // the one he actually hit: Google refusing the credential type
+  const aq = M(401, 'reason: "ACCESS_TOKEN_TYPE_UNSUPPORTED"', "AQ.Abxyz");
+  assert.match(aq, /known Google-side problem/);
+  assert.match(aq, /gsk_/, "should point at a provider that works today");
+
+  assert.match(M(403, "PERMISSION_DENIED", "AQ.Ab"), /Generative Language API/);
+  assert.match(M(404, "not found", "AQ.Ab"), /model is gone/i);
+
+  // and the fallback must still carry Google's own words
+  const unknown = M(500, "backend hiccup", "AQ.Ab");
+  assert.match(unknown, /500/);
+  assert.match(unknown, /backend hiccup/);
+  assert.ok(!/Couldn't reach/i.test(unknown), "still blaming the network for a server answer");
+});
+
+await test("ai-verify actually uses that mapping", () => {
+  // The previous test proves the function is right; this proves it is
+  // wired in. Reverting the call site left the suite green without it.
+  const fn = SRC.slice(SRC.indexOf("async function handleAIVerify"), SRC.indexOf("async function handleAIModels"));
+  assert.ok(fn.includes("geminiFailureMessage(err.status, detail, key)"),
+    "handleAIVerify no longer routes its errors through geminiFailureMessage");
+  assert.ok(!/Couldn't reach Google to check the key/.test(fn),
+    "the old catch-all message is back");
+});
+
 console.log(`  callshape.test.mjs — ${passed} passed`);

@@ -101,25 +101,46 @@ await test("opening a tool and coming back doesn't lose the grid", async () => {
   await ctx.close();
 });
 
-await test("all seven tabs fit on the narrowest phone, no swiping", async () => {
-  // Adding TOOLS as a 7th tab pushed it AND the pet tab off a 390px screen:
-  // 100px of overflow on a bar that scrolls, so a brand-new feature was
-  // invisible unless you knew to swipe. If an 8th tab ever lands, this fails
-  // before it ships rather than after.
+await test("the tab bar scrolls and pulls the active tab into view", async () => {
+  // v39 squeezed seven tabs into 360px to avoid overflow and the row looked
+  // crushed. v41 gives the padding back and scrolls instead -- which is only
+  // acceptable if tapping a tab always brings it fully on screen.
   const ctx = await browser.newContext({ viewport: { width: 360, height: 800 } });
   const page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: "networkidle" });
   await page.waitForTimeout(700);
-  const info = await page.evaluate(() => {
-    const bar = document.querySelector(".tabs");
-    const barR = bar.getBoundingClientRect();
-    const cut = [...document.querySelectorAll('[role="tab"]')]
-      .filter((t) => t.getBoundingClientRect().right > barR.right + 0.5)
-      .map((t) => t.textContent);
-    return { overflow: bar.scrollWidth - bar.clientWidth, cut };
+
+  const overflow = await page.evaluate(() => {
+    const t = document.querySelector(".tabs");
+    return t.scrollWidth - t.clientWidth;
   });
-  assert.deepEqual(info.cut, [], `tabs off screen at 360px: ${info.cut.join(", ")}`);
-  assert.equal(info.overflow, 0, `tab bar overflows by ${info.overflow}px at 360px`);
+  assert.ok(overflow > 0, "the bar no longer scrolls — did the padding get squeezed again?");
+
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(700);
+  const visible = await page.evaluate(() => {
+    const bar = document.querySelector(".tabs").getBoundingClientRect();
+    const tab = document.getElementById("tab-tools").getBoundingClientRect();
+    return tab.left >= bar.left - 1 && tab.right <= bar.right + 1;
+  });
+  assert.ok(visible, "the active tab stayed off screen after being tapped");
+  await ctx.close();
+});
+
+await test("the titlebar clock stays on one line", async () => {
+  // 12-hour time wrapped to two lines at 360px and pushed the bar to 55px
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 800 } });
+  const page = await ctx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  const m = await page.evaluate(() => {
+    const c = document.querySelector(".clock");
+    return { h: c.getBoundingClientRect().height, text: c.textContent.trim(),
+             bar: document.querySelector(".titlebar").getBoundingClientRect().height };
+  });
+  assert.ok(m.h < 20, `clock is ${m.h}px tall — it is wrapping: "${m.text}"`);
+  assert.ok(m.bar <= 50, `titlebar is ${m.bar}px tall`);
+  assert.match(m.text, /^\d{2}:\d{2}$/, `expected 24h time, got "${m.text}"`);
   await ctx.close();
 });
 
@@ -179,7 +200,8 @@ await test("the captions tool is on the grid and opens", async () => {
   await page.waitForTimeout(300);
   await page.locator(".tool-card", { hasText: "ai captions" }).click();
   await page.waitForTimeout(400);
-  assert.equal(await page.locator(".cap-drop").count(), 1, "no file picker shown");
+  assert.equal(await page.locator(".cap-file input[type=file]").count(), 1, "no file picker shown");
+  assert.equal(await page.locator(".cap-preview").count(), 1, "no preview surface");
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -203,7 +225,7 @@ await test("the phone check reports what the hardware actually does", async () =
 
   await page.getByRole("button", { name: "check phone" }).click();
   await page.waitForTimeout(4000);
-  const out = await page.locator(".cap .cap-note").last().innerText();
+  const out = await page.locator(".cap-note", { hasText: "webcodecs" }).innerText();
   assert.match(out, new RegExp(`h\\.264 encode\\s+${truth ? "yes" : "no"}`, "i"),
     `self-test disagrees with the browser (truth=${truth}):\n${out}`);
   if (truth) assert.match(out, /real encode\s+yes/i, `probe clip did not encode:\n${out}`);
@@ -247,6 +269,68 @@ await test("captions actually burn into a real file", async () => {
   assert.equal(out.meta.width, 320, `lost the frame size: ${JSON.stringify(out.meta)}`);
   assert.equal(out.meta.height, 180);
   assert.ok(out.meta.duration > 1.4, `duration collapsed: ${out.meta.duration}`);
+  await ctx.close();
+});
+
+await test("the style editor previews and redraws without a clip", async () => {
+  // the point of the sample loop: design the look before you have footage
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "ai captions" }).click();
+  await page.waitForTimeout(600);
+
+  assert.equal(await page.locator(".cap-preview").count(), 1, "no preview canvas");
+  assert.match(await page.locator(".cap-preview-tag").innerText(), /sample/i);
+
+  // the canvas must actually be painting, not sitting blank
+  const painted = await page.evaluate(() => {
+    const c = document.querySelector(".cap-preview");
+    const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    let nonBlack = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 20 || d[i + 1] > 20 || d[i + 2] > 20) nonBlack++;
+    return nonBlack;
+  });
+  assert.ok(painted > 1000, `preview looks blank (${painted} lit pixels)`);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("editing the style changes what is drawn, and survives a reload", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "ai captions" }).click();
+  await page.waitForTimeout(500);
+
+  const shot = () => page.evaluate(() => {
+    const c = document.querySelector(".cap-preview");
+    return c.getContext("2d").getImageData(0, Math.round(c.height * 0.6), c.width, Math.round(c.height * 0.35)).data.join(",").length;
+  });
+
+  await page.locator(".cap-chip", { hasText: "word pop" }).click();
+  await page.waitForTimeout(400);
+  const before = await shot();
+
+  // move the captions up the frame: a different band of pixels must change
+  for (let i = 0; i < 6; i++) await page.getByRole("button", { name: "decrease height" }).click();
+  await page.waitForTimeout(400);
+  const after = await shot();
+  assert.notEqual(before, after, "moving the captions changed nothing on screen");
+
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.captions.v1")).style);
+  assert.ok(saved.posY < 0.82, `position not saved: ${saved.posY}`);
+  assert.equal(saved.highlight, "pop");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".tool-card", { hasText: "ai captions" }).click();
+  await page.waitForTimeout(400);
+  const reloaded = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.captions.v1")).style);
+  assert.equal(reloaded.highlight, "pop", "style did not survive a reload");
   await ctx.close();
 });
 

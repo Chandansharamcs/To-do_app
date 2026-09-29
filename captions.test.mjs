@@ -50,7 +50,9 @@ function slice(name) {
 }
 
 const NAMES = [
-  "CAPTION_MAX_SECONDS", "CAPTION_STYLES", "captionStyleById",
+  "CAPTION_MAX_SECONDS", "CAPTION_LIMITS", "CAPTION_FONTS", "CAPTION_HIGHLIGHTS",
+  "CAPTION_PRESETS", "DEFAULT_CAPTION_STYLE", "CAPTION_SAMPLE_WORDS",
+  "sanitiseCaptionStyle", "captionFontStack",
   "chunkWords", "activeChunkAt", "activeWordIndex",
   "wordsFromGroqResponse", "encodeWav", "downmixTo16k",
 ];
@@ -208,25 +210,77 @@ T("mono passes through at the right length", () => {
 
 // ---- styles ----------------------------------------------------------------
 
-T("three styles, each with a highlight rule that makes sense", () => {
-  assert.equal(M.CAPTION_STYLES.length, 3);
-  const byId = Object.fromEntries(M.CAPTION_STYLES.map((s) => [s.id, s]));
-  assert.equal(byId.clean.active, null, "clean should not highlight");
-  assert.ok(byId.karaoke.active, "karaoke needs a highlight colour");
-  assert.equal(byId.pop.pop, true);
-});
-
-T("every style stays inside the readable range", () => {
-  for (const s of M.CAPTION_STYLES) {
-    assert.ok(s.size >= 0.04 && s.size <= 0.09, `${s.id}: font ${s.size} of frame height`);
-    assert.ok(s.strokeW >= 0.1, `${s.id}: outline too thin to survive a white background`);
-    assert.ok(s.weight >= 700, `${s.id}: too light`);
+T("every preset lands inside the readable range", () => {
+  for (const p of M.CAPTION_PRESETS) {
+    const st = M.sanitiseCaptionStyle({ ...M.DEFAULT_CAPTION_STYLE, ...p.patch });
+    assert.ok(st.size >= 0.04 && st.size <= 0.09, `${p.id}: font ${st.size} of frame height`);
+    assert.ok(st.weight >= 700, `${p.id}: too light at ${st.weight}`);
+    // a chip supplies its own contrast, so it is the one style allowed a
+    // thin outline
+    if (st.highlight !== "box") {
+      assert.ok(st.strokeW >= 0.1, `${p.id}: outline too thin to survive a white background`);
+    }
+    assert.ok(st.posY <= 0.92, `${p.id}: sits under Instagram's UI`);
   }
 });
 
-T("an unknown style id falls back rather than rendering nothing", () => {
-  assert.equal(M.captionStyleById("nope").id, "clean");
-  assert.equal(M.captionStyleById(undefined).id, "clean");
+T("out-of-range values are clamped, not accepted", () => {
+  const st = M.sanitiseCaptionStyle({ size: 5, weight: 12000, posY: 3, strokeW: -1, maxWords: 99, tracking: 9 });
+  assert.equal(st.size, M.CAPTION_LIMITS.size[1]);
+  assert.equal(st.weight, 900);
+  assert.equal(st.posY, M.CAPTION_LIMITS.posY[1]);
+  assert.equal(st.strokeW, 0);
+  assert.equal(st.maxWords, M.CAPTION_LIMITS.maxWords[1]);
+  assert.equal(st.tracking, M.CAPTION_LIMITS.tracking[1]);
+});
+
+T("a zero size or a word-per-screen size is impossible", () => {
+  assert.equal(M.sanitiseCaptionStyle({ size: 0 }).size, M.CAPTION_LIMITS.size[0]);
+  assert.ok(M.sanitiseCaptionStyle({ size: 0.9 }).size <= 0.12);
+});
+
+T("weight snaps to hundreds, because 843 is not a font weight", () => {
+  assert.equal(M.sanitiseCaptionStyle({ weight: 843 }).weight, 800);
+});
+
+T("unknown font, highlight or alignment falls back instead of blanking", () => {
+  const st = M.sanitiseCaptionStyle({ font: "comic", highlight: "disco", align: "sideways" });
+  assert.equal(st.font, "inter");
+  assert.equal(st.highlight, "colour");
+  assert.equal(st.align, "center");
+});
+
+T("garbage in gives a usable style, not NaN", () => {
+  const st = M.sanitiseCaptionStyle({ size: "big", posY: null, maxWords: undefined });
+  assert.equal(st.size, M.DEFAULT_CAPTION_STYLE.size);
+  assert.ok(isFinite(st.posY) && isFinite(st.maxWords));
+});
+
+T("every font id resolves to a real stack", () => {
+  for (const f of M.CAPTION_FONTS) {
+    assert.ok(M.captionFontStack(f.id).length > 3, `${f.id} has no stack`);
+  }
+  assert.equal(M.captionFontStack("nope"), M.CAPTION_FONTS[0].stack);
+});
+
+T("four highlight behaviours, each explained in the UI", () => {
+  assert.equal(M.CAPTION_HIGHLIGHTS.length, 4);
+  for (const h of M.CAPTION_HIGHLIGHTS) assert.ok(h.hint && h.hint.length > 5, `${h.id} has no hint`);
+});
+
+T("the sample loop breaks into more than one line, or it teaches nothing", () => {
+  // the editor previews against this; if it were one line you could not see
+  // what words-per-line or a pause actually does
+  const c = M.chunkWords(M.CAPTION_SAMPLE_WORDS, { maxWords: 3 });
+  assert.ok(c.length >= 3, `sample produced ${c.length} lines`);
+  assert.ok(M.CAPTION_SAMPLE_WORDS[M.CAPTION_SAMPLE_WORDS.length - 1].end <= 5, "sample runs past the 5s loop");
+});
+
+T("words per line actually changes the line count", () => {
+  const one = M.chunkWords(M.CAPTION_SAMPLE_WORDS, { maxWords: 1 });
+  const four = M.chunkWords(M.CAPTION_SAMPLE_WORDS, { maxWords: 4 });
+  assert.equal(one.length, M.CAPTION_SAMPLE_WORDS.length);
+  assert.ok(four.length < one.length, "maxWords had no effect");
 });
 
 T("the clip limit matches what the free tier and the memory budget allow", () => {
