@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v43`** | 2026-09-29 | Position ramp removed, colour means state, rounder cards |
 | **`v42`** | 2026-09-29 | Delete cross visible on touch, now-line labelled, bloom behind cards |
 | **`v41`** | 2026-09-28 | Themes change everything, coins buy rewards, caption editor, dead-model rescue |
 | **`v40`** | 2026-09-28 | AI captions tool, ambient background removed, red→cyan card wash |
@@ -212,6 +213,30 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-09-29 — `tasksh-v43`**
+
+- **Removed: the red→cyan position ramp, entirely.** It went through three
+  forms in two days — a tint across the card face, a bloom behind the card,
+  a gradient border — and none earned their keep. A card's position in a
+  list is not information worth a colour, and every version competed with
+  the one colour that *is* information. `gradientColor` no longer touches a
+  card or a timeline block.
+
+- **Colour now means exactly one thing: state.** Cyan when done, red when
+  slipped, the theme's plain border otherwise. Timeline blocks follow the
+  same three states (done / running now / upcoming) instead of running a
+  spectrum across the day.
+
+- **Rounder, softer.** Card radius roughly tripled (terminal 3px → 10px,
+  sakura 18px, neon stays near-square because that theme is a CRT), and
+  cards gained a contact shadow.
+  - `DESIGN.md`'s "flat surfaces, no card shadows" rule was **lifted at the
+    owner's explicit request** and the document now says so at the top. The
+    rest of it still stands: no glassmorphism, no CSS framework, one runtime
+    dependency.
+
+- Two mutations, two reds. **237 unit + 87 browser.**
 
 **2026-09-29 — `tasksh-v42`**
 

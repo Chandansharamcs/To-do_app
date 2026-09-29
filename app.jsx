@@ -971,7 +971,7 @@ const THEMES = [
       glow: "rgba(94,234,212,0.35)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 3, btn: 3, chip: 3, border: 1, glow: 0 },
+    shape: { card: 10, btn: 8, chip: 999, border: 1, glow: 0 },
     ramp: [352, 171],
   },
   {
@@ -986,7 +986,7 @@ const THEMES = [
       glow: "rgba(126,231,135,0.32)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 6, btn: 5, chip: 999, border: 1, glow: 0 },
+    shape: { card: 12, btn: 10, chip: 999, border: 1, glow: 0 },
     ramp: [28, 150],
   },
   {
@@ -1001,7 +1001,7 @@ const THEMES = [
       glow: "rgba(199,155,255,0.38)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "Georgia, 'Times New Roman', serif" },
-    shape: { card: 10, btn: 8, chip: 999, border: 1, glow: 1 },
+    shape: { card: 14, btn: 12, chip: 999, border: 1, glow: 1 },
     ramp: [330, 255],
   },
   {
@@ -1016,7 +1016,7 @@ const THEMES = [
       glow: "rgba(79,195,247,0.4)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 2, btn: 2, chip: 2, border: 1, glow: 2 },
+    shape: { card: 10, btn: 8, chip: 999, border: 1, glow: 2 },
     ramp: [275, 186],
   },
   {
@@ -1031,7 +1031,7 @@ const THEMES = [
       glow: "rgba(255,159,69,0.4)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 8, btn: 6, chip: 999, border: 1, glow: 2 },
+    shape: { card: 14, btn: 12, chip: 999, border: 1, glow: 2 },
     ramp: [8, 48],
   },
   {
@@ -1046,7 +1046,7 @@ const THEMES = [
       glow: "rgba(110,231,200,0.45)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 12, btn: 10, chip: 999, border: 1, glow: 2 },
+    shape: { card: 16, btn: 12, chip: 999, border: 1, glow: 2 },
     ramp: [192, 300],
   },
   {
@@ -1061,7 +1061,7 @@ const THEMES = [
       glow: "rgba(224,176,128,0.32)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "Georgia, 'Times New Roman', serif" },
-    shape: { card: 7, btn: 6, chip: 999, border: 1, glow: 0 },
+    shape: { card: 12, btn: 10, chip: 999, border: 1, glow: 0 },
     ramp: [18, 96],
   },
   {
@@ -1077,7 +1077,7 @@ const THEMES = [
     },
     // everything square and mono: the theme is a CRT, not a card deck
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'JetBrains Mono', ui-monospace, monospace" },
-    shape: { card: 0, btn: 0, chip: 0, border: 1, glow: 3 },
+    shape: { card: 4, btn: 3, chip: 4, border: 1, glow: 3 },
     ramp: [316, 196],
   },
   {
@@ -1092,7 +1092,7 @@ const THEMES = [
       glow: "rgba(247,168,196,0.34)",
     },
     type: { mono: "'JetBrains Mono', ui-monospace, monospace", ui: "'Inter', system-ui, sans-serif" },
-    shape: { card: 14, btn: 999, chip: 999, border: 1, glow: 1 },
+    shape: { card: 18, btn: 14, chip: 999, border: 1, glow: 1 },
     ramp: [338, 278],
   },
 ];
@@ -1861,7 +1861,9 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
               // clamp so a routine running past midnight ends at the edge
               const width = Math.max(4, Math.min(rawW, trackW - left));
               const done = (r.history || []).includes(todayStr);
-              const color = gradientColor(i, placed.length);
+              const isNow = nowMinutes >= start && nowMinutes < start + r.duration;
+              // v43: three states, not a spectrum -- the day is not a rainbow
+              const color = done ? "#39D7BE" : isNow ? "var(--accent2)" : "#38414D";
               // visible slice of this block within the scroll window
               const visL = Math.max(left, scrollX);
               const visR = Math.min(left + width, scrollX + viewportW);
@@ -1869,7 +1871,6 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
               const showLabel = visW > 38;
               // nudge the label right when the block starts off-screen
               const labelInset = Math.max(0, Math.min(scrollX - left, width - 46));
-              const isNow = nowMinutes >= start && nowMinutes < start + r.duration;
               return (
                 <div
                   key={r.id}
@@ -1894,10 +1895,8 @@ function DayTimeline({ routines, nowMinutes, doneToday = 0, onToggleToday }) {
                     width: mounted ? width : 0,
                     height: LANE_H,
                     transitionDelay: `${Math.min(i * 18, 260)}ms`,
-                    background: done
-                      ? "linear-gradient(180deg, #2E343C, #23282F)"
-                      : `linear-gradient(180deg, ${color}, ${color}C4)`,
-                    boxShadow: done ? "none" : `0 2px 10px ${color}44`,
+                    background: color,
+                    opacity: done ? 0.75 : 1,
                   }}
                   title={`${r.label} · ${minutesToLabel(start)} · ${formatDuration(r.duration)}${done ? " · done" : ""}`}
                 >
@@ -2187,10 +2186,7 @@ function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday
         style={{
           transform: `translateX(${dragX}px)`,
           transition: draggingRef.current ? "none" : "transform 220ms cubic-bezier(.65,0,.35,1)",
-          borderLeft: `3px solid ${doneToday ? "#2A2F36" : gradientColor(index, total)}`,
-          // a finished routine drops its colour entirely -- flat grey edge,
-          // no bloom -- so "done" reads without reading the text
-          ...cardBorderVars(index, total, doneToday ? "done" : null),
+          ...cardStateVars(doneToday ? "done" : null),
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -3527,30 +3523,21 @@ function cardWash(i, n, alpha = 0.16) {
        + `hsla(${h},80%,60%,${(alpha * 0.34).toFixed(3)}) 46%, transparent 80%)`;
 }
 
-/** v42: the ramp as a gradient BORDER.
+/** v43: state only. No position ramp.
  *
- *  Third attempt. A tint across the card face put colour under every label
- *  (muddy). A bloom behind the card measured fine at 14.9:1 but still pushed
- *  colour into the background. A border keeps every pixel of the card face
- *  flat and puts the whole ramp in one pixel, which is what a terminal look
- *  wants anyway.
+ *  The red->cyan ramp went through three forms -- a tint across the face, a
+ *  bloom behind the card, a gradient border -- and none of them earned their
+ *  keep. Position in a list is not information worth a colour, and every
+ *  version competed with the one colour that IS information: whether the
+ *  thing is done.
  *
- *  Two stacked backgrounds rather than `border-image`, because border-image
- *  cannot follow a border-radius and the themes range from 0px to 14px.
- *
- *  `state` overrides the position hue entirely:
- *    done   -> cyan   finished
- *    failed -> red    slipped
- *    null   -> the red->cyan ramp by list position
+ *  So: nothing by default, cyan when it is finished, red when it slipped.
+ *  Those two are the whole vocabulary now.
  */
-function cardBorderVars(i, n, state) {
-  const h = state === "done" ? 171 : state === "failed" ? 352 : Math.round(gradientHue(i, n));
-  const h2 = state ? h : Math.round(gradientHue(Math.min(i + 1, n - 1), n));
-  const a = state ? 0.85 : 0.62;
-  return {
-    "--edge-a": `hsla(${h}, 85%, 62%, ${a})`,
-    "--edge-b": `hsla(${h2}, 85%, 62%, ${(a * 0.55).toFixed(2)})`,
-  };
+function cardStateVars(state) {
+  if (state === "done") return { "--edge": "hsla(171, 80%, 55%, 0.85)" };
+  if (state === "failed") return { "--edge": "hsla(352, 80%, 60%, 0.85)" };
+  return {};   // untouched items inherit the theme's plain border
 }
 
 function hslToHex(h, s, l) {
@@ -3865,7 +3852,7 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
     <div
       className={`quest-habit-card good edge ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
       key={`h${habit.id}`}
-      style={cardBorderVars(index, total, doneToday ? "done" : slipToday ? "failed" : null)}
+      style={cardStateVars(doneToday ? "done" : slipToday ? "failed" : null)}
     >
       {fx > 0 && <span className="xp-pop" key={fx}>+{habitXP(habit)}</span>}
       <span className="area-dot" style={{ background: area.color }} />
@@ -12586,25 +12573,20 @@ function TodoApp() {
           .panel { max-width: 1320px; }
           .vault-grid { grid-template-columns: repeat(4, 1fr); }
         }
-        /* ---- gradient edge (v42) ------------------------------------
-           One pixel of colour around an otherwise flat card. Two stacked
-           backgrounds: panel colour clipped to the padding box, gradient
-           clipped to the border box -- the "border" is the sliver of
-           gradient the first layer does not cover. Follows border-radius,
-           which border-image cannot. */
+        /* ---- state edge (v43) ---------------------------------------
+           The colour ramp is gone. A card is either untouched (theme
+           border), done (cyan) or slipped (red) -- three states, no
+           spectrum, and the one colour on screen means something. */
         .edge {
-          border: 1px solid transparent !important;
-          background-image:
-            linear-gradient(var(--panel), var(--panel)),
-            linear-gradient(115deg, var(--edge-a) 0%, var(--edge-b) 62%, var(--border) 100%);
-          background-origin: border-box;
-          background-clip: padding-box, border-box;
-          transition: background-image 220ms ease;
+          border: 1px solid var(--edge, var(--border));
+          /* DESIGN.md's "no card shadows" rule was lifted deliberately --
+             see the note at the top of that file. This is a contact shadow,
+             not elevation: it grounds the card without faking height. */
+          box-shadow: 0 1px 0 rgba(0,0,0,0.35), 0 6px 18px -12px rgba(0,0,0,0.8);
+          transition: border-color 200ms ease, box-shadow 200ms ease;
         }
-
-        /* Done items keep a coloured edge -- the state IS the colour now, so
-           dropping it would lose the signal -- but sit back a little. */
-        .routine-row.done.edge, .quest-habit-card.done.edge { opacity: 0.82; }
+        .edge.done, .edge.slipped { box-shadow: 0 0 0 1px var(--edge) inset; }
+        .routine-row.done.edge, .quest-habit-card.done.edge { opacity: 0.8; }
 
       `}</style>
 

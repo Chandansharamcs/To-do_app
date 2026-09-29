@@ -164,19 +164,41 @@ await test("the ambient background is gone, not just switched off", async () => 
   await ctx.close();
 });
 
-await test("the routine list still runs red to cyan, now on the border", async () => {
-  const { ctx, page } = await phone();
+await test("cards are plain until they mean something", async () => {
+  // v43: no ramp. Untouched = theme border, done = cyan, slipped = red.
+  const { ctx, page } = await phone({
+    "tasksh.goodhabits.v1": JSON.stringify((() => {
+      const day = new Date().toISOString().slice(0, 10);
+      return [
+        { id: 1, label: "done one", area: "work", sub: "sleep", xp: 20, penalty: 0, history: [{ d: day, t: "done" }] },
+        { id: 2, label: "plain", area: "work", sub: "deep", xp: 20, penalty: 0, history: [] },
+        { id: 3, label: "slipped", area: "work", sub: "training", xp: 20, penalty: 10, history: [{ d: day, t: "slip" }] },
+      ];
+    })()),
+  });
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "routines" }).click();
+  await page.getByRole("tab", { name: "quest" }).click();
   await page.waitForTimeout(700);
-  const hues = await page.evaluate(() =>
-    [...document.querySelectorAll(".routine-row.edge")].map((r) =>
-      Number((getComputedStyle(r).getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1]))
+
+  const cards = await page.evaluate(() =>
+    [...document.querySelectorAll(".quest-habit-card.edge")].map((c) => {
+      const cs = getComputedStyle(c);
+      return {
+        label: (c.querySelector(".quest-habit-label") || {}).textContent,
+        border: cs.borderTopColor.replace(/\s/g, ""),
+        radius: parseFloat(cs.borderTopLeftRadius),
+        gradients: (cs.backgroundImage.match(/gradient/g) || []).length,
+      };
+    })
   );
-  assert.ok(hues.length >= 4, `expected several routines, got ${hues.length}`);
-  const first = hues[0], last = hues[hues.length - 1];
-  assert.ok(first > 300 || first < 20, `first row should be red, hue ${first}`);
-  assert.ok(last > 120 && last < 220, `last row should be cyan, hue ${last}`);
+  const by = (n) => cards.find((c) => (c.label || "").includes(n));
+  assert.match(by("done one").border, /^rgba?\(48,232,205/, `done should be cyan, got ${by("done one").border}`);
+  assert.match(by("slipped").border, /^rgba?\(235,71,93/, `slipped should be red, got ${by("slipped").border}`);
+  assert.match(by("plain").border, /^rgb\(35,39,46\)$/, `untouched should be the theme border, got ${by("plain").border}`);
+  for (const c of cards) {
+    assert.equal(c.gradients, 0, `${c.label}: a gradient is still painted on the card`);
+    assert.ok(c.radius >= 8, `${c.label}: corners are only ${c.radius}px`);
+  }
   await ctx.close();
 });
 
@@ -380,51 +402,6 @@ await test("the now-line states its own time, inside the track", async () => {
   assert.ok(Math.abs(m.implied - 860) <= 1, `line sits at minute ${m.implied}, expected 860`);
   assert.match(m.chip, /2:20\s*PM/i, `chip reads "${m.chip}"`);
   assert.equal(m.clipped, false, "the time chip is clipped by the track");
-  await ctx.close();
-});
-
-await test("cards carry a gradient border, and quest state overrides the ramp", async () => {
-  // v42: the ramp moved from a face tint (muddy) to a bloom (still busy) to
-  // one pixel of border. In quests the hue is the STATE: done is cyan,
-  // slipped is red, everything else runs the position ramp.
-  const { ctx, page } = await phone({
-    "tasksh.goodhabits.v1": JSON.stringify((() => {
-      const day = new Date().toISOString().slice(0, 10);
-      return [
-        { id: 1, label: "done one", area: "work", sub: "sleep", xp: 20, penalty: 0, history: [{ d: day, t: "done" }] },
-        { id: 2, label: "plain", area: "work", sub: "deep", xp: 20, penalty: 0, history: [] },
-        { id: 3, label: "slipped", area: "work", sub: "training", xp: 20, penalty: 10, history: [{ d: day, t: "slip" }] },
-        { id: 4, label: "plain two", area: "work", sub: "learning", xp: 20, penalty: 0, history: [] },
-      ];
-    })()),
-  });
-  await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "quest" }).click();
-  await page.waitForTimeout(700);
-
-  const cards = await page.evaluate(() =>
-    [...document.querySelectorAll(".quest-habit-card.edge")].map((c) => {
-      const cs = getComputedStyle(c);
-      return {
-        label: (c.querySelector(".quest-habit-label") || {}).textContent,
-        hue: Number((cs.getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1]),
-        layers: (cs.backgroundImage.match(/linear-gradient/g) || []).length,
-        clip: (cs.backgroundClip || cs.webkitBackgroundClip || "").replace(/\s/g, ""),
-        borderTransparent: cs.borderTopColor.replace(/\s/g, "") === "rgba(0,0,0,0)",
-      };
-    })
-  );
-  assert.ok(cards.length >= 4, `expected several cards, got ${cards.length}`);
-
-  const byLabel = (n) => cards.find((c) => (c.label || "").includes(n));
-  assert.equal(byLabel("done one").hue, 171, "a completed quest should be cyan");
-  assert.equal(byLabel("slipped").hue, 352, "a slipped quest should be red");
-
-  for (const c of cards) {
-    assert.equal(c.layers, 2, `${c.label}: the two-layer gradient border is gone`);
-    assert.equal(c.clip, "padding-box,border-box", `${c.label}: wrong background-clip`);
-    assert.ok(c.borderTransparent, `${c.label}: border is painted flat, hiding the gradient`);
-  }
   await ctx.close();
 });
 

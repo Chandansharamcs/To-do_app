@@ -1,3 +1,11 @@
+> **Amended 2026-09-29 (v43).** The "no card shadows, flat surfaces only"
+> rule below was lifted at the owner's explicit request ("make the corners
+> round and better, ignore the design.md"). Cards now carry a soft contact
+> shadow and noticeably rounder corners, and the red→cyan position ramp was
+> removed entirely — colour is reserved for state (cyan = done, red =
+> slipped). The rest of the document still stands: no glassmorphism, no CSS
+> framework, no new runtime dependencies beyond mediabunny.
+
 ```
         ██████╗ ███████╗███████╗██╗ ██████╗ ███╗   ██╗
         ██╔══██╗██╔════╝██╔════╝██║██╔════╝ ████╗  ██║

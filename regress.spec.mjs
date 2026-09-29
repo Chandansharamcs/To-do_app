@@ -10,6 +10,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import assert from "node:assert/strict";
+import { readFileSync as __rf } from "node:fs";
+const APP = __rf(new URL("./app.jsx", import.meta.url), "utf8");
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -620,21 +622,14 @@ await test("deleting a quest needs two taps", async () => {
   await ctx.close();
 });
 
-await test("routine colours run as a gradient across the day", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "routines");
-  // v42: the ramp lives on --edge-a (a gradient border) rather than
-  // border-left-color, which is now transparent by design.
-  const hues = await page.evaluate(() =>
-    [...document.querySelectorAll(".routine-row")].map((r) =>
-      Number((getComputedStyle(r).getPropertyValue("--edge-a").match(/hsla?\(\s*([\d.]+)/) || [])[1])));
-  if (hues.length < 3) { await ctx.close(); return; }
-
-  const first = hues[0], last = hues[hues.length - 1];
-  assert.ok(first > 300 || first < 20, `first routine is not warm: hue ${first}`);
-  assert.ok(last > 120 && last < 220, `last routine is not cool: hue ${last}`);
-  assert.equal(new Set(hues).size > 1, true, "every routine is the same colour");
-  await ctx.close();
+await test("routine colour means state, not position", () => {
+  // v43: the red->cyan position ramp was removed. Colour is reserved for
+  // done (cyan) and slipped (red) -- a card's place in a list is not
+  // information worth a hue, and the ramp competed with the one that is.
+  assert.ok(!/gradientColor\(index, total\)/.test(APP), "the position ramp is back on routine rows");
+  assert.ok(/function cardStateVars/.test(APP), "the state-colour helper is missing");
+  assert.ok(/hsla\(171, 80%, 55%, 0\.85\)/.test(APP), "done is no longer cyan");
+  assert.ok(/hsla\(352, 80%, 60%, 0\.85\)/.test(APP), "slipped is no longer red");
 });
 
 // ---------------------------------------------------------------- offline ---
