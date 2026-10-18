@@ -101,31 +101,55 @@ await test("opening a tool and coming back doesn't lose the grid", async () => {
   await ctx.close();
 });
 
-await test("the tab bar scrolls and pulls the active tab into view", async () => {
-  // v39 squeezed seven tabs into 360px to avoid overflow and the row looked
-  // crushed. v41 gives the padding back and scrolls instead -- which is only
-  // acceptable if tapping a tab always brings it fully on screen.
-  const ctx = await browser.newContext({ viewport: { width: 360, height: 800 } });
+await test("navigation sits at the bottom, as icons, with real tap targets", async () => {
+  // v44 replaced the scrolling top bar. Seven targets across 360px is 51px
+  // each, which clears the 44px minimum -- so this asserts the thing that
+  // made scrolling unnecessary, not that scrolling still works.
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 800 }, hasTouch: true, isMobile: true });
   const page = await ctx.newPage();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(800);
 
-  const overflow = await page.evaluate(() => {
-    const t = document.querySelector(".tabs");
-    return t.scrollWidth - t.clientWidth;
+  const m = await page.evaluate(() => {
+    const bar = document.querySelector(".tabs");
+    const panel = document.querySelector(".panel");
+    const btns = [...bar.querySelectorAll("button")];
+    const r = (el) => el.getBoundingClientRect();
+    return {
+      atBottom: Math.abs(r(bar).bottom - r(panel).bottom) < 4,
+      overflow: bar.scrollWidth - bar.clientWidth,
+      count: btns.length,
+      minW: Math.min(...btns.map((b) => r(b).width)),
+      minH: Math.min(...btns.map((b) => r(b).height)),
+      allIcons: btns.every((b) => !!b.querySelector("svg")),
+      labelled: btns.every((b) => (b.getAttribute("aria-label") || "").length > 0),
+    };
   });
-  assert.ok(overflow > 0, "the bar no longer scrolls — did the padding get squeezed again?");
 
-  await page.getByRole("tab", { name: "tools" }).click();
-  await page.waitForTimeout(700);
-  const visible = await page.evaluate(() => {
-    const bar = document.querySelector(".tabs").getBoundingClientRect();
-    const tab = document.getElementById("tab-tools").getBoundingClientRect();
-    return tab.left >= bar.left - 1 && tab.right <= bar.right + 1;
-  });
-  assert.ok(visible, "the active tab stayed off screen after being tapped");
+  assert.equal(m.atBottom, true, "the bar is not at the bottom of the panel");
+  assert.equal(m.overflow, 0, `the bottom bar overflows by ${m.overflow}px`);
+  assert.equal(m.allIcons, true, "a tab has no icon");
+  assert.equal(m.labelled, true, "an icon-only tab has no accessible name");
+  assert.ok(m.minW >= 44, `tap target only ${m.minW}px wide`);
+  assert.ok(m.minH >= 44, `tap target only ${m.minH}px tall`);
   await ctx.close();
 });
+
+await test("the achievement toast does not sit on the navigation", async () => {
+  // it moved to the bottom in v41, before there was anything down there
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1400);
+  const clash = await page.evaluate(() => {
+    const t = document.querySelector(".ach-toast");
+    if (!t) return null;
+    const bar = document.querySelector(".tabs");
+    return t.getBoundingClientRect().bottom > bar.getBoundingClientRect().top + 1;
+  });
+  if (clash !== null) assert.equal(clash, false, "the toast is covering the tab bar");
+  await ctx.close();
+});
+
 
 await test("the titlebar clock stays on one line", async () => {
   // 12-hour time wrapped to two lines at 360px and pushed the bar to 55px
@@ -635,6 +659,616 @@ await test("an empty name is refused rather than saved", async () => {
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.inventory.v1")));
   assert.equal(stored.find((t) => t.id === 902).text, "100 pushups");
   await ctx.close();
+});
+
+// ----------------------------------------------------- rngdle infinite ----
+
+const openRngdle = async (page) => {
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".tool-card", { hasText: "rngdle" }).click();
+  await page.waitForTimeout(350);
+};
+const bank = (page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.rngdle.v2") || '{"ep":0}').ep);
+/** Roll and wait out the reveal + cooldown (3s + 4s at the base pace). */
+const rollOnce = async (page) => {
+  await page.getByRole("button", { name: /GENERATE|ROLL AGAIN/ }).click();
+  await page.waitForTimeout(7400);
+};
+
+await test("rngdle infinite is in the grid and opens", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  assert.equal(await page.locator(".rngi").count(), 1);
+  assert.equal(await page.getByRole("button", { name: "GENERATE" }).count(), 1);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("a roll produces a number, a band, badges and banked EP", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await rollOnce(page);
+  const num = (await page.locator(".rngi-number").innerText()).replace(/\s/g, "");
+  assert.match(num, /^[\d,]+$/, `number looked wrong: ${num}`);
+  assert.equal(await page.locator(".rngi-band").count(), 1);
+  assert.ok(await page.locator(".rngi-chip").count() > 0, "no badges rendered");
+  assert.ok(await bank(page) > 0, "nothing was banked");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("there is no daily limit -- the button comes back", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await rollOnce(page);
+  const first = await bank(page);
+  assert.equal(await page.getByRole("button", { name: "ROLL AGAIN" }).count(), 1,
+    "the second roll was not offered");
+  await rollOnce(page);
+  assert.ok(await bank(page) > first, "the second roll banked nothing");
+  await ctx.close();
+});
+
+await test("the cooldown actually blocks a second roll", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.getByRole("button", { name: "GENERATE" }).click();
+  await page.waitForTimeout(600);
+  assert.equal(await page.getByRole("button", { name: /GENERATE|ROLL AGAIN/ }).count(), 0,
+    "the roll button survived into the cooldown");
+  assert.equal(await page.locator(".rngi-wait").count(), 1, "no countdown shown");
+  await ctx.close();
+});
+
+await test("EP survives a reload and the wallet shows it", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await rollOnce(page);
+  const ep = await bank(page);
+  await page.reload({ waitUntil: "networkidle" });
+  await openRngdle(page);
+  assert.equal(await bank(page), ep, "EP moved across a reload");
+  assert.ok((await page.locator(".rngi-wallet-ep").innerText()).length > 0);
+  await ctx.close();
+});
+
+await test("the shop refuses what you cannot afford and takes the money when you can", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.locator(".rngi-tabs button", { hasText: "shop" }).click();
+  await page.waitForTimeout(250);
+  const buy = page.locator(".rngi-item", { hasText: "Quickwind I" }).getByRole("button", { name: "buy" });
+  assert.ok(await buy.isDisabled(), "a broke player was offered the buy button");
+
+  await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem("tasksh.rngdle.v2") || "{}");
+    localStorage.setItem("tasksh.rngdle.v2", JSON.stringify({ ...s, ep: 500000 }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.locator(".rngi-tabs button", { hasText: "shop" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".rngi-item", { hasText: "Quickwind I" }).getByRole("button", { name: "buy" }).click();
+  await page.waitForTimeout(300);
+
+  const after = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.rngdle.v2")));
+  assert.equal(after.ep, 470000, "the price was not taken");
+  assert.ok(after.owned.includes("quickwind-1"));
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("a bought upgrade actually shortens the reveal", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({ ep: 0, owned: ["quickwind-4", "clockwork-6"], pets: [], skills: [], seen: {}, history: [] }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  assert.match(await page.locator(".rngi-pace").innerText(), /reveal 0\.6s/);
+  // 0.6s reveal + 0.12s cooldown: the button must be back well inside a second
+  await page.getByRole("button", { name: "GENERATE" }).click();
+  await page.waitForTimeout(1200);
+  assert.equal(await page.getByRole("button", { name: "ROLL AGAIN" }).count(), 1,
+    "the fast clock did not apply");
+  await ctx.close();
+});
+
+await test("the collection fills in as badges turn up", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.locator(".rngi-tabs button", { hasText: "badges" }).click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".rngi-cell").count(), 235, "235 badges including the two Infinite ones");
+  assert.equal(await page.locator(".rngi-cell.got").count(), 0, "a fresh save owns nothing");
+
+  await page.locator(".rngi-tabs button", { hasText: "roll" }).click();
+  await rollOnce(page);
+  await page.locator(".rngi-tabs button", { hasText: "badges" }).click();
+  await page.waitForTimeout(300);
+  assert.ok(await page.locator(".rngi-cell.got").count() > 0, "the roll collected nothing");
+  await ctx.close();
+});
+
+await test("the rack only arms a skill that is charged", async () => {
+  // Two contexts, not a reload: phone()'s seed is an addInitScript, so it
+  // re-runs on every navigation and would quietly undo a mid-test change.
+  const save = (charges) => ({
+    "tasksh.rngdle.v2": JSON.stringify({
+      ep: 0, owned: [], pets: [], skills: ["surge"], charges,
+      armed: [], seen: {}, history: [],
+    }),
+  });
+
+  const cold = await phone(save({ surge: 1 }));
+  await cold.page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(cold.page);
+  const skill = cold.page.locator(".rngi-skill", { hasText: "Surge" });
+  assert.equal(await skill.count(), 1, "an owned skill is missing from the rack");
+  assert.equal(await cold.page.locator(".rngi-skill.ready").count(), 0, "1/5 should not read as ready");
+  await skill.click();
+  await cold.page.waitForTimeout(200);
+  assert.equal(await cold.page.locator(".rngi-skill.armed").count(), 0, "an uncharged skill armed");
+  await cold.ctx.close();
+
+  const hot = await phone(save({ surge: 99 }));
+  await hot.page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(hot.page);
+  assert.equal(await hot.page.locator(".rngi-skill.ready").count(), 1, "a full charge does not read as ready");
+  await hot.page.locator(".rngi-skill", { hasText: "Surge" }).click();
+  await hot.page.waitForTimeout(200);
+  assert.equal(await hot.page.locator(".rngi-skill.armed").count(), 1, "a charged skill would not arm");
+  await hot.ctx.close();
+});
+
+await test("the stats page admits what a multiplier does and does not touch", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.locator(".rngi-tabs button", { hasText: "stats" }).click();
+  await page.waitForTimeout(300);
+  const text = await page.locator(".rngi").innerText();
+  assert.match(text, /wallet/i);
+  assert.match(text, /jaime-gaming/, "the port is not credited");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("offline earnings are offered, not silently banked", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({
+      ep: 0, owned: ["offline-roller"], pets: [], skills: [], seen: {}, history: [],
+      lastSeen: Date.now() - 3600000,
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  assert.equal(await page.locator(".rngi-offline").count(), 1, "no offline banner after an hour away");
+  assert.equal(await bank(page), 0, "offline EP was banked without asking");
+  await page.getByRole("button", { name: "collect" }).click();
+  await page.waitForTimeout(300);
+  assert.ok(await bank(page) > 0, "collect paid nothing");
+  assert.equal(await page.locator(".rngi-offline").count(), 0);
+  await ctx.close();
+});
+
+// ------------------------------------------------------- today's quests ----
+
+const INV2 = JSON.stringify([
+  { id: 701, text: "ten pullups", diff: "hard" },
+  { id: 702, text: "read a chapter", diff: "mid" },
+  { id: 703, text: "wash up", diff: "easy" },
+]);
+
+await test("today's quests show up in the Today tab's open tasks", async () => {
+  const { ctx, page, errors } = await phone({ "tasksh.inventory.v1": INV2 });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const rows = page.locator(".today-task-row.quest");
+  assert.equal(await rows.count(), 3, "three difficulties, three rows");
+  assert.ok((await page.locator(".today-list").innerText()).includes("ten pullups"));
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("completing a quest from Today pays, and the Tasks board agrees", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV2 });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const before = await wallet(page);
+  await page.locator(".today-task-row.quest").first().locator(".today-task-check").click();
+  await page.waitForTimeout(350);
+  assert.ok(await wallet(page) > before, "no coins for the quest");
+
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".daily-card.done").count(), 1, "the quest board did not see it");
+  await ctx.close();
+});
+
+await test("a completed quest cannot be paid for twice from the other screen", async () => {
+  const { ctx, page } = await phone({ "tasksh.inventory.v1": INV2 });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  await page.locator(".today-task-row.quest").first().locator(".today-task-check").click();
+  await page.waitForTimeout(350);
+  const after = await wallet(page);
+
+  await page.locator(".today-task-row.quest").first().locator(".today-task-check").click();
+  await page.waitForTimeout(250);
+  await page.getByRole("tab", { name: "tasks" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".daily-card.done").click({ force: true });
+  await page.waitForTimeout(250);
+  assert.equal(await wallet(page), after, "the same quest paid out twice");
+  await ctx.close();
+});
+
+// ------------------------------------------------------------- the rest ----
+
+// ------------------------------------------------------------ expenses ----
+
+const openExpenses = async (page) => {
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".tool-card", { hasText: "expenses" }).click();
+  await page.waitForTimeout(350);
+};
+const saved = (page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.expenses.v1") || '{"items":[]}'));
+const tap = async (page, ...keys) => {
+  for (const k of keys) {
+    const name = k === "del" ? "Delete" : k === "+" ? "Plus" : k === "-" ? "Minus" : k;
+    await page.locator(".xp-key").getByText(k === "del" ? "⌫" : k === "-" ? "−" : k, { exact: true }).first().click();
+  }
+};
+
+await test("the expense tool is in the grid and opens on the keypad", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  assert.equal(await page.locator(".xp").count(), 1);
+  assert.equal(await page.locator(".xp-key").count(), 15, "12 digits, 3 operators/actions");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("tapping digits and add stores one expense in minor units", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "2", "4", "0");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(300);
+
+  const s = await saved(page);
+  assert.equal(s.items.length, 1);
+  assert.equal(s.items[0].amt, 24000, "₹240 must store as 24000 paise");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("the running total is shown before it is committed", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "1", "2", "0", "+", "4", "5");
+  await page.waitForTimeout(150);
+  assert.match(await page.locator(".xp-amount-sum").innerText(), /165/, "the sum was not previewed");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(300);
+  assert.equal((await saved(page)).items[0].amt, 16500);
+  await ctx.close();
+});
+
+await test("add is refused until the amount is readable", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  const add = page.locator(".xp-key.add");
+  assert.ok(await add.isDisabled(), "an empty amount was addable");
+  await tap(page, "5", "+");
+  await page.waitForTimeout(150);
+  assert.ok(await add.isDisabled(), "a trailing operator was addable");
+  await tap(page, "5");
+  await page.waitForTimeout(150);
+  assert.ok(!(await add.isDisabled()));
+  await ctx.close();
+});
+
+await test("the chosen category is the one that gets stored", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-cat", { hasText: "transport" }).click();
+  await tap(page, "6", "0");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(300);
+  assert.equal((await saved(page)).items[0].cat, "transport");
+  await ctx.close();
+});
+
+await test("an expense survives a reload and shows in the month total", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "1", "0", "0");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(300);
+  await page.reload({ waitUntil: "networkidle" });
+  await openExpenses(page);
+  assert.match(await page.locator(".xp-month-total").innerText(), /100/);
+  await ctx.close();
+});
+
+await test("repeat logs the same thing again without retyping it", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "3", "0");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(300);
+  await page.locator(".xp-again-btn").first().click();
+  await page.waitForTimeout(300);
+  const s = await saved(page);
+  assert.equal(s.items.length, 2);
+  assert.equal(s.items[0].amt, s.items[1].amt);
+  await ctx.close();
+});
+
+const XP_SEED = (() => {
+  const pad = (n) => String(n).padStart(2, "0");
+  return (y, m) => JSON.stringify({
+    currency: "₹",
+    items: [
+      { id: "a", d: `${y}-${pad(m)}-01`, amt: 20000, cat: "food", note: "lunch", at: 1 },
+      { id: "b", d: `${y}-${pad(m)}-01`, amt: 5000, cat: "transport", note: "auto", at: 2 },
+      { id: "c", d: `${y}-${pad(m)}-02`, amt: 100000, cat: "bills", note: "electricity", at: 3 },
+    ],
+  });
+})();
+
+await test("the report draws a bar for every day of the month", async () => {
+  const { page: probe, ctx: probeCtx } = await phone();
+  await probe.goto(BASE, { waitUntil: "networkidle" });
+  const [y, m] = (await probe.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date())
+  )).split("-").map(Number);
+  await probeCtx.close();
+
+  const { ctx, page, errors } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.waitForTimeout(600);
+
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  assert.equal(await page.locator(".xp-bar").count(), days, "a missing day would read as a gap");
+  assert.equal(await page.locator(".xp-legend-row").count(), 3, "three categories used");
+  assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
+  await ctx.close();
+});
+
+await test("tapping a bar opens that day's entries", async () => {
+  const { page: probe, ctx: probeCtx } = await phone();
+  await probe.goto(BASE, { waitUntil: "networkidle" });
+  const [y, m] = (await probe.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date())
+  )).split("-").map(Number);
+  await probeCtx.close();
+
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.waitForTimeout(600);
+  await page.locator(".xp-bar").first().click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".xp-day-pop").count(), 1);
+  assert.equal(await page.locator(".xp-day-row").count(), 2, "the 1st has two entries");
+  await ctx.close();
+});
+
+await test("history groups by day and swipe-left deletes one", async () => {
+  const { page: probe, ctx: probeCtx } = await phone();
+  await probe.goto(BASE, { waitUntil: "networkidle" });
+  const [y, m] = (await probe.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date())
+  )).split("-").map(Number);
+  await probeCtx.close();
+
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "history" }).click();
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".xp-group").count(), 2, "two days with spending");
+  assert.equal(await page.locator(".xp-row").count(), 3);
+
+  const row = page.locator(".xp-row").first();
+  await row.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  const box = await row.boundingBox();
+  const yy = box.y + box.height / 2, x0 = box.x + box.width - 18;
+  await page.mouse.move(x0, yy);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(x0 - (120 * i) / 8, yy, { steps: 1 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+
+  assert.equal((await saved(page)).items.length, 2, "swipe left did not delete");
+  await ctx.close();
+});
+
+await test("the currency choice applies everywhere and sticks", async () => {
+  const { page: probe, ctx: probeCtx } = await phone();
+  await probe.goto(BASE, { waitUntil: "networkidle" });
+  const [y, m] = (await probe.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date())
+  )).split("-").map(Number);
+  await probeCtx.close();
+
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "history" }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".xp-cur-pick button", { hasText: "$" }).click();
+  await page.waitForTimeout(300);
+  assert.match(await page.locator(".xp-month-total").innerText(), /^\$/);
+  assert.equal((await saved(page)).currency, "$");
+  await ctx.close();
+});
+
+await test("an empty month says so rather than drawing an empty chart", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-month button").first().click();   // last month
+  await page.waitForTimeout(300);
+  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".xp-bars").count(), 0);
+  assert.match(await page.locator(".empty-state").innerText(), /nothing logged/);
+  await ctx.close();
+});
+
+await test("the month cannot be stepped into the future", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  assert.ok(await page.locator(".xp-month button").last().isDisabled(), "next month was offered");
+  await page.locator(".xp-month button").first().click();
+  await page.waitForTimeout(250);
+  assert.ok(!(await page.locator(".xp-month button").last().isDisabled()));
+  await ctx.close();
+});
+
+// --------------------------------------------------------------- sound ----
+
+const sndCfg = (page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.soundcfg.v1") || "null"));
+
+/** Counts sound SOURCES the page builds, by wrapping AudioContext before any
+ *  app code runs. Both kinds are counted: half the palette is filtered noise
+ *  through a buffer source rather than an oscillator, and counting only
+ *  oscillators made "tapping a tab makes a sound" fail against a tab change
+ *  that correctly played a noise whoosh. */
+const countAudio = () => `
+  window.__osc = 0;
+  const C = window.AudioContext || window.webkitAudioContext;
+  function Patched() {
+    const ctx = new C();
+    for (const fn of ["createOscillator", "createBufferSource"]) {
+      const orig = ctx[fn].bind(ctx);
+      ctx[fn] = () => { window.__osc++; return orig(); };
+    }
+    return ctx;
+  }
+  window.AudioContext = Patched;
+  window.webkitAudioContext = Patched;
+`;
+
+await test("the sound panel lives in the vault and defaults to silence", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator(".snd").count(), 1, "no sound panel in the vault");
+  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "off",
+    "the ambient bed must not be on by default");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("choosing an ambient scene sticks across a reload", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  await page.locator(".snd-scenes button", { hasText: "rain" }).click();
+  await page.waitForTimeout(300);
+  assert.equal((await sndCfg(page)).ambient, "rain");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "rain");
+  await ctx.close();
+});
+
+await test("the alarm length is a setting, and silent is one of the choices", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  assert.equal((await sndCfg(page) || {}).alarmSeconds ?? 10, 10, "10s should be the default");
+  await page.locator(".snd-scenes button", { hasText: "silent" }).click();
+  await page.waitForTimeout(250);
+  assert.equal((await sndCfg(page)).alarmSeconds, 0);
+  await ctx.close();
+});
+
+await test("the ring can be tested and stopped from the panel", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  await page.locator(".snd-test").click();
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".snd-test.on").count(), 1, "the test button did not arm");
+  await page.locator(".snd-test").click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".snd-test.on").count(), 0, "a ten-second ring could not be stopped");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("muting silences the app, including a running ambient bed", async () => {
+  const ctxx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctxx.route("**/tasksh-notify.techcraftor.workers.dev/**", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  await ctxx.addInitScript(countAudio());
+  const page = await ctxx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+
+  await page.getByRole("tab", { name: "vault" }).click();
+  await page.waitForTimeout(350);
+  await page.locator(".snd-scenes button", { hasText: "rain" }).click();
+  await page.waitForTimeout(400);
+
+  await page.locator(".snd-mute").click();          // mute
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".snd-mute.on").count(), 0, "mute did not take");
+
+  const before = await page.evaluate(() => window.__osc);
+  await page.getByRole("tab", { name: "today" }).click();
+  await page.getByRole("tab", { name: "quest" }).click();
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => window.__osc);
+  assert.equal(after, before, "a muted app still built oscillators");
+  await ctxx.close();
+});
+
+await test("unmuted, tapping about actually makes sound", async () => {
+  const ctxx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctxx.route("**/tasksh-notify.techcraftor.workers.dev/**", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  await ctxx.addInitScript(countAudio());
+  const page = await ctxx.newPage();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "quest" }).click();
+  await page.waitForTimeout(400);
+  assert.ok(await page.evaluate(() => window.__osc) > 0, "the app made no sound at all");
+  await ctxx.close();
 });
 
 console.log(results.join("\n"));

@@ -240,13 +240,13 @@ test("deviceId is never exported or restored", () => {
 // ------------------------------------------------------------- XP + levels --
 
 const {
-  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeAreaXP,
+  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeAreaXP, computeAreaXPRaw,
   normaliseHistory, countHist, habitXP, habitPenalty, habitNet,
   habitDoneOn, habitSlipOn, markHabit, mergeHabitLists,
   LEVEL_K, LEVEL_P,
 } = liftApp([
   "LEVEL_K", "LEVEL_P",
-  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeAreaXP",
+  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeAreaXP", "computeAreaXPRaw",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
 ]);
@@ -352,11 +352,20 @@ test("computeTotalXP takes no rewards argument", () => {
   assert.equal(computeTotalXP.length, 1, "computeTotalXP should accept exactly (habits)");
 });
 
-test("area XP may be negative", () => {
-  // a life area where bad habits outweigh good is real, useful information --
-  // clamping it to zero made a -280 area look identical to an untouched one
-  const v = computeAreaXP("work", [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)]);
-  assert.equal(v, -290);
+test("an area never plots below zero", () => {
+  // v44, at the owner's request: Screen Time sat negative because it is a
+  // bad habit -- nothing ever adds to it -- and the radar plotted it
+  // inside-out. The penalty still counts against TOTAL xp; it just cannot
+  // drag an axis under the floor.
+  const habits = [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)];
+  assert.equal(computeAreaXP("work", habits), 0);
+});
+
+test("the real damage is still available, just not plotted", () => {
+  // clamping the chart must not hide the number -- a -290 area is real
+  // information and something will want to show it
+  const habits = [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)];
+  assert.equal(computeAreaXPRaw("work", habits), -290);
 });
 
 test("area XP ignores habits from other areas", () => {
@@ -392,7 +401,9 @@ test("merging preserves every area total", () => {
     const before =
       v34Good.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0) -
       v34Bad.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0);
-    assert.equal(computeAreaXP(a, merged), before, `${a} drifted`);
+    // raw, not clamped: this test is about the merge preserving totals,
+    // and v44 floors the plotted value at zero
+    assert.equal(computeAreaXPRaw(a, merged), before, `${a} drifted`);
   }
 });
 
@@ -564,6 +575,18 @@ test("rewards are paid for in coins, not XP", () => {
   assert.ok(/if \(spend\) spend\(reward\.cost\)/.test(APP), "claiming does not debit the wallet");
   assert.ok(/not enough coins/.test(APP), "the disabled label still says XP");
   assert.ok(!/reward\.cost\} XP/.test(APP), "a reward is still priced in XP");
+});
+
+test("the daily board can only be rerolled once a day", () => {
+  // v44: it was unlimited, which made the draw meaningless -- you could
+  // spin until you liked the board. A mutation proved nothing covered this.
+  assert.ok(/const rerollUsed = \(daily\.rerolledOn \|\| null\) === rerollKey/.test(APP),
+    "there is no once-a-day guard");
+  assert.ok(/if \(rerollUsed\) \{ sound\.error\(\); return; \}/.test(APP),
+    "reroll does not bail when it has already been used");
+  assert.ok(/rerolledOn: rerollKey/.test(APP),
+    "the reroll is not recorded against the day, so a reload would reset it");
+  assert.ok(/disabled=\{rerollUsed\}/.test(APP), "the button stays tappable after use");
 });
 
 console.log(`  keydetect.test.mjs — ${passed} passed`);

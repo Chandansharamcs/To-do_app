@@ -49,6 +49,13 @@ weeks rather than hours. **Import surgically** — `ALL_FORMATS` and
   the v38 cloud block above `STORAGE_KEY_AI_KEYS` crashed the whole app in
   the temporal dead zone.
 
+- **The badge table in `RNG_BADGE_ROWS` is a test oracle, not decoration.**
+  Every row carries the exact number of the 1,000,001 possible rolls that
+  earn it. `rngdle.test.mjs` re-derives all 233 from the rules under
+  `RNG_FULL=1` (~100s) and fingerprints a 3,000-roll sample on every run. If
+  you change a badge rule and the fingerprint moves, you changed behaviour —
+  decide whether you meant to before pinning the new number.
+
 ## 0 · Sixty-second orientation
 
 ```
@@ -146,6 +153,79 @@ reason and the user agrees.
 ## 2 · Known traps
 
 These have each cost real debugging time. Check them *before* going deep.
+
+### A mutation that does not apply is not a passing test (v47)
+
+Mutation testing is only evidence if the mutation landed. Two "green"
+mutations in v47 turned out to be: one where the assertion threshold was too
+loose to notice the bug, and one where the search string had the wrong
+indentation so the file was never changed. **Check that the edit actually
+happened** — diff it, or make the mutation fail loudly if the string is
+absent — before concluding a test is weak, and before concluding it is
+strong.
+
+### Anything that makes a continuous sound must stop on visibilitychange (v47)
+
+The ambient bed is an audio graph that runs forever by design. Left running
+behind a locked screen it is battery drain that no user will ever attribute
+to this app. `useAmbient` stops it on `visibilitychange` and on unmount, and
+the mute button takes it down too. Any future looping audio owes the same
+three things.
+
+### The worker has a 1,000-write-a-day KV budget (v46)
+
+Cloudflare's free KV tier allows 1,000 `put()`s a day **across the whole
+worker**, and the quota is per account, not per route. Anything that writes
+on a timer, on every boot, or on every state change will eventually spend it
+and take `/sync`, `/backup` and `/timer` down together with a
+`500 KV put() limit exceeded`. Before adding a KV write, work out its
+worst-case daily count. The schedule sync shipped without that arithmetic in
+v30 and cost one write per app open for sixteen versions.
+
+### An async test in a sync harness always passes (v46)
+
+Several suites here use `const test = (name, fn) => { try { fn(); passed++ } ... }`.
+Hand that an `async` function and it increments the counter immediately,
+the assertions run later, and the rejection disappears as an unhandled
+promise. Six tests in `notify.test.mjs` reported green against code that had
+not executed. If you add an async test, check the harness awaits it — and if
+you are writing a new harness, collect the promises and await them before
+printing the total.
+
+### Tests must not depend on the live worker (v46)
+
+`gate.spec.mjs`, `regress.spec.mjs` and `cloud.spec.mjs` all assert "no
+console errors". The app calls the real notify worker on boot, so the day
+that worker 500s, those suites go red for reasons unrelated to the change in
+front of you — and the one test whose job is noticing console errors becomes
+the one you learn to ignore. All of them stub
+`**/tasksh-notify.techcraftor.workers.dev/**` now. Keep it that way.
+
+### Radar tap targets must be wedges, not circles on the dots (v45)
+
+A dot's radius is proportional to its value, so on a new save all ten tag
+axes collapse into a ~26px huddle at the centre. Round hit areas drawn on
+the dots overlap there, and tapping *Mind* opened *Creative* — reproducibly.
+Tap targets are angular wedges from the centre past the labels: a wedge owns
+a direction rather than a point. **Any future "tap the data point" feature on
+a value-scaled chart has the same problem.** `regress.spec.mjs` taps every
+axis and asserts the popup that opens is the one tapped.
+
+### A floor applied to one scorer is not a floor (v44 → v45)
+
+v44 floored `computeAreaXP` (the 4 broad areas) and shipped "no negative
+stats". The radar **defaults to tag mode**, which is scored by
+`computeSubXPIn`, and that had no floor — so the exact axis in the user's
+screenshot was still negative after the fix. When two functions compute the
+same kind of thing, a rule applied to one of them is a rule applied to
+neither. Both are floored now, both are tested.
+
+### `addInitScript` re-runs on every navigation (v45)
+
+`tools.spec.mjs`'s `phone(seed)` seeds localStorage with `addInitScript`.
+That fires on **reload** too, so a test that writes localStorage mid-run and
+then reloads silently gets its change overwritten by the original seed. Use
+two contexts instead of a reload.
 
 ### ✓ The build script layout mismatch (fixed in v29)
 

@@ -52,9 +52,21 @@ const { server, port } = await serve();
 const BASE = `http://127.0.0.1:${port}/`;
 const browser = await chromium.launch();
 
-/** Fresh phone-sized context with no stored state. */
+/** Fresh phone-sized context with no stored state, and with the live worker
+ *  stubbed out.
+ *
+ *  v46: this suite used to let the app reach the real
+ *  tasks.sh notify worker on boot. The day that worker returned
+ *  `500 KV put() limit exceeded` the boot test went red with
+ *  "console errors on boot" and said nothing about why — a test that fails
+ *  because somebody else's server is having a bad afternoon is noise, and
+ *  worse, it trains you to ignore the one test whose whole job is to notice
+ *  console errors. Every test here now runs against a stub.
+ */
 async function phone() {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctx.route("**/tasksh-notify.techcraftor.workers.dev/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));

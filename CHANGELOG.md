@@ -24,6 +24,10 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v47`** | 2026-10-18 | Sound: ambient beds, a richer palette, and a 10s ring you can silence |
+| **`v46`** | 2026-10-18 | Expense tracker, and the KV quota bug that was breaking cloud backup |
+| **`v45`** | 2026-10-18 | RNGdle Infinite, swipe to complete or fail, quests on Today, tap-a-dot stats, per-quest calendar |
+| **`v44`** | 2026-09-29 | Bottom icon navigation, slim vault, no negative stats, one reroll a day |
 | **`v43`** | 2026-09-29 | Position ramp removed, colour means state, rounder cards |
 | **`v42`** | 2026-09-29 | Delete cross visible on touch, now-line labelled, bloom behind cards |
 | **`v41`** | 2026-09-28 | Themes change everything, coins buy rewards, caption editor, dead-model rescue |
@@ -213,6 +217,290 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-18 — `tasksh-v47`**
+
+The last item on the list. Everything synthesised — no audio files, nothing
+for the service worker to precache, nothing to 404.
+
+- **#9 Sound.** Three buses under one master: `ui`, `ambient`, `alarm`. They
+  are separate so the bed can sit well under the taps without making the taps
+  quiet too, and so the ring can be cut without chasing every oscillator it
+  scheduled.
+
+  - **A richer palette.** Was six sounds, now fourteen. Half of them are
+    filtered noise rather than oscillators, because a tone cannot do a tick
+    or a paper-shuffle whoosh. The two swipe gestures got voices that match
+    their direction: complete is a major third up, fail is a minor second
+    down — short enough not to feel like a telling-off. `markToday` learned a
+    quiet mode so a swipe plays its own sound instead of two at once.
+  - **Ambient beds, off by default.** Rain, server room, tape and night,
+    built from one shared pink-noise buffer plus a slow filter sweep so the
+    bed breathes instead of sitting still. Off is the default and the first
+    option: a task app that starts humming unprompted is one you uninstall.
+    The bed stops when the app is backgrounded and when you mute — an audio
+    graph left running behind a locked screen is battery drain nobody will
+    ever attribute to the right cause.
+  - **A ten-second pomodoro ring you can stop.** A rising three-note figure
+    that repeats with a widening interval and a climbing level, capped below
+    clipping. Length is a setting: silent, 3s, 10s, 20s. **Every caller gets
+    a stop function and the timer shows a `■ silence` button while it rings**
+    — a ten-second alarm you cannot silence is a punishment, not a feature.
+  - **Where the settings live.** In the vault, not behind the titlebar
+    speaker. That button's one job is muting in a hurry, and putting a sheet
+    behind it costs a tap at exactly the moment you cannot afford one.
+
+- **Four bugs the tests caught before the build did.**
+  - A 3-second ring was only 2.18s of sound with a 1.02s hole in the middle;
+    the cycle was 1.6s and nothing stretched the last note. Now the final
+    note is held out to the full length, so "10 seconds" means ten seconds.
+  - `sound.land(NaN)` indexed the frequency table with `NaN`, got
+    `undefined`, and scheduled a silent oscillator. Guarded.
+  - The alarm gain climbed past the clipping ceiling on long rings.
+  - And one test that was too loose to notice the first of those: asserting
+    the ring filled 85% of its length let a 9.64s "10 second" alarm pass.
+    Tightened to 50ms, which is what made the mutation go red.
+
+- **Tests: 427 unit + 133 browser** (was 397 + 127). The audio engine is
+  driven by a fake `AudioContext` that records every node it is asked to
+  build, so "muted means silent" and "switching scenes does not leave the old
+  bed running" are assertions rather than hopes. Six mutations, all red —
+  including two that were green on the first attempt and are worth naming:
+  one because the test threshold was too loose, and one because my mutation
+  string had the wrong indentation and never applied. A mutation that does
+  not apply is not a passing test, it is no test at all.
+
+**2026-10-18 — `tasksh-v46`**
+
+The expense tracker, plus a production bug the test suite found by accident
+while I was building it.
+
+- **Fixed: the worker had run out of KV writes, and backup was down with it.**
+  `POST /sync` was returning
+  `500 {"error":"KV put() limit exceeded for the day."}` against the live
+  worker. Cloudflare's free KV tier allows **1,000 writes a day across the
+  whole worker**, and the quota is per account, not per route — so the
+  schedule sync spending the budget takes **cloud backup and the pomodoro
+  timer down too**.
+
+  The cause was app-side and had been there since v30. An effect keyed on
+  `routines` POSTed the schedule unconditionally: once on every app open, and
+  again on every change to the array — which includes **ticking a routine
+  complete**, because that rewrites `history`, even though `history` is not
+  in the payload. Same bytes, over and over, one KV write each.
+
+  Now deduped against the last payload the worker actually ACKed, so an
+  unchanged schedule costs nothing. Marked sent only on a 2xx, so a failed
+  push still retries. Turning notifications on still forces a push, because a
+  freshly subscribed endpoint has no schedule stored against it yet. The
+  worker is untouched; this needs no redeploy, and the quota resets daily.
+
+- **Fixed: six tests were passing without running.** `notify.test.mjs`'s
+  harness called `fn()` and incremented the pass counter without awaiting it,
+  so the async tests I had just written for the fix above reported green
+  while their assertions were still pending and their rejections vanished as
+  unhandled promises. The harness awaits now. Worth stating plainly: I wrote
+  six tests, watched them pass, and they had not executed.
+
+- **Fixed: four test files depended on a live third-party service.**
+  `gate.spec.mjs`, `regress.spec.mjs` and `cloud.spec.mjs` let the app reach
+  the real notify worker on boot, so the day it started returning 500 the
+  "no console errors on boot" test went red for a reason that had nothing to
+  do with the app. A test that fails because somebody else's server is having
+  a bad afternoon trains you to ignore it. All three stub the worker now.
+
+- **#2 Expense tracker.** The simple tier you picked: spending, categories,
+  charts. No income, no balance, no budgets, no bank link.
+
+  Three things the research kept naming as the difference between a tracker
+  people keep and one they abandon in a week, so those are what got built:
+
+  - **Entry is amount-first and one-handed.** Its own keypad rather than the
+    phone keyboard — a numeric keyboard still costs a layout shift and half
+    the screen, and this one carries `+` and `−` that behave, so splitting a
+    bill in your head (`120+45+30`) is one entry instead of three. Parsed by
+    hand, never with `eval`: the box takes user text.
+  - **A daily view with an average.** A bar per day, every day of the month
+    including the empty ones — a gap has to mean "spent nothing", and it
+    cannot if missing days are simply absent. Tap a bar for that day's items.
+  - **Categories you can read back.** Donut plus a ranked list with shares,
+    and the usual numbers: per day, per *spending* day, biggest single,
+    days with spending, and what the month is on track for.
+
+  Two more worth having: **repeat** logs a recent entry again in one tap
+  (chai, the commute, the same thing every day), and **CSV export** with a
+  UTF-8 BOM so a ₹ does not arrive in Excel as mojibake.
+
+  Two decisions pinned by tests because being slightly wrong about money is
+  worse than being obviously broken:
+  - **Amounts are whole minor units (paise), never floats.** `0.1 + 0.2` is
+    `0.30000000000000004`, and a tracker adding up a hundred entries a month
+    will eventually show it. A test adds 7p a hundred times and demands
+    exactly ₹7.00.
+  - **The per-day average divides by days ELAPSED, not days in the month.**
+    Dividing October's spending by 31 on the 3rd is wrong by a factor of ten
+    and wrong in the flattering direction, which is worse. The month-on-month
+    comparison does the same thing: the 10th of October is compared against
+    the first ten days of September, not all of it.
+
+- **Tests: 397 unit + 127 browser** (was 354 + 114). Seven mutations against
+  the new code — float amounts, the average dividing by the whole month, the
+  comparison using the whole previous month, unescaped CSV, skipped empty
+  days, the sync dedupe removed, and a failed sync marked as sent. All seven
+  went red.
+
+**2026-10-18 — `tasksh-v45`**
+
+Five of the ten items, plus the half of #10 that v44 left owed. The headline
+is a game; the quietest line is a bug v44 claimed to have fixed and had not.
+
+- **Fixed: "no negative stats" did not actually fix the stat you reported.**
+  v44 floored `computeAreaXP`, which scores the **four broad areas**, and
+  called the item done. The radar defaults to **tag** mode, tags are scored
+  by `computeSubXPIn`, and that function had no floor — so Screen Time, the
+  axis in the screenshot, was still plotted below zero after the fix
+  shipped. Both scorers are floored now and a test asserts every axis in
+  both modes is `>= 0`. Reverting the floor turns two tests red.
+  The honest figure is not lost: the uncapped number is kept by
+  `computeSubXPRawIn` and the axis popup says *"held at zero · true balance
+  −80"*, because "0" and "0 after an 80-point deficit" are not the same fact.
+
+- **Fixed (found while testing #8): every radar dot collapsed onto the
+  centre.** A dot sits at a radius proportional to its value, so on a new
+  save all ten tags huddle inside a 26px circle and their round tap targets
+  overlap. Tapping *Mind* reliably opened *Creative*. Tap targets are now
+  **angular wedges**, one per axis, from the centre past the labels: a wedge
+  owns a direction rather than a point, so it is unambiguous and
+  finger-sized whatever the value. A browser test now taps every axis in
+  turn and asserts the popup that opens is the one that was tapped.
+
+- **#3 Swipe to complete or fail.** Swipe a quest card **right to complete,
+  left to fail** — the direction you asked for after taking the counter. The
+  axis is locked within the first six pixels of movement, so a gesture that
+  starts vertical is handed straight back to the browser as a scroll. Under
+  the trigger distance the row springs back and records nothing. **The ✓/✗
+  buttons stay**: a gesture nobody told you about is not a feature, it is a
+  secret. Today's quest rows swipe too.
+
+- **#5 Today's quests appear in Today's open tasks.** The Tasks tab became
+  the quest board in v35 and Today kept listing the old free-form task list,
+  which nothing writes to any more — so the one thing you are meant to do
+  today was the one thing the Today tab did not show. Completing a quest now
+  has one implementation shared by both screens, because two buttons wired to
+  two copies of it is how a quest gets paid for twice.
+
+- **#8 Tap a dot for its exact points.** A popup under the chart with the
+  figure, the gains and losses that produced it, how many marks each way, and
+  the per-quest breakdown sorted best-first. Not a modal — it opens beneath
+  the dot it describes, so the thing you tapped is still on screen next to
+  the number it produced.
+
+- **#10 (second half) Per-quest calendar.** A real month grid on every quest
+  card: completed days in accent, skipped in red, today outlined, future
+  dimmed. Months step backwards and refuse to step past today. Underneath:
+  done and skipped this month, the live streak and the longest run ever. The
+  Vault's card chrome was reused here — the feature went away in v44, the
+  shape it left behind did not.
+
+- **#1 RNGdle — rebuilt as RNGdle Infinite.** The first build was the daily
+  game: one roll a day, scored, done. You asked for
+  [RNGdle Infinite](https://jaime-gaming.github.io/RNGdle-Infinite/) instead,
+  so the shell was replaced and the scoring engine kept.
+
+  *What survived unchanged:* the badge engine. All **233 rules** were written
+  from the published descriptions and verified by sweeping **all 1,000,001
+  numbers** — every badge reproduces its published count **exactly**, and the
+  worked example the game documents (1,000,000 earns 39 badges, is paid for
+  22, totals 131,081,274 EP) comes out to the digit. Infinite's own catalogue
+  turned out to be byte-identical: same 233 ids, same EP values. Its two
+  extra badges (Pendulum, Last Second) bring the collection to **235**.
+
+  *What the port changes, and why:*
+  - **The clock runs 15× faster.** The original is an idle game: 45-second
+    reveal, 60-second cooldown. Inside a task app that is not a reasonable
+    thing to ask of a phone. Base is **3s + 4s**, and the upgrade ladder
+    ends at 0.6s + 0.12s.
+  - **Prices are untouched.** Their economy is balanced and audited;
+    rescaling it would be guessing. Measured consequence, stated plainly:
+    the whole 195,300,000 EP catalogue is about **9,000 rolls** — roughly
+    18 hours here against 260 at the original pace.
+  - **Reset EP gates are 4×, and only those.** At a 15× clock the original
+    250,000 EP first rung works out at 12 rolls — 84 seconds — so you would
+    be offered a rebirth before buying anything. ×4 puts the first rung near
+    six minutes. The **badge** gates are deliberately not scaled: they are
+    clock-independent, and they are what keeps the end of the ladder long
+    (Rollback wants 177 of 235 badges, which measures at ~63,000 rolls).
+  - **EP is its own wallet.** It never touches ◉ coins, so no amount of
+    rolling can buy a real-world reward.
+  - **Dropped:** 20 of the 26 cosmetic auras (six kept and rewritten as
+    terminal effects — scanline, blueprint grid, tear, churn, slab, hex
+    spill), device-link sync, the PWA shell, the goals page and the
+    changelog. tasks.sh already has its own versions, or they make no sense
+    inside one tool.
+
+  *The invariant the tests exist to protect:* **multipliers touch the wallet,
+  never the number.** A companion, a rebirth or a skill may change what lands
+  in your balance; none may change the number drawn, its badges, its scored
+  EP, its band or its rank. Break it and two players rolling 142,857 stop
+  agreeing about it, and every rank figure in the game becomes a lie.
+
+- **Fixed while porting: the skill rack could never grow.** `rngiRackSize`
+  read `skill-bay-1` and `skill-bay-2` out of `owned`, but neither was ever
+  added as a buyable product — so the second and third slots were
+  unreachable at any price. Both are on the skills shelf now, the second
+  gated behind the first.
+
+- **Tests: 354 unit + 114 browser** (was 247 + 85). The new badge suite runs
+  a 3,000-roll fingerprint by default and the full 1,000,001-number sweep
+  under `RNG_FULL=1`. Twelve mutations were run against the new code — a
+  multiplier reaching the score, the draw cap removed, a floor skill not
+  stopping early, a reset gate accepting either condition instead of both, a
+  rebirth wiping the collection, the offline cap removed, a locked upgrade
+  bought, the tag floor removed, the calendar's Monday offset, the
+  longest-run walk, the month counter and the month-step wraparound. All
+  twelve went red.
+
+**2026-09-29 — `tasksh-v44`**
+
+First slice of the ten-item list. Structure first, because moving the
+navigation and removing a tab touch every screen and that churn should
+happen once.
+
+- **Navigation moved to the bottom and became icons.** Inline SVG, not a
+  font or image set — one less thing for the service worker to precache,
+  and an icon that 404s is a navigation bar with a hole in it. Measured at
+  360px: seven targets, **51×46px each**, zero overflow, so the bar no
+  longer scrolls. Labels survive as a caption under each glyph and as
+  `aria-label`, because an icon-only bar is a memory test.
+
+- **Fixed: the achievement toast was sitting on the new navigation.** It
+  moved to the bottom in v41, when nothing lived down there. Now clears the
+  bar by its full height plus the safe-area inset.
+
+- **Vault slimmed to backup and build.** Habits, projects and notes are
+  gone from that screen. **The data is not deleted** — `tasksh.notes.v1`,
+  `tasksh.projects.v1` and `tasksh.vaulthabits.v1` are untouched and still
+  ride in every export and cloud snapshot, so putting the sections back is
+  a revert rather than a recovery. Four note-UI tests retired with the
+  screen; a new test asserts the storage keys survived it.
+
+- **Fixed: stats could go negative.** Screen Time sat below zero because a
+  bad habit only ever subtracts, and the radar plotted it inside-out.
+  `computeAreaXP` now floors at zero, while `computeAreaXPRaw` keeps the
+  true figure for anything that wants to show real damage — clamping the
+  chart should not hide the number. Total XP is unaffected.
+
+- **Fixed: the daily board could be rerolled forever.** You could spin until
+  you liked the draw, which made it meaningless. One reroll per board day,
+  recorded against the day so a reload cannot reset it.
+
+- Two mutations run, one red, **one green that found a real gap** — nothing
+  covered the reroll limit at all. Test added, now red. **247 unit + 85
+  browser.**
+
+**Still to come:** swipe to complete/fail, daily task in Today's open list,
+tap-a-dot-for-points (v45 with the RNGdle tool), then the expense tracker,
+then the sound pass.
 
 **2026-09-29 — `tasksh-v43`**
 

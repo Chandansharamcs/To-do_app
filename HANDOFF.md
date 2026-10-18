@@ -13,8 +13,8 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v41   (service worker cache tag, see sw.js)
-  LAST UPDATED      2026-09-27
+  CURRENT VERSION   tasksh-v47   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-10-18
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
 ```
@@ -462,6 +462,53 @@ Facts worth not re-deriving:
 A seventh tab. `TOOLS` is a registry — `const TOOLS = [{ id, glyph, name,
 desc, Component }]` — read by both the grid and the router, so a new tool is
 one object rather than edits in four places.
+
+**Sound (v47).** `tasksh.soundcfg.v1`. Three gain buses (`ui`, `ambient`,
+`alarm`) under one master; volume lives on the bus, not on each note, so a
+change reaches sounds already scheduled. All synthesised. Two rules that are
+load-bearing: the ambient bed defaults to **off** and stops on
+`visibilitychange`, and every alarm returns a **stop function** that the
+pomodoro surfaces as a `■ silence` button. `buildAlarmPattern(seconds)` is
+pure and tested — it must end within 50ms of the length it claims.
+
+**Expenses (v46).** `tasksh.expenses.v1`. Amounts are stored as whole minor
+units (paise/cents) and only ever divided for display — floats and a hundred
+entries a month is a rounding error you can see. The per-day average divides
+by days *elapsed* in the current month, not days in the month; the
+month-on-month comparison trims last month to the same day count. Both are
+tested, because both are wrong in the flattering direction if you get them
+backwards.
+
+**RNGdle Infinite (v45).** Ported from
+[jaime-gaming/RNGdle-Infinite](https://github.com/jaime-gaming/RNGdle-Infinite),
+itself a recreation of RNGdle by Cam / sparrowpatch. Two halves:
+
+*The scorer* (`RNG_*`). 233 badge rules, 39 families, an EP→percentile curve.
+Every rule was written from the published description and then **verified by
+sweeping all 1,000,001 possible numbers** — `RNG_BADGE_ROWS` carries each
+badge's exact match count, so the table is its own test oracle. The family
+rule is the part that is easy to get wrong: 168 badges sit in 39 families and
+only the dearest match in a family is paid, so a number can earn 39 badges
+and be paid for 22. Adding up what is on screen gives the wrong total; that
+is why two calculators disagree about the same roll.
+
+*The game* (`RNGI_*`). State in `tasksh.rngdle.v2`. Unlimited rolls gated by
+a reveal and a cooldown, both shortened by shop upgrades; EP is a wallet that
+buys pace, 13 companions, a rotating stall of skills, six terminal-styled
+skins, offline earning and rack bays; then rebirth ×6 → prestige ×3 →
+rollback, each keeping the collection and adding a permanent wallet bonus.
+
+**The invariant worth defending:** *multipliers touch the wallet, never the
+number.* Companions, rebirths and skills change what lands in the balance.
+None may change the number drawn, its badges, its scored EP, its band or its
+rank — otherwise two players rolling 142,857 stop agreeing about it and every
+rank figure becomes a lie. `infinite.test.mjs` asserts this directly by
+rolling the same seeded number with and without every multiplier.
+
+Deliberate deltas from upstream, all documented at the top of the engine: the
+clock runs **15× faster** (3s + 4s base, not 45s + 60s), reset **EP** gates
+are **×4** to compensate, badge gates are untouched, prices are untouched,
+and EP never touches the app's ◉ coins.
 
 **Pomodoro.** State lives in `tasksh.pomodoro.v1` as
 `{ settings, session }`, where a session is

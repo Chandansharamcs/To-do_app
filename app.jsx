@@ -416,7 +416,10 @@ function useAchievements(snapshot) {
     if (payout) setWallet((w) => ({ ...w, coins: w.coins + payout }));
   }, [snapshot, earned, wallet.coins]);
 
-  const addCoins = useCallback((n) => setWallet((w) => ({ ...w, coins: Math.max(0, w.coins + n) })), []);
+  const addCoins = useCallback((n) => {
+    if (n > 0) sound.coin();
+    setWallet((w) => ({ ...w, coins: Math.max(0, w.coins + n) }));
+  }, []);
   const shift = useCallback(() => setQueue((q) => q.slice(1)), []);
 
   return { earned, wallet, coins: wallet.coins, queue, current: queue[0] || null, shift, addCoins };
@@ -1233,16 +1236,82 @@ function applyTheme(theme) {
   if (meta) meta.setAttribute("content", c.bg);
 }
 
+// ============================================================
+// SOUND (v47)
+//
+// Everything is synthesised. No audio files, no CDN, nothing for the service
+// worker to precache and nothing to 404 — same rule the icons follow.
+//
+// Three layers, three buses, one master:
+//
+//   ui       short envelope-shaped tones for taps, marks and rewards
+//   ambient  a continuous bed, off by default
+//   alarm    the pomodoro ring, loud on purpose and interruptible
+//
+// They are separate buses so the ambient bed can sit well under the UI
+// without making the UI quiet too, and so the alarm can duck the other two
+// rather than fighting them.
+// ============================================================
+
 const SOUND_KEY = "tasksh.sound.v1";
+const SOUND_SETTINGS_KEY = "tasksh.soundcfg.v1";
+
+const SOUND_DEFAULTS = { volume: 70, ambient: "off", ambientVolume: 35, alarmSeconds: 10 };
+
+function loadSoundCfg() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SOUND_SETTINGS_KEY) || "null") || {};
+    const clamp = (v, d) => (Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : d);
+    return {
+      volume: clamp(raw.volume, SOUND_DEFAULTS.volume),
+      ambientVolume: clamp(raw.ambientVolume, SOUND_DEFAULTS.ambientVolume),
+      ambient: AMBIENT_SCENES.some((s) => s.id === raw.ambient) ? raw.ambient : "off",
+      alarmSeconds: [0, 3, 10, 20].includes(raw.alarmSeconds) ? raw.alarmSeconds : SOUND_DEFAULTS.alarmSeconds,
+    };
+  } catch {
+    return { ...SOUND_DEFAULTS };
+  }
+}
+
+function saveSoundCfg(cfg) {
+  try { localStorage.setItem(SOUND_SETTINGS_KEY, JSON.stringify(cfg)); } catch {}
+}
+
 let __audioCtx = null;
+let __buses = null;
+
 function getAudioCtx() {
   if (!__audioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const Ctx = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
     if (!Ctx) return null;
     __audioCtx = new Ctx();
   }
   if (__audioCtx.state === "suspended") __audioCtx.resume();
   return __audioCtx;
+}
+
+/** Master → { ui, ambient, alarm }. Built once, lazily. */
+function getBuses() {
+  const ctx = getAudioCtx();
+  if (!ctx) return null;
+  if (__buses && __buses.ctx === ctx) return __buses;
+  const master = ctx.createGain();
+  master.connect(ctx.destination);
+  const mk = (g) => { const n = ctx.createGain(); n.gain.value = g; n.connect(master); return n; };
+  __buses = { ctx, master, ui: mk(1), ambient: mk(0), alarm: mk(1) };
+  applySoundCfg(loadSoundCfg());
+  return __buses;
+}
+
+/** Volume lives on the bus gains, not on every note, so a change takes
+ *  effect on sounds already scheduled. */
+function applySoundCfg(cfg) {
+  if (!__buses) return;
+  const t = __buses.ctx.currentTime;
+  __buses.master.gain.setTargetAtTime(cfg.volume / 100, t, 0.02);
+  __buses.ambient.gain.setTargetAtTime(
+    cfg.ambient === "off" ? 0 : (cfg.ambientVolume / 100) * 0.5, t, 0.35
+  );
 }
 
 function isSoundOn() {
@@ -1253,36 +1322,75 @@ function isSoundOn() {
     return true;
   }
 }
+
 function setSoundOn(on) {
-  try {
-    localStorage.setItem(SOUND_KEY, on ? "1" : "0");
-  } catch {}
+  try { localStorage.setItem(SOUND_KEY, on ? "1" : "0"); } catch {}
 }
 
-// plays a short envelope-shaped tone (or sequence of tones)
-function playTone(specs) {
+/** Plays a short envelope-shaped tone, or a sequence of them.
+ *
+ *  `bus` picks the output. The envelope is exponential in and out because a
+ *  square-edged gain change on a sine is an audible click, and a UI that
+ *  clicks on every tap is the thing people mute.
+ */
+function playTone(specs, busName = "ui") {
   if (!isSoundOn()) return;
-  const ctx = getAudioCtx();
-  if (!ctx) return;
+  const buses = getBuses();
+  if (!buses) return;
+  const { ctx } = buses;
+  const out = buses[busName] || buses.ui;
   const now = ctx.currentTime;
-  specs.forEach(({ freq, start = 0, dur = 0.08, type = "sine", gain = 0.05 }) => {
+  specs.forEach(({ freq, start = 0, dur = 0.08, type = "sine", gain = 0.05, detune = 0, slideTo = 0 }) => {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now + start);
+    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), now + start + dur);
+    if (detune) osc.detune.setValueAtTime(detune, now + start);
     g.gain.setValueAtTime(0.0001, now + start);
     g.gain.exponentialRampToValueAtTime(gain, now + start + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
     osc.connect(g);
-    g.connect(ctx.destination);
+    g.connect(out);
     osc.start(now + start);
     osc.stop(now + start + dur + 0.02);
   });
 }
 
+/** A short burst of filtered noise — the percussive half of the palette.
+ *  Oscillators alone cannot do a "tick" or a paper-shuffle "whoosh". */
+function playNoise({ dur = 0.08, gain = 0.03, type = "highpass", freq = 1200, q = 1 } = {}, busName = "ui") {
+  if (!isSoundOn()) return;
+  const buses = getBuses();
+  if (!buses) return;
+  const { ctx } = buses;
+  const frames = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, frames, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const filt = ctx.createBiquadFilter();
+  filt.type = type;
+  filt.frequency.value = freq;
+  filt.Q.value = q;
+  const g = ctx.createGain();
+  const now = ctx.currentTime;
+  g.gain.setValueAtTime(gain, now);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  src.connect(filt); filt.connect(g); g.connect(buses[busName] || buses.ui);
+  src.start(now);
+  src.stop(now + dur + 0.02);
+}
+
 const sound = {
+  // --- taps and navigation
   click: () => playTone([{ freq: 720, dur: 0.045, type: "sine", gain: 0.035 }]),
+  tick: () => playNoise({ dur: 0.02, gain: 0.018, freq: 2600, type: "highpass" }),
   toggle: () => playTone([{ freq: 560, dur: 0.06, type: "sine", gain: 0.04 }]),
+  whoosh: () => playNoise({ dur: 0.09, gain: 0.016, freq: 900, type: "bandpass", q: 0.7 }),
+
+  // --- outcomes
   success: () =>
     playTone([
       { freq: 660, start: 0, dur: 0.09, type: "sine", gain: 0.045 },
@@ -1293,9 +1401,301 @@ const sound = {
       { freq: 220, start: 0, dur: 0.1, type: "square", gain: 0.03 },
       { freq: 165, start: 0.08, dur: 0.14, type: "square", gain: 0.03 },
     ]),
-  whoosh: () => playTone([{ freq: 340, dur: 0.07, type: "triangle", gain: 0.025 }]),
   delete: () => playTone([{ freq: 300, start: 0, dur: 0.09, type: "sawtooth", gain: 0.025 }]),
+
+  /** Swipe right. Deliberately a major third up — the shape of the gesture
+   *  and the shape of the sound should agree. */
+  complete: () => {
+    playNoise({ dur: 0.07, gain: 0.014, freq: 1400, type: "bandpass", q: 0.8 });
+    playTone([
+      { freq: 587, start: 0.02, dur: 0.1, type: "sine", gain: 0.04 },
+      { freq: 880, start: 0.09, dur: 0.16, type: "sine", gain: 0.045 },
+    ]);
+  },
+  /** Swipe left. A minor second down: wrong-sounding on purpose, but short
+   *  enough not to feel like a telling-off. */
+  fail: () =>
+    playTone([
+      { freq: 392, start: 0, dur: 0.1, type: "triangle", gain: 0.035 },
+      { freq: 370, start: 0.07, dur: 0.16, type: "triangle", gain: 0.032 },
+    ]),
+
+  // --- rewards
+  coin: () =>
+    playTone([
+      { freq: 1320, start: 0, dur: 0.05, type: "square", gain: 0.022 },
+      { freq: 1760, start: 0.04, dur: 0.1, type: "square", gain: 0.022 },
+    ]),
+  levelUp: () =>
+    playTone([
+      { freq: 523, start: 0.00, dur: 0.12, type: "sine", gain: 0.045 },
+      { freq: 659, start: 0.10, dur: 0.12, type: "sine", gain: 0.045 },
+      { freq: 784, start: 0.20, dur: 0.14, type: "sine", gain: 0.05 },
+      { freq: 1047, start: 0.32, dur: 0.30, type: "sine", gain: 0.055 },
+      { freq: 1047, start: 0.32, dur: 0.30, type: "sine", gain: 0.02, detune: 8 },
+    ]),
+  achievement: () =>
+    playTone([
+      { freq: 880, start: 0, dur: 0.1, type: "triangle", gain: 0.04 },
+      { freq: 1175, start: 0.08, dur: 0.1, type: "triangle", gain: 0.04 },
+      { freq: 1568, start: 0.16, dur: 0.22, type: "triangle", gain: 0.045 },
+    ]),
+
+  /** The rngdle reveal: a rising sweep whose length matches the reveal, and
+   *  a landing whose pitch is the rarity. A mythic should sound like one
+   *  before you have finished reading the word. */
+  reveal: (ms = 600) => {
+    const dur = Math.max(0.12, Math.min(3, ms / 1000));
+    playTone([{ freq: 220, dur, type: "triangle", gain: 0.02, slideTo: 760 }]);
+  },
+  land: (tier = 0) => {
+    // Number.isFinite first: [..][NaN] is undefined, and an undefined
+    // frequency is a silent note rather than a loud error
+    const t = Number.isFinite(tier) ? Math.max(0, Math.min(5, Math.round(tier))) : 0;
+    const base = [392, 494, 587, 698, 880, 1175][t];
+    playTone([
+      { freq: base, start: 0, dur: 0.14, type: "sine", gain: 0.05 },
+      { freq: base * 1.5, start: 0.1, dur: 0.22, type: "sine", gain: 0.04 },
+      ...(t >= 4 ? [{ freq: base * 2, start: 0.22, dur: 0.34, type: "sine", gain: 0.045 }] : []),
+    ]);
+  },
+  cash: () => {
+    playNoise({ dur: 0.05, gain: 0.02, freq: 3000, type: "highpass" });
+    playTone([{ freq: 1047, start: 0.03, dur: 0.12, type: "triangle", gain: 0.03 }]);
+  },
 };
+
+// ---- the alarm -------------------------------------------------------------
+
+/** Builds the pomodoro ring as data.
+ *
+ *  Pure, so the thing that matters about it — that it lasts the number of
+ *  seconds it claims, gets louder rather than just longer, and never exceeds
+ *  a gain that would clip — is testable without a speaker.
+ *
+ *  Shape: a rising three-note figure repeated with a widening interval and
+ *  a growing level. A single tone repeated for ten seconds is a smoke alarm;
+ *  this has to be noticeable from the next room and still switchoffable
+ *  without resentment.
+ */
+function buildAlarmPattern(seconds = 10) {
+  const total = Math.max(0, Math.min(60, seconds));
+  if (!total) return [];
+  // 1.0s cycle, not 1.6: at 1.6 a three-second ring left a 1.02s hole in the
+  // middle and stopped 0.8s early, which reads as "it gave up" rather than
+  // "it rang for three seconds".
+  const cycle = 1.0;
+  const rounds = Math.max(1, Math.ceil(total / cycle));
+  const specs = [];
+  for (let r = 0; r < rounds; r++) {
+    const t0 = r * cycle;
+    if (t0 >= total) break;
+    // level climbs to a ceiling, so a ring you slept through gets more
+    // insistent without ever becoming distortion
+    const level = Math.min(0.085, 0.045 + r * 0.006);
+    const step = Math.min(4, r);
+    const notes = [660 + step * 20, 880 + step * 30, 990 + step * 40];
+    notes.forEach((freq, i) => {
+      const start = t0 + i * 0.22;
+      if (start >= total) return;
+      specs.push({
+        freq,
+        start,
+        dur: Math.min(0.2, Math.max(0.04, total - start)),
+        type: "sine",
+        gain: level,
+      });
+    });
+  }
+  // Hold the last note out to the full length. Without this the ring is
+  // always a fraction of a cycle short of what the setting promised, and
+  // "10 seconds" that stops at 8.6 is simply a wrong number in the UI.
+  if (specs.length) {
+    const last = specs[specs.length - 1];
+    const end = last.start + last.dur;
+    if (end < total - 0.02) last.dur = total - last.start;
+  }
+  return specs;
+}
+
+/** Vibration to match. Android caps patterns, so this stays short-ish and
+ *  is re-issued rather than scheduled as one enormous array. */
+function buildVibratePattern(seconds = 10) {
+  const total = Math.max(0, Math.min(60, seconds)) * 1000;
+  const out = [];
+  let t = 0;
+  while (t < total) {
+    const on = 220, off = 380;
+    if (t + on > total) break;
+    out.push(on);
+    t += on;
+    if (t + off > total) break;
+    out.push(off);
+    t += off;
+  }
+  return out;
+}
+
+let __alarmStop = null;
+
+/** Rings, and hands back the way to stop it.
+ *
+ *  A ten-second alarm you cannot silence is a punishment, so every caller
+ *  gets a stop function and the UI shows a button wired to it. Calling this
+ *  again while one is running replaces it rather than stacking.
+ */
+function ringAlarm(seconds) {
+  const cfg = loadSoundCfg();
+  const dur = seconds === undefined ? cfg.alarmSeconds : seconds;
+  stopAlarm();
+  if (!dur) return () => {};
+
+  const specs = buildAlarmPattern(dur);
+  if (isSoundOn()) playTone(specs, "alarm");
+  try { navigator.vibrate && navigator.vibrate(buildVibratePattern(dur)); } catch {}
+
+  const buses = __buses;
+  const timer = setTimeout(() => { __alarmStop = null; }, dur * 1000 + 400);
+
+  __alarmStop = () => {
+    clearTimeout(timer);
+    try { navigator.vibrate && navigator.vibrate(0); } catch {}
+    if (buses) {
+      // cut the alarm bus rather than chasing every scheduled oscillator,
+      // then let it back up for the next ring
+      const t = buses.ctx.currentTime;
+      buses.alarm.gain.cancelScheduledValues(t);
+      buses.alarm.gain.setTargetAtTime(0, t, 0.02);
+      setTimeout(() => { try { buses.alarm.gain.setValueAtTime(1, buses.ctx.currentTime); } catch {} }, 250);
+    }
+    __alarmStop = null;
+  };
+  return __alarmStop;
+}
+
+function stopAlarm() {
+  if (__alarmStop) __alarmStop();
+}
+
+function alarmRinging() {
+  return !!__alarmStop;
+}
+
+// ---- the ambient bed -------------------------------------------------------
+
+/** Four beds, all built from noise and slow filters rather than samples.
+ *  `off` is the default: a task app that starts making noise on its own is
+ *  one you uninstall. */
+const AMBIENT_SCENES = [
+  { id: "off",   label: "off",        desc: "silence" },
+  { id: "rain",  label: "rain",       desc: "steady, filtered, no thunder" },
+  { id: "room",  label: "server room", desc: "a low hum and some air" },
+  { id: "tape",  label: "tape",       desc: "pink noise with slow wow" },
+  { id: "night", label: "night",      desc: "a deep drone, very little else" },
+];
+
+let __ambient = null;
+
+/** One looping noise buffer, generated once and reused by every scene.
+ *  Four seconds is long enough that the loop point is not audible under a
+ *  filter, and small enough to be cheap (about 700 KB at 44.1 kHz). */
+function ambientNoiseBuffer(ctx) {
+  if (ambientNoiseBuffer.cache && ambientNoiseBuffer.cache.sampleRate === ctx.sampleRate) {
+    return ambientNoiseBuffer.cache;
+  }
+  const frames = ctx.sampleRate * 4;
+  const buf = ctx.createBuffer(1, frames, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  // pink-ish: a cheap one-pole cascade, which sounds far less harsh than
+  // white and costs nothing to generate
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < frames; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99765 * b0 + w * 0.0990460;
+    b1 = 0.96300 * b1 + w * 0.2965164;
+    b2 = 0.57000 * b2 + w * 1.0526913;
+    d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.22;
+  }
+  ambientNoiseBuffer.cache = buf;
+  return buf;
+}
+
+function stopAmbient() {
+  if (!__ambient) return;
+  try { __ambient.nodes.forEach((n) => { try { n.stop && n.stop(); } catch {} try { n.disconnect(); } catch {} }); } catch {}
+  __ambient = null;
+}
+
+/** Starts (or swaps) the bed. Idempotent for the same scene, so the
+ *  visibility handler can call it freely. */
+function startAmbient(sceneId) {
+  const buses = getBuses();
+  if (!buses) return;
+  if (!sceneId || sceneId === "off" || !isSoundOn()) { stopAmbient(); return; }
+  if (__ambient && __ambient.id === sceneId) return;
+  stopAmbient();
+
+  const { ctx } = buses;
+  const nodes = [];
+  const src = ctx.createBufferSource();
+  src.buffer = ambientNoiseBuffer(ctx);
+  src.loop = true;
+  nodes.push(src);
+
+  const filt = ctx.createBiquadFilter();
+  const level = ctx.createGain();
+  level.gain.value = 0;
+  nodes.push(filt, level);
+
+  if (sceneId === "rain") {
+    filt.type = "bandpass"; filt.frequency.value = 1400; filt.Q.value = 0.5;
+    level.gain.setTargetAtTime(0.55, ctx.currentTime, 1.5);
+  } else if (sceneId === "room") {
+    filt.type = "lowpass"; filt.frequency.value = 320; filt.Q.value = 0.7;
+    level.gain.setTargetAtTime(0.75, ctx.currentTime, 1.5);
+    const hum = ctx.createOscillator();
+    const humG = ctx.createGain();
+    hum.type = "sine"; hum.frequency.value = 58;
+    humG.gain.value = 0.05;
+    hum.connect(humG); humG.connect(buses.ambient); hum.start();
+    nodes.push(hum, humG);
+  } else if (sceneId === "tape") {
+    filt.type = "lowpass"; filt.frequency.value = 2600; filt.Q.value = 0.4;
+    level.gain.setTargetAtTime(0.4, ctx.currentTime, 1.5);
+    // wow: a very slow detune of the loop, which is what makes tape sound
+    // like tape rather than like noise
+    const lfo = ctx.createOscillator();
+    const lfoG = ctx.createGain();
+    lfo.frequency.value = 0.22; lfoG.gain.value = 14;
+    lfo.connect(lfoG); lfoG.connect(src.detune); lfo.start();
+    nodes.push(lfo, lfoG);
+  } else {
+    filt.type = "lowpass"; filt.frequency.value = 180; filt.Q.value = 0.8;
+    level.gain.setTargetAtTime(0.5, ctx.currentTime, 2);
+    const drone = ctx.createOscillator();
+    const droneG = ctx.createGain();
+    drone.type = "sine"; drone.frequency.value = 72;
+    droneG.gain.value = 0.07;
+    drone.connect(droneG); droneG.connect(buses.ambient); drone.start();
+    nodes.push(drone, droneG);
+  }
+
+  // a slow sweep on the filter so the bed breathes instead of sitting still
+  const sweep = ctx.createOscillator();
+  const sweepG = ctx.createGain();
+  sweep.frequency.value = 0.05;
+  sweepG.gain.value = sceneId === "rain" ? 320 : 60;
+  sweep.connect(sweepG); sweepG.connect(filt.frequency); sweep.start();
+  nodes.push(sweep, sweepG);
+
+  src.connect(filt); filt.connect(level); level.connect(buses.ambient);
+  src.start();
+  __ambient = { id: sceneId, nodes };
+}
+
+function ambientPlaying() {
+  return __ambient ? __ambient.id : null;
+}
 
 function useSoundToggle() {
   const [on, setOn] = useState(isSoundOn());
@@ -1303,9 +1703,52 @@ function useSoundToggle() {
     const next = !on;
     setOn(next);
     setSoundOn(next);
-    if (next) playTone([{ freq: 720, dur: 0.05, gain: 0.04 }]);
+    // the mute button has to take the ambient bed with it, or muting the app
+    // leaves the one sound that never stops still playing
+    if (next) {
+      playTone([{ freq: 720, dur: 0.05, gain: 0.04 }]);
+      startAmbient(loadSoundCfg().ambient);
+    } else {
+      stopAmbient();
+      stopAlarm();
+    }
   };
   return [on, toggle];
+}
+
+/** Owns the ambient bed for the life of the app.
+ *
+ *  Two rules it exists to enforce:
+ *    * it never starts on its own — `off` is the default, and a task app
+ *      that begins humming unprompted is one you uninstall;
+ *    * it stops when the app is backgrounded. An audio graph left running
+ *      behind a locked screen is battery drain that nobody will ever
+ *      attribute to the right cause.
+ */
+function useAmbient() {
+  const [cfg, setCfgState] = useState(loadSoundCfg);
+
+  useEffect(() => {
+    saveSoundCfg(cfg);
+    applySoundCfg(cfg);
+    if (document.hidden) stopAmbient();
+    else startAmbient(isSoundOn() ? cfg.ambient : "off");
+  }, [cfg]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) { stopAmbient(); stopAlarm(); }
+      else startAmbient(isSoundOn() ? loadSoundCfg().ambient : "off");
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      stopAmbient();
+    };
+  }, []);
+
+  const setCfg = useCallback((patch) => setCfgState((c) => ({ ...c, ...patch })), []);
+  return [cfg, setCfg];
 }
 
 // ============================================================
@@ -1368,7 +1811,7 @@ function AnimatedNumber({ value, className, suffix = "" }) {
 // earned). Those used to clamp to the same floor as zero, making "-280, your
 // worst area" visually identical to "never started". They now render on a
 // dedicated inner band and are marked, so a deficit reads as a deficit.
-function RadarChart({ axes, size = 220, maxValue }) {
+function RadarChart({ axes, size = 220, maxValue, onPick, picked }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     const t = requestAnimationFrame(() => setMounted(true));
@@ -1449,27 +1892,60 @@ function RadarChart({ axes, size = 220, maxValue }) {
         // circle the vertex sits on so labels grow outward instead.
         const cosA = Math.cos(angleFor(i));
         const anchor = cosA > 0.25 ? "start" : cosA < -0.25 ? "end" : "middle";
+        const isPicked = picked === (ax.key || i);
         return (
           <g key={ax.key || i}>
             <circle
               cx={dotPt[0]}
               cy={dotPt[1]}
-              r={n > 6 ? 2.8 : 3.5}
+              r={isPicked ? (n > 6 ? 5 : 6) : (n > 6 ? 2.8 : 3.5)}
               fill={negative ? "none" : (ax.color || "#5EEAD4")}
               stroke={negative ? "var(--danger)" : "none"}
               strokeWidth={negative ? 1.4 : 0}
-              style={{ transition: "cx 700ms cubic-bezier(0.22,1,0.36,1), cy 700ms cubic-bezier(0.22,1,0.36,1)" }}
+              style={{ transition: "cx 700ms cubic-bezier(0.22,1,0.36,1), cy 700ms cubic-bezier(0.22,1,0.36,1), r 140ms ease" }}
             />
+
             <text
               x={labelPt[0]}
               y={labelPt[1]}
               textAnchor={anchor}
               dominantBaseline="middle"
-              className={`radar-label ${negative ? "radar-label-neg" : ""}`}
+              className={`radar-label ${negative ? "radar-label-neg" : ""} ${isPicked ? "on" : ""}`}
+              style={onPick ? { cursor: "pointer" } : undefined}
+              onClick={onPick ? () => onPick(ax) : undefined}
             >
               {negative ? `${ax.label} ↓` : ax.label}
             </text>
           </g>
+        );
+      })}
+
+      {/* Tap targets are WEDGES, not circles on the dots.
+          A dot sits at a radius proportional to its value, so on a new save
+          -- or any save with several empty axes -- all ten collapse into a
+          26px huddle at the centre and their round hit areas overlap. Tapping
+          "Mind" reliably opened "Creative". A wedge owns a direction instead
+          of a point, so every axis has an unambiguous region however small
+          its value, and the region is finger-sized by construction. */}
+      {onPick && axes.map((ax, i) => {
+        const half = Math.PI / n;
+        const a0 = angleFor(i) - half, a1 = angleFor(i) + half;
+        const R = r * 1.42;
+        const x0 = cx + Math.cos(a0) * R, y0 = cy + Math.sin(a0) * R;
+        const x1 = cx + Math.cos(a1) * R, y1 = cy + Math.sin(a1) * R;
+        const sweep = 2 * half > Math.PI ? 1 : 0;
+        return (
+          <path
+            key={`hit-${ax.key || i}`}
+            className="radar-hit"
+            d={`M${cx},${cy} L${x0.toFixed(1)},${y0.toFixed(1)} A${R.toFixed(1)},${R.toFixed(1)} 0 ${sweep} 1 ${x1.toFixed(1)},${y1.toFixed(1)} Z`}
+            fill="transparent"
+            style={{ cursor: "pointer" }}
+            onClick={() => onPick(ax)}
+            role="button"
+            tabIndex={0}
+            aria-label={`${ax.label}: ${ax.value} XP`}
+          />
         );
       })}
     </svg>
@@ -2008,6 +2484,33 @@ function TypedName({ text = "tasks.sh" }) {
       {text.slice(0, n)}
       <span className={`type-caret ${n >= text.length ? "idle" : ""}`} />
     </span>
+  );
+}
+
+/** v44: the tab bar moved to the bottom and became icons.
+ *
+ *  Inline SVG rather than a font or an image set: the service worker would
+ *  otherwise have one more thing to precache, and an icon that 404s is a
+ *  navigation bar with a hole in it. 24px viewBox, 1.8 stroke, currentColor
+ *  so themes tint them for free.
+ */
+const TAB_ICONS = {
+  today: "M4 7h16M4 12h16M4 17h10",
+  tasks: "M9 6h11M9 12h11M9 18h11M4.5 6l1 1 2-2M4.5 12l1 1 2-2M4.5 18l1 1 2-2",
+  routines: "M12 7v5l3 2M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z",
+  vault: "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM12 9.5v5M9.5 12h5",
+  quest: "M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8 6.6 19.7l1.2-6.1L3.3 9.4l6.1-.8L12 3z",
+  tools: "M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6 1.4 1.4 2.6-2.6a4 4 0 0 1-4.4-4.4z",
+  pet: "M12 20s-7-4.4-7-9.2A4 4 0 0 1 12 8a4 4 0 0 1 7 2.8C19 15.6 12 20 12 20z",
+};
+
+function TabIcon({ id }) {
+  const d = TAB_ICONS[id] || TAB_ICONS.today;
+  return (
+    <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" focusable="false">
+      <path d={d} fill="none" stroke="currentColor" strokeWidth="1.8"
+            strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 
@@ -3197,14 +3700,110 @@ function VaultNotesSection({ notes, setNotes }) {
   );
 }
 
-function VaultView({ vaultHabits, setVaultHabits, projects, setProjects, notes, setNotes }) {
+/** v44: slimmed to the two things that are not features -- your backup and
+ *  your build.
+ *
+ *  Habits, projects and notes were removed from this screen at the owner's
+ *  request. The UI is gone; the DATA is not. `tasksh.vaulthabits.v1`,
+ *  `tasksh.projects.v1` and `tasksh.notes.v1` are untouched in
+ *  localStorage and still ride along in every export and cloud snapshot,
+ *  so putting the sections back is a revert, not a recovery.
+ */
+/** The sound panel (v47).
+ *
+ *  It lives in the vault rather than behind the titlebar speaker because the
+ *  speaker's one job is muting in a hurry — putting a settings sheet behind
+ *  it would cost a tap at exactly the moment you cannot afford one. The
+ *  vault had room since v44 took three sections out of it.
+ */
+function SoundRow() {
+  const [cfg, setCfg] = useAmbient();
+  const [on, toggle] = useSoundToggle();
+  const [ringing, setRinging] = useState(false);
+  useEffect(() => () => stopAlarm(), []);
+
+  const demoAlarm = () => {
+    if (ringing) { stopAlarm(); setRinging(false); return; }
+    setRinging(true);
+    ringAlarm(cfg.alarmSeconds);
+    setTimeout(() => setRinging(false), cfg.alarmSeconds * 1000 + 300);
+  };
+
+  return (
+    <>
+      <div className="section-header"><span>SOUND</span></div>
+      <div className="snd">
+        <button className={`snd-mute ${on ? "on" : ""}`} onClick={toggle}>
+          {on ? "sound is on" : "muted"}
+        </button>
+
+        <label className="snd-slider">
+          <span className="snd-label">volume</span>
+          <input
+            type="range" min="0" max="100" step="5" value={cfg.volume}
+            onChange={(e) => setCfg({ volume: +e.target.value })}
+          />
+          <span className="snd-val">{cfg.volume}</span>
+        </label>
+
+        <div className="snd-sub">AMBIENT</div>
+        <div className="snd-scenes">
+          {AMBIENT_SCENES.map((sc) => (
+            <button
+              key={sc.id}
+              className={cfg.ambient === sc.id ? "on" : ""}
+              onClick={() => { setCfg({ ambient: sc.id }); sound.click(); }}
+              title={sc.desc}
+            >
+              {sc.label}
+            </button>
+          ))}
+        </div>
+        <div className="snd-hint">
+          {(AMBIENT_SCENES.find((x) => x.id === cfg.ambient) || {}).desc}
+          {cfg.ambient !== "off" && " · stops when the app is in the background"}
+        </div>
+
+        {cfg.ambient !== "off" && (
+          <label className="snd-slider">
+            <span className="snd-label">bed level</span>
+            <input
+              type="range" min="0" max="100" step="5" value={cfg.ambientVolume}
+              onChange={(e) => setCfg({ ambientVolume: +e.target.value })}
+            />
+            <span className="snd-val">{cfg.ambientVolume}</span>
+          </label>
+        )}
+
+        <div className="snd-sub">POMODORO RING</div>
+        <div className="snd-scenes">
+          {[[0, "silent"], [3, "3s"], [10, "10s"], [20, "20s"]].map(([v, l]) => (
+            <button key={v} className={cfg.alarmSeconds === v ? "on" : ""}
+                    onClick={() => { setCfg({ alarmSeconds: v }); sound.click(); }}>{l}</button>
+          ))}
+          <button className={`snd-test ${ringing ? "on" : ""}`} onClick={demoAlarm}>
+            {ringing ? "stop" : "test"}
+          </button>
+        </div>
+        <div className="snd-hint">
+          the in-app ring only fires while the app is open. the push
+          notification is the one that works with the screen off.
+        </div>
+      </div>
+    </>
+  );
+}
+
+function VaultView() {
   return (
     <div className="task-list vault-scroll">
-      <VaultHabitsSection habits={vaultHabits} setHabits={setVaultHabits} />
-      <VaultProjectsSection projects={projects} setProjects={setProjects} />
-      <VaultNotesSection notes={notes} setNotes={setNotes} />
       <CloudBackupRow />
       <AppUpdateRow />
+      <SoundRow />
+      <pre className="cap-note">
+        habits, projects and notes moved out of here in v44. nothing was
+        deleted — they are still in your backups.
+      </pre>
     </div>
   );
 }
@@ -3401,10 +4000,42 @@ function subForHabitIn(list, h) {
   return first ? first.key : null;
 }
 
+/** v45: floored, the same way computeAreaXP is.
+ *
+ *  v44 floored the four broad areas and called "no negative stats" done. It
+ *  was not: the radar defaults to TAG mode, tags are scored here, and this
+ *  function had no floor -- so the Screen Time axis that prompted the request
+ *  was still drawn below zero after the fix shipped. The floor belongs on
+ *  both scorers or on neither. */
 function computeSubXPIn(list, subKey, habits) {
+  return Math.max(0, computeSubXPRawIn(list, subKey, habits));
+}
+
+/** The uncapped figure. The axis popup shows it when it differs, because
+ *  "0" and "0 after a 280-point deficit" are not the same fact. */
+function computeSubXPRawIn(list, subKey, habits) {
   return (habits || [])
     .filter((h) => subForHabitIn(list, h) === subKey)
     .reduce((s, h) => s + habitNet(h), 0);
+}
+
+/** Everything behind one radar vertex, for the tap-a-dot popup.
+ *  Pure so the arithmetic can be tested without rendering a chart. */
+function axisBreakdown(habits, filterFn) {
+  const mine = (habits || []).filter(filterFn);
+  let gained = 0, lost = 0, done = 0, slipped = 0;
+  for (const h of mine) {
+    const d = countHist(h, "done"), sl = countHist(h, "slip");
+    gained += habitXP(h) * d;
+    lost += habitPenalty(h) * sl;
+    done += d;
+    slipped += sl;
+  }
+  const raw = gained - lost;
+  const rows = mine
+    .map((h) => ({ id: h.id, label: h.label, net: habitNet(h) }))
+    .sort((a, b) => b.net - a.net);
+  return { count: mine.length, gained, lost, done, slipped, raw, value: Math.max(0, raw), rows };
 }
 
 function useSubAreas() {
@@ -3573,7 +4204,20 @@ function computeTotalXP(habits) {
 
 // SPENDABLE BALANCE -- what rewards actually cost against. This is the number
 // that goes down when you claim something.
+/** v44: floored at zero.
+ *
+ *  Screen Time sat at a negative number because it is a bad habit -- every
+ *  slip subtracts and nothing ever adds. A negative axis made the radar
+ *  plot inside-out and read as "you are worse than nothing at this", which
+ *  is not a thing. The penalty still counts against total XP; it just does
+ *  not drag an axis below the floor. */
 function computeAreaXP(area, habits) {
+  const raw = (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
+  return Math.max(0, raw);
+}
+
+/** The uncapped figure, for anywhere that wants to show the real damage. */
+function computeAreaXPRaw(area, habits) {
   return (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
 }
 
@@ -3683,11 +4327,204 @@ function LifeAreaCard({ area, xp }) {
 
 // ---- habit card (v35) ------------------------------------------------------
 // One card replaces GoodHabitCard and BadHabitCard. Every habit now has two
+/** Builds one month of a quest's history as calendar rows (#10).
+ *
+ *  Pure, and takes `today` rather than reading the clock, so the tests can
+ *  pin a date instead of hoping the suite never runs across midnight.
+ *  Returns 6 rows of 7 cells, Monday-first; cells outside the month are null.
+ */
+function habitMonthGrid(habit, year, month, today) {
+  const marks = {};
+  for (const e of normaliseHistory(habit && habit.history)) marks[e.d] = e.t;
+  const pad = (v) => String(v).padStart(2, "0");
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  // getUTCDay() is Sunday-first; the grid is Monday-first
+  const lead = (first.getUTCDay() + 6) % 7;
+
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${year}-${pad(month)}-${pad(d)}`;
+    cells.push({ d: ds, day: d, state: marks[ds] || null, today: ds === today, future: ds > today });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  while (cells.length < 42) cells.push(null);
+
+  const rows = [];
+  for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+  return rows;
+}
+
+/** Counts for the month shown, plus the all-time figures underneath it. */
+function habitHistoryStats(habit, year, month) {
+  const entries = normaliseHistory(habit && habit.history);
+  const prefix = `${year}-${String(month).padStart(2, "0")}`;
+  const inMonth = entries.filter((e) => e.d.startsWith(prefix));
+  const tally = (list, t) => list.filter((e) => e.t === t).length;
+  const doneDays = entries.filter((e) => e.t === "done").map((e) => e.d);
+  return {
+    monthDone: tally(inMonth, "done"),
+    monthSlip: tally(inMonth, "slip"),
+    allDone: tally(entries, "done"),
+    allSlip: tally(entries, "slip"),
+    streak: computeStreak(doneDays),
+    best: longestRun(doneDays),
+  };
+}
+
+/** Longest run of consecutive days ever recorded. Sorted-set walk rather
+ *  than a date-by-date scan, so a two-year history is still instant. */
+function longestRun(days) {
+  const set = [...new Set(days)].sort();
+  let best = 0, run = 0, prev = null;
+  const next = (ds) => {
+    const [y, m, d] = ds.split("-").map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d) + 86400000);
+    return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
+  };
+  for (const d of set) {
+    run = prev && next(prev) === d ? run + 1 : 1;
+    if (run > best) best = run;
+    prev = d;
+  }
+  return best;
+}
+
+const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Steps a {year, month} cursor without ever producing month 0 or 13. */
+function shiftMonth(cursor, delta) {
+  const m0 = cursor.year * 12 + (cursor.month - 1) + delta;
+  return { year: Math.floor(m0 / 12), month: (m0 % 12) + 1 };
+}
+
+/** A sideways drag that can mean two different things (#3).
+ *
+ *  Right = done, left = slipped, matching the two buttons it replaces. The
+ *  axis is locked on the first few pixels of movement: a gesture that starts
+ *  vertical is a scroll and is handed straight back to the browser, which is
+ *  the difference between a list that feels native and one that fights you.
+ */
+function useSwipeMark({ onRight, onLeft, threshold = 64, enabled = true }) {
+  const [dx, setDx] = useState(0);
+  const dragging = useRef(false);
+  const start = useRef({ x: 0, y: 0 });
+  const axis = useRef(null);
+  const moved = useRef(false);
+
+  const down = (e) => {
+    if (!enabled) return;
+    dragging.current = true;
+    moved.current = false;
+    axis.current = null;
+    start.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const move = (e) => {
+    if (!dragging.current) return;
+    const ddx = e.clientX - start.current.x;
+    const ddy = e.clientY - start.current.y;
+    if (axis.current === null) {
+      if (Math.abs(ddx) < 6 && Math.abs(ddy) < 6) return;
+      axis.current = Math.abs(ddx) > Math.abs(ddy) ? "x" : "y";
+      if (axis.current === "y") { dragging.current = false; setDx(0); return; }
+    }
+    if (axis.current !== "x") return;
+    if (Math.abs(ddx) > 4) moved.current = true;
+    // resistance past the trigger point so the row cannot be flung off screen
+    const capped = Math.sign(ddx) * Math.min(Math.abs(ddx), threshold + (Math.abs(ddx) - threshold) * 0.35);
+    setDx(Math.abs(ddx) > threshold ? capped : ddx);
+  };
+
+  const end = () => {
+    if (!dragging.current) { setDx(0); return; }
+    dragging.current = false;
+    const d = dx;
+    setDx(0);
+    if (d >= threshold && onRight) onRight();
+    else if (d <= -threshold && onLeft) onLeft();
+  };
+
+  const cancel = () => { dragging.current = false; setDx(0); };
+
+  return {
+    dx,
+    armed: dx >= threshold ? "right" : dx <= -threshold ? "left" : null,
+    dragging: dragging.current,
+    handlers: {
+      onPointerDown: down,
+      onPointerMove: move,
+      onPointerUp: end,
+      onPointerCancel: cancel,
+      onPointerLeave: end,
+    },
+  };
+}
+
+/** The per-quest calendar (#10). The Vault's card chrome was reused here --
+ *  the feature went away, the shape it left behind did not. */
+function QuestHistory({ habit, onClose }) {
+  const todayStr = getISTDateString(0);
+  const [y, m] = todayStr.split("-").map(Number);
+  const [cursor, setCursor] = useState({ year: y, month: m });
+  const rows = useMemo(() => habitMonthGrid(habit, cursor.year, cursor.month, todayStr), [habit, cursor, todayStr]);
+  const stats = useMemo(() => habitHistoryStats(habit, cursor.year, cursor.month), [habit, cursor]);
+  const atToday = cursor.year === y && cursor.month === m;
+
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="sheet qh-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <span className="sheet-title">{habit.label}</span>
+          <button className="sheet-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+
+        <div className="qh-nav">
+          <button onClick={() => { setCursor(shiftMonth(cursor, -1)); sound.click(); }} aria-label="Previous month">‹</button>
+          <span className="qh-month">{MONTH_NAMES[cursor.month - 1]} {cursor.year}</span>
+          <button disabled={atToday} onClick={() => { setCursor(shiftMonth(cursor, 1)); sound.click(); }} aria-label="Next month">›</button>
+        </div>
+
+        <div className="qh-dow">
+          {["m", "t", "w", "t", "f", "s", "s"].map((d, i) => <span key={i}>{d}</span>)}
+        </div>
+
+        <div className="qh-grid">
+          {rows.map((row, ri) => row.map((cell, ci) => (
+            <span
+              key={`${ri}-${ci}`}
+              className={`qh-cell ${cell ? "" : "blank"} ${cell && cell.state ? cell.state : ""} ${cell && cell.today ? "today" : ""} ${cell && cell.future ? "future" : ""}`}
+              title={cell ? `${cell.d}: ${cell.state || "nothing recorded"}` : ""}
+            >
+              {cell ? cell.day : ""}
+            </span>
+          )))}
+        </div>
+
+        <div className="qh-key">
+          <span><i className="qh-swatch done" /> completed</span>
+          <span><i className="qh-swatch slip" /> skipped</span>
+          <span><i className="qh-swatch" /> nothing</span>
+        </div>
+
+        <div className="qh-stats">
+          <div><span className="qh-stat-n">{stats.monthDone}</span><span className="qh-stat-l">done this month</span></div>
+          <div><span className="qh-stat-n">{stats.monthSlip}</span><span className="qh-stat-l">skipped</span></div>
+          <div><span className="qh-stat-n">{stats.streak}</span><span className="qh-stat-l">streak now</span></div>
+          <div><span className="qh-stat-n">{stats.best}</span><span className="qh-stat-l">best run</span></div>
+        </div>
+        <div className="qh-all">{stats.allDone} completed and {stats.allSlip} skipped all time</div>
+      </div>
+    </div>
+  );
+}
+
 // marks: ✓ did it (adds xp) and ✗ did the opposite (subtracts penalty). A
 // habit with penalty 0 behaves exactly like a v34 good habit; one with xp 0
 // behaves exactly like a v34 bad habit. The old split was never a difference
 // in kind, only in which list a row happened to live in.
-function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave,
+function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave, onHistory,
                     reorder = false, onMove, canUp = false, canDown = false,
                     index = 0, total = 1 }) {
   const today = getISTDateString(0);
@@ -3696,6 +4533,13 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
 
   const [fx, setFx] = useState(0);
   const fireFx = () => { if (!doneToday) setFx((n) => n + 1); };
+
+  // v45: swipe right to complete, left to fail. The two buttons stay -- a
+  // gesture nobody told you about is not a feature, it is a secret.
+  const swipe = useSwipeMark({
+    onRight: () => { fireFx(); sound.complete(); onMark(habit.id, "done", true); },
+    onLeft: () => { sound.fail(); onMark(habit.id, "slip", true); },
+  });
   // streaks count completions only -- a slip is not a quiet day, it breaks it
   const { streak, freezeUsed } = streakFreezeInfo(
     normaliseHistory(habit.history).filter((e) => e.t === "done").map((e) => e.d)
@@ -3849,10 +4693,22 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
   if (habitPenalty(habit) > 0) meta.push(`−${habitPenalty(habit)}`);
 
   return (
+    <div className="swipe-rail">
+      <div className={`swipe-hint right ${swipe.dx > 0 ? "show" : ""} ${swipe.armed === "right" ? "armed" : ""}`}>
+        <span>✓ done</span>
+      </div>
+      <div className={`swipe-hint left ${swipe.dx < 0 ? "show" : ""} ${swipe.armed === "left" ? "armed" : ""}`}>
+        <span>✗ failed</span>
+      </div>
     <div
       className={`quest-habit-card good edge ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
       key={`h${habit.id}`}
-      style={cardStateVars(doneToday ? "done" : slipToday ? "failed" : null)}
+      style={{
+        ...cardStateVars(doneToday ? "done" : slipToday ? "failed" : null),
+        transform: swipe.dx ? `translateX(${swipe.dx}px)` : undefined,
+        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(.65,0,.35,1)",
+      }}
+      {...swipe.handlers}
     >
       {fx > 0 && <span className="xp-pop" key={fx}>+{habitXP(habit)}</span>}
       <span className="area-dot" style={{ background: area.color }} />
@@ -3862,6 +4718,20 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
           {meta.join(" / ")} XP · {area.label}{streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
         </span>
       </div>
+      <button
+        className="hist-btn"
+        onClick={(e) => { e.stopPropagation(); onHistory && onHistory(habit); sound.click(); }}
+        aria-label="Quest history"
+        title="calendar history"
+      >
+        <svg viewBox="0 0 24 24" width="13" height="13">
+          <rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
+          <path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          <rect x="7" y="13" width="3" height="3" fill="currentColor" />
+          <rect x="14" y="13" width="3" height="3" fill="currentColor" opacity="0.45" />
+        </svg>
+      </button>
+
       <button
         className="link-btn"
         onClick={(e) => { e.stopPropagation(); linkUIBridge.open(refOf("good", habit.id)); sound.click(); }}
@@ -3918,6 +4788,7 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
           </svg>
         </button>
       )}
+    </div>
     </div>
   );
 }
@@ -3989,9 +4860,59 @@ function RewardCard({ reward, canClaim, onClaim, onDelete, onSave }) {
   );
 }
 
+/** Tap a radar vertex and this says exactly what it is made of (#8).
+ *
+ *  Deliberately not a modal: it opens underneath the chart it describes, so
+ *  the dot you tapped is still on screen next to the number it produced.
+ */
+function AxisDetail({ axis, habits, onClose }) {
+  const b = useMemo(() => axisBreakdown(habits, axis.pick), [habits, axis]);
+  const clamped = b.raw < 0;
+  return (
+    <div className="axis-pop" role="dialog" aria-label={`${axis.label} points`}>
+      <div className="axis-pop-head">
+        <span className="axis-pop-dot" style={{ background: axis.color || "var(--accent)" }} />
+        <span className="axis-pop-name">{axis.label}</span>
+        <button className="axis-pop-close" onClick={onClose} aria-label="Close">×</button>
+      </div>
+
+      <div className="axis-pop-value">
+        <span className="axis-pop-xp">{b.value}</span>
+        <span className="axis-pop-unit">XP</span>
+        {clamped && <span className="axis-pop-raw">held at zero · true balance {b.raw}</span>}
+      </div>
+
+      <div className="axis-pop-split">
+        <span className="axis-pop-gain">+{b.gained}</span>
+        <span className="axis-pop-sep">/</span>
+        <span className="axis-pop-lose">−{b.lost}</span>
+        <span className="axis-pop-meta">{b.done} done · {b.slipped} slipped · {b.count} quest{b.count === 1 ? "" : "s"}</span>
+      </div>
+
+      {b.rows.length === 0 ? (
+        <div className="axis-pop-empty">nothing tagged here yet</div>
+      ) : (
+        <div className="axis-pop-rows">
+          {b.rows.slice(0, 6).map((r) => (
+            <div key={r.id} className="axis-pop-row">
+              <span className="axis-pop-row-label">{r.label}</span>
+              <span className={`axis-pop-row-net ${r.net < 0 ? "neg" : r.net > 0 ? "pos" : ""}`}>
+                {r.net > 0 ? `+${r.net}` : r.net}
+              </span>
+            </div>
+          ))}
+          {b.rows.length > 6 && <div className="axis-pop-more">+{b.rows.length - 6} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, spend }) {
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
+  const [pickedAxis, setPickedAxis] = useState(null);
+  const [historyFor, setHistoryFor] = useState(null);
   const subs = tagCtl.subs;
   const totalXP = useMemo(() => computeTotalXP(habits), [habits]);
   // v41: rewards are paid for in COINS, not XP.
@@ -4012,7 +4933,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
    * partner is updated in the SAME setHabits call, because two sequential
    * updaters would each see stale state.
    */
-  const markToday = (id, type) => {
+  const markToday = (id, type, quiet = false) => {
     const today = getISTDateString(0);
     const cur = habits.find((h) => h.id === id);
     if (!cur) return;
@@ -4039,14 +4960,16 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
 
     if (!willBeOn) { sound.click(); return; }
     if (type === "done") {
-      sound.success();
+      // a swipe plays its own gesture sound before calling through, so the
+      // button sound would be a second voice on top of it
+      if (!quiet) sound.success();
       petBus.emit("habitDone");
       // hidden-achievement triggers: note the hour the user actually finished
       const hh = getISTParts().hour;
       if (hh < 6) saveMeta({ earlyFinish: true });
       if (hh >= 0 && hh < 4) saveMeta({ lateFinish: true });
     } else {
-      sound.error();
+      if (!quiet) sound.error();
       petBus.emit("badHabit");
     }
   };
@@ -4135,11 +5058,15 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
       ? AREAS.map((a) => ({
           key: a.key, label: a.label, color: a.color,
           value: computeAreaXP(a.key, habits),
+          raw: computeAreaXPRaw(a.key, habits),
+          pick: (h) => h.area === a.key,
         }))
       : subs.map((sb) => ({
           key: sb.key, label: sb.label,
           color: (AREAS.find((a) => a.key === sb.area) || {}).color,
           value: computeSubXPIn(subs, sb.key, habits),
+          raw: computeSubXPRawIn(subs, sb.key, habits),
+          pick: (h) => subForHabitIn(subs, h) === sb.key,
         }))
   ), [tagCtl.radarMode, subs, habits]);
 
@@ -4203,7 +5130,23 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
           </div>
           <button className="radar-edit" onClick={() => setShowTagEditor(true)}>edit tags</button>
         </div>
-        <RadarChart axes={areaAxes} size={252} maxValue={radarMax} />
+        <RadarChart
+          axes={areaAxes}
+          size={252}
+          maxValue={radarMax}
+          picked={pickedAxis}
+          onPick={(ax) => { setPickedAxis(pickedAxis === ax.key ? null : ax.key); sound.click(); }}
+        />
+        {pickedAxis && areaAxes.some((a) => a.key === pickedAxis) && (
+          <AxisDetail
+            axis={areaAxes.find((a) => a.key === pickedAxis)}
+            habits={habits}
+            onClose={() => { setPickedAxis(null); sound.whoosh(); }}
+          />
+        )}
+        {!pickedAxis && (
+          <div className="radar-hint">tap a dot for its exact points</div>
+        )}
         {untaggedXP > 0 && (
           <div className="radar-note">
             {untaggedXP} XP from untagged habits isn&apos;t plotted — tag them to include it
@@ -4265,6 +5208,12 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
       </div>
 
       {showTagEditor && <TagEditor tagCtl={tagCtl} onClose={() => setShowTagEditor(false)} />}
+      {historyFor && (
+        <QuestHistory
+          habit={habits.find((h) => h.id === historyFor.id) || historyFor}
+          onClose={() => { setHistoryFor(null); sound.whoosh(); }}
+        />
+      )}
 
       <div className="section-header habits-header">
         <span>HABITS</span>
@@ -4289,6 +5238,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
               subs={subs}
               allHabits={habits}
               onMark={markToday}
+              onHistory={(h) => setHistoryFor(h)}
               onDelete={delHabit}
               onSave={saveHabit}
               reorder={reorderMode}
@@ -4487,7 +5437,7 @@ function Checkbox({ checked, onChange, color }) {
   );
 }
 
-function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward }) {
+function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward, onComplete }) {
   const [text, setText] = useState("");
   const [diff, setDiff] = useState("mid");
   const [flash, triggerFlash] = useFlash();
@@ -4565,16 +5515,17 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
     sound.delete();
   };
 
-  const complete = (id, coins) => {
-    if ((daily.done || []).includes(id)) return;     // paid once, never twice
-    setDaily((d) => ({ ...d, done: [...(d.done || []), id] }));
-    onReward(coins);
-    sound.success();
-    petBus.emit("habitDone");
-  };
+  // v45: one implementation, shared with the Today tab's quest rows.
+  const complete = (id, coins) => onComplete(id, coins);
+
+  // v44: one reroll a day. It was unlimited, which made the draw meaningless
+  // -- you could spin until you liked the board.
+  const rerollKey = daily.day || "none";
+  const rerollUsed = (daily.rerolledOn || null) === rerollKey;
 
   const reroll = () => {
-    setDaily(drawDaily(inventory, daily.day));
+    if (rerollUsed) { sound.error(); return; }
+    setDaily({ ...drawDaily(inventory, daily.day), rerolledOn: rerollKey });
     sound.click();
   };
 
@@ -4623,7 +5574,9 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
       <div className="daily-note">
         new draw when your first routine starts
         {routines?.length ? ` (${[...routines].map((r) => r.time).sort()[0]})` : ""}
-        <button className="note-btn" onClick={reroll}>reroll</button>
+        <button className="note-btn" onClick={reroll} disabled={rerollUsed}>
+          {rerollUsed ? "rerolled today" : "reroll"}
+        </button>
       </div>
 
       <div className="section-header"><span>INVENTORY</span></div>
@@ -5209,21 +6162,59 @@ async function unsubscribeFromPush() {
   } catch {}
 }
 
-async function syncRoutinesToWorker(routines) {
+const STORAGE_KEY_SYNC_SENT = "tasksh.syncsent.v1";
+
+/** Pushes the schedule to the worker, but only when it has actually changed.
+ *
+ *  v46: this used to POST unconditionally from an effect keyed on `routines`,
+ *  which meant one KV write per app open plus one per routine tick — the same
+ *  bytes, over and over. Cloudflare's free KV tier allows 1,000 writes a day
+ *  across the WHOLE worker, so the schedule sync was quietly eating the
+ *  budget that cloud backup and the pomodoro timer also draw on. Measured
+ *  symptom: `POST /sync` returning
+ *  `500 {"error":"KV put() limit exceeded for the day."}`, which also takes
+ *  backup down, because a quota is per-account and not per-route.
+ *
+ *  The fix is a dedupe, not a throttle: a throttle would still spend writes
+ *  on an unchanged schedule, and would delay a real edit. The last payload
+ *  that the worker ACKed is kept, and an identical one is simply not sent.
+ *  Marked sent only on a 2xx, so a failed push retries on the next change.
+ */
+async function syncRoutinesToWorker(routines, { force = false } = {}) {
   const deviceId = getDeviceId();
+  const body = JSON.stringify({
+    deviceId,
+    // duration is included for the widget: it needs to know whether a
+    // routine is running *now* and how far through it you are, which the
+    // start time alone cannot tell it
+    routines: (routines || []).map((r) => ({ id: r.id, time: r.time, label: r.label, duration: r.duration })),
+  });
+
+  if (!force && syncPayloadUnchanged(body)) return { skipped: true };
+
   try {
-    await fetch(`${NOTIFY_WORKER_URL}/sync`, {
+    const res = await fetch(`${NOTIFY_WORKER_URL}/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deviceId,
-        // duration is included for the widget: it needs to know whether a
-        // routine is running *now* and how far through it you are, which the
-        // start time alone cannot tell it
-        routines: routines.map((r) => ({ id: r.id, time: r.time, label: r.label, duration: r.duration })),
-      }),
+      body,
     });
-  } catch {}
+    if (res && res.ok) {
+      try { localStorage.setItem(STORAGE_KEY_SYNC_SENT, body); } catch {}
+      return { sent: true };
+    }
+    return { sent: false, status: res && res.status };
+  } catch {
+    return { sent: false };
+  }
+}
+
+/** Pure so the dedupe rule is testable without a network or a worker. */
+function syncPayloadUnchanged(body) {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SYNC_SENT) === body;
+  } catch {
+    return false;      // if storage is unavailable, always send
+  }
 }
 
 // ---- AI assistant -------------------------------------------------------
@@ -6784,19 +7775,6 @@ async function syncPomodoroTimer(at, label) {
   } catch { /* offline: the foreground beep still fires */ }
 }
 
-function ringAlarm() {
-  // Three rising pairs -- distinct from sound.success(), which is a single
-  // chirp you can miss from across a room.
-  playTone([
-    { freq: 660, start: 0.00, dur: 0.16, type: "sine", gain: 0.06 },
-    { freq: 880, start: 0.18, dur: 0.16, type: "sine", gain: 0.06 },
-    { freq: 660, start: 0.42, dur: 0.16, type: "sine", gain: 0.06 },
-    { freq: 880, start: 0.60, dur: 0.16, type: "sine", gain: 0.06 },
-    { freq: 990, start: 0.84, dur: 0.30, type: "sine", gain: 0.07 },
-  ]);
-  try { navigator.vibrate && navigator.vibrate([250, 120, 250, 120, 500]); } catch {}
-}
-
 function PomodoroTool({ onReward }) {
   const boot = useRef(null);
   if (!boot.current) boot.current = resolveBootPomodoro(loadPomodoro(), Date.now());
@@ -6804,7 +7782,12 @@ function PomodoroTool({ onReward }) {
   const [session, setSession] = useState(boot.current.session);
   const [tick, setTick] = useState(0);
   const [editing, setEditing] = useState(null);
+  const [ringing, setRinging] = useState(false);
   const wakeLock = useRef(null);
+  const ringTimer = useRef(null);
+  // A ten-second alarm that outlives the screen it rang on is a bug you
+  // hear rather than see.
+  useEffect(() => () => { stopAlarm(); if (ringTimer.current) clearTimeout(ringTimer.current); }, []);
 
   const phase = session?.phase || "work";
   const round = session?.round || 1;
@@ -6838,7 +7821,15 @@ function PomodoroTool({ onReward }) {
     const silent = opts && opts.silent;
     const paid = finishedPhase === "work" && !(opts && opts.noCoins);
     if (paid) onReward(pomodoroCoins(pomodoroPhaseMinutes("work", settings)));
-    if (!silent) ringAlarm();
+    if (!silent) {
+      const secs = loadSoundCfg().alarmSeconds;
+      ringAlarm(secs);
+      if (secs) {
+        setRinging(true);
+        if (ringTimer.current) clearTimeout(ringTimer.current);
+        ringTimer.current = setTimeout(() => { setRinging(false); ringTimer.current = null; }, secs * 1000 + 300);
+      }
+    }
     const next = nextPomodoroPhase(finishedPhase, round, settings);
     // The next phase is queued but NOT started: coming back to a timer that
     // silently rolled into a break you never took is worse than a prompt.
@@ -6945,6 +7936,19 @@ function PomodoroTool({ onReward }) {
           <div className="pomo-phase" style={{ color: meta.color }}>{meta.label}</div>
         </div>
       </div>
+
+      {ringing && (
+        <button
+          className="pomo-silence"
+          onClick={() => {
+            stopAlarm();
+            setRinging(false);
+            if (ringTimer.current) { clearTimeout(ringTimer.current); ringTimer.current = null; }
+          }}
+        >
+          ■ silence
+        </button>
+      )}
 
       <div className="pomo-phase-pick" role="group" aria-label="Choose a block">
         {[["work", "focus"], ["short", "short"], ["long", "long"]].map(([id, label]) => (
@@ -8014,7 +9018,2879 @@ if (typeof window !== "undefined") {
   window.__tasksh = { burnCaptions, chunkWords, encodeProbeClip, probeVideo, codecSelfTest };
 }
 
+// ============================================================
+// RNGDLE -- one number a day, scored against every other number
+// that could have come up.
+//
+// The whole engine is offline and exact. 233 badge rules, 39 families, and
+// an EP->percentile curve measured by sweeping all 1,000,001 possible rolls
+// rather than sampled: every `count` below is the real figure, and the test
+// suite re-derives them from the rules so a broken rule cannot pass quietly.
+// ============================================================
+
+const RNG_MAX = 1000000;
+
+// ---- helpers ---------------------------------------------------------------
+const rngDigits = (s) => [...s].map(Number);
+const rngSumD = (s) => rngDigits(s).reduce((a, b) => a + b, 0);
+const rngProdD = (s) => rngDigits(s).reduce((a, b) => a * b, 1);
+const rngTally = (s) => { const c = {}; for (const ch of s) c[ch] = (c[ch] || 0) + 1; return c; };
+const rngMaxRepeat = (s) => Math.max(...Object.values(rngTally(s)));
+const rngDistinct = (s) => Object.keys(rngTally(s)).length;
+const rngHas = (sub) => (n, s) => s.includes(sub);
+const rngExact = (v) => (n, s) => s === v;
+const rngAnyRun = (k) => (n, s) => { for (let i = 0; i + k <= s.length; i++) { let ok = true; for (let j = 1; j < k; j++) if (s[i + j] !== s[i]) { ok = false; break; } if (ok) return true; } return false; };
+const rngEnds = (sub) => (n, s) => s.endsWith(sub);
+const rngIsPal = (x) => { for (let i = 0, j = x.length - 1; i < j; i++, j--) if (x[i] !== x[j]) return false; return true; };
+
+const rngPowerSet = (e) => { const out = new Set(); for (let b = 0; ; b++) { const v = Math.pow(b, e); if (v > RNG_MAX) break; out.add(v); } return out; };
+const rngExpSet = (b) => { const out = new Set(); let v = 1; while (v <= RNG_MAX) { out.add(v); v *= b; } return out; };
+
+const RNG_SQ = rngPowerSet(2), CUBES = rngPowerSet(3), P4 = rngPowerSet(4), P5 = rngPowerSet(5),
+      P6 = rngPowerSet(6), P7 = rngPowerSet(7), P8 = rngPowerSet(8), P9 = rngPowerSet(9),
+      P10 = rngPowerSet(10), P11 = rngPowerSet(11), P13 = rngPowerSet(13), P17 = rngPowerSet(17), P19 = rngPowerSet(19);
+const RNG_P2 = rngExpSet(2), POW3 = rngExpSet(3), POW5 = rngExpSet(5), POW7 = rngExpSet(7);
+const RNG_OURO = new Set([1, 4, 27, 256, 3125, 46656, 823543]);
+const RNG_FACT = (() => { const o = new Set(); let v = 1, i = 1; o.add(1); while (v <= RNG_MAX) { v *= i; if (v <= RNG_MAX) o.add(v); i++; } return o; })();
+const RNG_FIB = (() => { const o = new Set([0, 1]); let a = 0, b = 1; while (b <= RNG_MAX) { o.add(b); [a, b] = [b, a + b]; } return o; })();
+const RNG_PRONIC = (() => { const o = new Set(); for (let i = 0; i * (i + 1) <= RNG_MAX; i++) o.add(i * (i + 1)); return o; })();
+// 1 MB of sieve is not worth paying for at boot when most sessions never
+// open the tool, so it is built on the first prime question and then kept.
+function rngPrimes(n) {
+  if (!rngPrimes.sieve) {
+    const sieve = new Uint8Array(RNG_MAX + 1);
+    sieve[0] = sieve[1] = 1;
+    for (let i = 2; i * i <= RNG_MAX; i++) if (!sieve[i]) for (let j = i * i; j <= RNG_MAX; j += i) sieve[j] = 1;
+    rngPrimes.sieve = sieve;
+  }
+  return n >= 2 && !rngPrimes.sieve[n];
+}
+
+// strict monotone helpers
+const rngUp = (d) => d.length >= 2 && d.every((v, i) => i === 0 || v > d[i - 1]);
+const rngDown = (d) => d.length >= 2 && d.every((v, i) => i === 0 || v < d[i - 1]);
+const rngNonDec = (d) => d.every((v, i) => i === 0 || v >= d[i - 1]);
+const rngNonInc = (d) => d.every((v, i) => i === 0 || v <= d[i - 1]);
+
+// "rises to a peak then falls" with flats allowed (MESA) and strict (MOUNTAIN)
+function rngUnimodal(d, dir, strict) {
+  // dir=+1 -> up then down (peak); dir=-1 -> down then up (valley)
+  if (d.length < 3) return false;
+  const cmp = [];
+  for (let i = 1; i < d.length; i++) {
+    const diff = d[i] - d[i - 1];
+    if (diff === 0) { if (strict) return false; cmp.push(0); }
+    else cmp.push(diff > 0 ? 1 : -1);
+  }
+  const nz = cmp.filter((c) => c !== 0);
+  if (nz.length < 2) return false;
+  const first = dir, second = -dir;
+  let i = 0;
+  while (i < nz.length && nz[i] === first) i++;
+  if (i === 0) return false;              // never went the first way
+  const rest = nz.slice(i);
+  if (rest.length === 0) return false;    // never turned
+  return rest.every((c) => c === second);
+}
+
+
+// A part is valid when it has no leading zero ("0" alone is fine).
+const rngOkPart = (p) => !(p.length > 1 && p[0] === "0");
+// RNGdle requires at least one of the parts to be 2+ digits long, so
+// "12" is not scored as 1 and 2 unless a longer token is involved.
+const rngSomeLong = (parts) => parts.some((p) => p.length >= 2);
+
+// every split of s into k valid parts, values consecutive when sorted.
+// ordered===true  -> the parts run in order (ascending OR descending)
+// ordered===false -> they do not
+function rngSplitConsec(s, k, ordered) {
+  const rec = (i, parts) => {
+    if (parts.length === k - 1) {
+      const tail = s.slice(i);
+      if (!tail || !rngOkPart(tail)) return false;
+      const all = [...parts, tail];
+      if (!rngSomeLong(all)) return false;
+      const nums = all.map(Number);
+      const sorted = [...nums].sort((a, b) => a - b);
+      for (let x = 1; x < sorted.length; x++) if (sorted[x] !== sorted[x - 1] + 1) return false;
+      const inOrder = nums.every((v, x) => x === 0 || v > nums[x - 1]) ||
+                      nums.every((v, x) => x === 0 || v < nums[x - 1]);
+      if (ordered === true && !inOrder) return false;
+      if (ordered === false && inOrder) return false;
+      return true;
+    }
+    for (let j = i + 1; j <= s.length - (k - parts.length - 1); j++) {
+      const p = s.slice(i, j);
+      if (!rngOkPart(p)) continue;
+      if (rec(j, [...parts, p])) return true;
+    }
+    return false;
+  };
+  return rec(0, []);
+}
+
+// k adjacent substrings that are consecutive integers, somewhere inside s
+// (but not spanning the whole of it -- that is the "rngExact" badge's job)
+function rngContainsConsec(s, k) {
+  for (let o = 0; o < s.length; o++) {
+    for (let t = 1; o + t <= s.length; t++) {
+      const head = s.slice(o, o + t);
+      if (!rngOkPart(head)) continue;
+      for (const dir of [1, -1]) {
+        let at = o + t;
+        const toks = [head];
+        let ok = true;
+        for (let c = 1; c < k; c++) {
+          const want = String(Number(head) + c * dir);
+          if (at + want.length > s.length || s.slice(at, at + want.length) !== want) { ok = false; break; }
+          toks.push(want);
+          at += want.length;
+        }
+        if (ok && !(o === 0 && at === s.length) && rngSomeLong(toks)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// two substrings one apart in value that are nested or separated by a gap --
+// touching ones are CONSEC_PAIR_ADJACENT's business, overlaps count as neither
+function rngNearbyConsec(s) {
+  const toks = [];
+  for (let o = 0; o < s.length; o++) for (let t = 1; o + t <= s.length; t++) {
+    const p = s.slice(o, o + t);
+    if (rngOkPart(p)) toks.push({ v: Number(p), from: o, to: o + t, text: p });
+  }
+  for (let a = 0; a < toks.length; a++) for (let b = a + 1; b < toks.length; b++) {
+    const x = toks[a], y = toks[b];
+    if (Math.abs(x.v - y.v) !== 1) continue;
+    if (!rngSomeLong([x.text, y.text])) continue;
+    if (x.to === y.from || y.to === x.from) continue;
+    const nested = (x.from <= y.from && y.to <= x.to) || (y.from <= x.from && x.to <= y.to);
+    const apart = x.to < y.from || y.to < x.from;
+    if (nested || apart) return true;
+  }
+  return false;
+}
+
+// two touching substrings that are consecutive integers
+function rngAdjConsec(s) {
+  for (let e = 0; e < s.length; e++) {
+    for (let o = 1; e + o < s.length; o++) {
+      const t = s.slice(e, e + o);
+      if (!rngOkPart(t)) continue;
+      const n = Number(t);
+      for (const v of [n + 1, n - 1]) {
+        if (v < 0) continue;
+        const l = String(v);
+        if (s.slice(e + o, e + o + l.length) !== l) continue;
+        const u = e + o + l.length;
+        if (!(e === 0 && u === s.length) && rngSomeLong([t, l])) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// the whole number splits into two consecutive integers
+function rngSplitTwo(s) {
+  for (let e = 1; e < s.length; e++) {
+    const a = s.slice(0, e), b = s.slice(e);
+    if (!rngOkPart(a) || !rngOkPart(b) || !rngSomeLong([a, b])) continue;
+    if (Math.abs(Number(a) - Number(b)) === 1) return true;
+  }
+  return false;
+}
+
+// insert one operator and an equals sign: a ? b = c
+function rngEquation(s) {
+  for (let e = 1; e < s.length - 1; e++) for (let o = e + 1; o < s.length; o++) {
+    const parts = [s.slice(0, e), s.slice(e, o), s.slice(o)];
+    if (parts.some((p) => !rngOkPart(p))) continue;
+    const [a, b, c] = parts.map(Number);
+    if (a === 0 || b === 0 || c === 0) continue;
+    if (a + b === c || a - b === c || a * b === c || a / b === c) return true;
+  }
+  return false;
+}
+
+// splits into >=3 parts with a constant difference (not 0, +1 or -1) or a
+// constant ratio. The +-1 exclusion is the game's: 123 is a sequence badge,
+// not a progression one.
+function rngProgression(s, kind) {
+  const good = (nums) => {
+    if (nums.length < 3) return false;
+    if (kind === "arith") {
+      const step = nums[1] - nums[0];
+      if (step === 0 || step === 1 || step === -1) return false;
+      return nums.every((v, i) => i === 0 || v - nums[i - 1] === step);
+    }
+    if (nums.some((v) => v <= 0) || nums[0] === nums[1]) return false;
+    for (let i = 0; i + 2 < nums.length; i++) if (nums[i + 1] * nums[i + 1] !== nums[i] * nums[i + 2]) return false;
+    return true;
+  };
+  const rec = (i, parts) => {
+    if (i >= s.length) return good(parts.map(Number));
+    for (let j = i + 1; j <= s.length; j++) {
+      const p = s.slice(i, j);
+      if (!rngOkPart(p)) continue;
+      if (rec(j, [...parts, p])) return true;
+    }
+    return false;
+  };
+  return rec(0, []);
+}
+
+// sequence of k consecutive digits (ascending or descending) as a substring
+const rngSeqRun = (k) => (n, s) => {
+  for (let i = 0; i + k <= s.length; i++) {
+    let up = true, down = true;
+    for (let j = 1; j < k; j++) {
+      if (+s[i + j] !== +s[i + j - 1] + 1) up = false;
+      if (+s[i + j] !== +s[i + j - 1] - 1) down = false;
+    }
+    if (up || down) return true;
+  }
+  return false;
+};
+
+const rngParityRun = (n, s) => {
+  for (let i = 0; i + 5 <= s.length; i++) {
+    const w = s.slice(i, i + 5);
+    if (w === "02468" || w === "13579" || w === "86420" || w === "97531") return true;
+  }
+  return false;
+};
+
+const RNG_STROBO = { "0": "0", "1": "1", "6": "9", "8": "8", "9": "6" };
+const rngIsStrobo = (s) => {
+  let out = "";
+  for (let i = s.length - 1; i >= 0; i--) { const c = RNG_STROBO[s[i]]; if (c === undefined) return false; out += c; }
+  return out === s;
+};
+
+// HILLS / DUNES: four or more turns' worth of alternating rises and falls.
+// DUNES collapses flat stretches first; HILLS forbids them outright.
+function rngHills(d, collapseFlats) {
+  let v = d;
+  if (collapseFlats) v = d.filter((x, i) => i === 0 || x !== d[i - 1]);
+  else { for (let i = 1; i < v.length; i++) if (v[i] === v[i - 1]) return false; }
+  if (v.length < 4) return false;
+  for (let i = 2; i < v.length; i++) if ((v[i] - v[i - 1]) * (v[i - 1] - v[i - 2]) > 0) return false;
+  return true;
+}
+
+// contiguous-run helpers
+const rngContigRuns = (s) => { const r = []; let i = 0; while (i < s.length) { let j = i; while (j < s.length && s[j] === s[i]) j++; r.push({ ch: s[i], len: j - i, at: i }); i = j; } return r; };
+
+const rngContigBoat = (s) => {
+  const r = rngContigRuns(s);
+  for (let i = 0; i + 1 < r.length; i++) {
+    if (r[i].len >= 3 && r[i + 1].len >= 2) return true;
+    if (r[i].len >= 2 && r[i + 1].len >= 3) return true;
+  }
+  return false;
+};
+
+const rngContigTwoPair = (s) => {
+  for (let i = 0; i + 4 <= s.length; i++)
+    if (s[i] === s[i + 1] && s[i + 2] === s[i + 3] && s[i] !== s[i + 2]) return true;
+  return false;
+};
+
+const rngContigThreePair = (s) => {
+  for (let i = 0; i + 6 <= s.length; i++) {
+    const a = s[i], b = s[i + 2], c = s[i + 4];
+    if (s[i + 1] === a && s[i + 3] === b && s[i + 5] === c && a !== b && b !== c && a !== c) return true;
+  }
+  return false;
+};
+
+
+
+
+const rngPalSub = (s, minLen) => {
+  for (let L = minLen; L <= s.length; L++) for (let i = 0; i + L <= s.length; i++) if (rngIsPal(s.slice(i, i + L))) return true;
+  return false;
+};
+
+const rngWindowRun = (s, minLen) => {
+  for (let L = minLen; L <= s.length; L++) for (let i = 0; i + L <= s.length; i++) {
+    const w = rngDigits(s.slice(i, i + L)).sort((a, b) => a - b);
+    let ok = true;
+    for (let k = 1; k < w.length; k++) if (w[k] !== w[k - 1] + 1) { ok = false; break; }
+    if (ok) return true;
+  }
+  return false;
+};
+
+const rngEvenSpacing = (d, abs) => {
+  if (d.length < 3) return false;
+  if (!abs) { const step = d[1] - d[0]; return d.every((v, i) => i === 0 || v - d[i - 1] === step); }
+  const step = Math.abs(d[1] - d[0]);
+  return d.every((v, i) => i === 0 || Math.abs(v - d[i - 1]) === step);
+};
+
+const rngZipper = (s) => {
+  if (s.length < 2) return false;
+  if (rngDistinct(s) !== 2) return false;
+  for (let i = 2; i < s.length; i++) if (s[i] !== s[i - 2]) return false;
+  return s[0] !== s[1];
+};
+
+
+// ---- the table -------------------------------------------------------------
+const RNG_RULES = {
+  // --- counting / shape
+  ONE_DIGIT: (n, s) => s.length === 1,
+  TWO_DIGITS: (n, s) => s.length === 2,
+  THREE_DIGITS: (n, s) => s.length === 3,
+  FOUR_DIGITS: (n, s) => s.length === 4,
+  FIVE_DIGITS: (n, s) => s.length === 5,
+  SIX_DIGITS: (n, s) => s.length === 6,
+  COLOSSAL: (n) => n > 999000,
+  ONE_MILLION: (n) => n === 1000000,
+
+  // --- single digits
+  DIGIT_ZERO: rngExact("0"), DIGIT_ONE: rngExact("1"), DIGIT_TWO: rngExact("2"), DIGIT_THREE: rngExact("3"),
+  DIGIT_FOUR: rngExact("4"), DIGIT_FIVE: rngExact("5"), DIGIT_SIX: rngExact("6"), DIGIT_SEVEN: rngExact("7"),
+  DIGIT_EIGHT: rngExact("8"), DIGIT_NINE: rngExact("9"),
+
+  // --- parity / divisibility
+  EVEN: (n) => n % 2 === 0,
+  ODD: (n) => n % 2 === 1,
+  LUCKY_SEVEN_DIV: (n) => n > 0 && n % 7 === 0,
+  ELEVEN: (n) => n > 0 && n % 11 === 0,
+  DOZEN: (n) => n > 0 && n % 12 === 0,
+  HARSHAD: (n, s) => { const d = rngSumD(s); return n > 0 && d > 0 && n % d === 0; },
+  PRIME: (n) => rngPrimes(n),
+  DIVISIBLE_BY_THREE: (n, s) => [...s].every((c) => +c % 3 === 0),
+
+  // --- digit counts
+  HYDROGEN: (n, s) => rngTally(s)["1"] === 1,
+  HELIUM: (n, s) => rngTally(s)["2"] === 1,
+  LITHIUM: (n, s) => rngTally(s)["3"] === 1,
+  BERYLLIUM: (n, s) => rngTally(s)["4"] === 1,
+  BORON: (n, s) => rngTally(s)["5"] === 1,
+  CARBON: (n, s) => rngTally(s)["6"] === 1,
+  NITROGEN: (n, s) => rngTally(s)["7"] === 1,
+  OXYGEN: (n, s) => rngTally(s)["8"] === 1,
+  FLUORINE: (n, s) => rngTally(s)["9"] === 1,
+  GHOST: (n, s) => rngTally(s)["0"] === 1,
+
+  // --- composition
+  VOID: (n, s) => !s.includes("0"),
+  DEEP_VOID: rngHas("00"),
+  DEEP_VOID_THREE: rngHas("000"),
+  DEEP_VOID_FOUR: rngHas("0000"),
+  DEEP_VOID_FIVE: rngHas("00000"),
+  CLEAN: rngEnds("0"),
+  SEMI_CLEAN: rngEnds("5"),
+  CENTURY: rngEnds("00"),
+  SEMI_CENTURY: rngEnds("50"),
+  QUARTER_CENTURY: rngEnds("25"),
+  THREE_QUARTER_CENTURY: rngEnds("75"),
+  MILLENNIUM: rngEnds("000"),
+  SEMI_MILLENNIUM: rngEnds("500"),
+  EPOCH: rngEnds("0000"),
+  SEMI_EPOCH: rngEnds("5000"),
+  EON: rngEnds("00000"),
+  SEMI_EON: rngEnds("50000"),
+  DOUBLE_NINE: rngEnds("99"),
+  TRIPLE_NINE: rngEnds("999"),
+  QUAD_NINE: rngEnds("9999"),
+  QUINT_NINE: rngEnds("99999"),
+
+  HETEROGENEOUS: (n, s) => rngDistinct(s) === s.length,
+  HOMOGENEOUS: (n, s) => s.length >= 2 && rngDistinct(s) === 1,
+  DUALITY: (n, s) => rngDistinct(s) === 2,
+  TRINITY: (n, s) => rngDistinct(s) === 3,
+  QUARTET: (n, s) => rngDistinct(s) === 4,
+  BINARY_SOUL: (n, s) => [...s].every((c) => c === "0" || c === "1"),
+  LOW_BALL: (n, s) => [...s].every((c) => +c <= 4),
+  HIGH_ROLLER: (n, s) => [...s].every((c) => +c >= 5),
+  FLUSH: (n, s) => [...s].every((c) => +c % 2 === 0) || [...s].every((c) => +c % 2 === 1),
+  ALTERNATOR: (n, s) => s.length >= 2 && [...s].every((c, i) => i === 0 || (+c % 2) !== (+s[i - 1] % 2)),
+  NEIGHBORS: (n, s) => { for (let i = 1; i < s.length; i++) if (Math.abs(+s[i] - +s[i - 1]) === 1) return true; return false; },
+
+  // --- sums
+  BLACKJACK: (n, s) => rngSumD(s) === 21,
+  FEATHER: (n, s) => rngSumD(s) < 15,
+  HEAVY: (n, s) => rngSumD(s) > 45,
+  BALANCED: (n, s) => s.length % 2 === 0 && rngSumD(s.slice(0, s.length / 2)) === rngSumD(s.slice(s.length / 2)),
+  SPY: (n, s) => n !== 1 && n !== 2 && rngSumD(s) === rngProdD(s),
+  EQUATION: (n, s) => rngEquation(s),
+
+  // --- ends
+  LIFTOFF: (n, s) => +s[0] > +s[s.length - 1],
+  GROUNDED: (n, s) => +s[0] < +s[s.length - 1],
+  EQUILIBRIUM: (n, s) => s.length >= 2 && s[0] === s[s.length - 1],
+  SANDWICH: (n, s) => s.length >= 2 && s[0] === s[s.length - 1] && rngDistinct(s) > 1,
+  GAP_ONE: (n, s) => Math.abs(+s[0] - +s[s.length - 1]) === 1,
+  BOOKENDS: (n, s) => s.length >= 4 && s.slice(0, 2) === s.slice(-2),
+  MIRROR_BOOKENDS: (n, s) => s.length >= 4 && s[0] === s[s.length - 1] && s[1] === s[s.length - 2],
+  PAIRED_BOOKENDS: (n, s) => s.length >= 4 && s[0] === s[1] && s[s.length - 1] === s[s.length - 2] && s[0] !== s[s.length - 1],
+
+  // --- of a kind / pairs
+  PAIR: (n, s) => rngMaxRepeat(s) >= 2,
+  TWO_PAIR: (n, s) => Object.values(rngTally(s)).filter((c) => c >= 2).length >= 2,
+  THREE_PAIR: (n, s) => Object.values(rngTally(s)).filter((c) => c >= 2).length >= 3,
+  TRIPS: (n, s) => Object.values(rngTally(s)).some((c) => c === 3),
+  QUADS: (n, s) => rngMaxRepeat(s) >= 4,
+  FIVE_OF_A_KIND: (n, s) => rngMaxRepeat(s) >= 5,
+  BOAT: (n, s) => { const v = Object.values(rngTally(s)).sort((a, b) => b - a); return v[0] >= 3 && v[1] >= 2; },
+  SNAKE_EYES: (n, s) => { const t = rngTally(s); return t["1"] === 2 && Object.entries(t).every(([k, c]) => k === "1" || c < 2); },
+  CONTIGUOUS_PAIR: rngAnyRun(2),
+  CONTIGUOUS_TRIPS: rngAnyRun(3),
+  CONTIGUOUS_QUADS: rngAnyRun(4),
+  CONTIGUOUS_FIVES: rngAnyRun(5),
+  CONTIGUOUS_SIXES: rngAnyRun(6),
+  CONTIGUOUS_TWO_PAIR: (n, s) => rngContigTwoPair(s),
+  CONTIGUOUS_THREE_PAIR: (n, s) => rngContigThreePair(s),
+  CONTIGUOUS_BOAT: (n, s) => rngContigBoat(s),
+  FRAMED_PAIR: (n, s) => s.length === 4 && s[1] === s[2] && s[1] !== s[0] && s[1] !== s[3],
+  FRAMED_TRIPLE: (n, s) => s.length === 5 && s[1] === s[2] && s[2] === s[3] && s[1] !== s[0] && s[1] !== s[4],
+  FRAMED_QUAD: (n, s) => s.length === 6 && s[1] === s[2] && s[2] === s[3] && s[3] === s[4] && s[1] !== s[0] && s[1] !== s[5],
+  FRAMED_DOUBLE: (n, s) => s.length === 6 && s[1] === s[2] && s[3] === s[4] && s[1] !== s[3] && s[0] !== s[1] && s[5] !== s[4],
+  FIREFLY: (n, s) => { if (s.length < 4) return false; const v = Object.values(rngTally(s)); return v.length === 2 && v.includes(1); },
+
+  // --- monotone / shape
+  STEPS: (n, s) => s.length >= 2 && rngNonDec(rngDigits(s)) && rngDistinct(s) > 1,
+  SLOPES: (n, s) => s.length >= 2 && rngNonInc(rngDigits(s)) && rngDistinct(s) > 1,
+  ASCENSION: (n, s) => rngUp(rngDigits(s)),
+  DECAY: (n, s) => rngDown(rngDigits(s)),
+  MOUNTAIN: (n, s) => rngUnimodal(rngDigits(s), 1, true),
+  VALLEY: (n, s) => rngUnimodal(rngDigits(s), -1, true),
+  MESA: (n, s) => rngUnimodal(rngDigits(s), 1, false),
+  CANYON: (n, s) => rngUnimodal(rngDigits(s), -1, false),
+  HILLS: (n, s) => rngHills(rngDigits(s), false),
+  DUNES: (n, s) => rngHills(rngDigits(s), true),
+  TURTLE: (n, s) => s.length >= 2 && rngDigits(s).every((v, i) => i === 0 || Math.abs(v - rngDigits(s)[i - 1]) <= 1),
+  CASCADE: (n, s) => s.length >= 2 && rngDigits(s).every((v, i) => i === 0 || v === +s[i - 1] + 1),
+  WATERFALL: (n, s) => s.length >= 2 && rngDigits(s).every((v, i) => i === 0 || v === +s[i - 1] - 1),
+  ZIPPER: (n, s) => rngZipper(s),
+  EVEN_SPACING: (n, s) => rngEvenSpacing(rngDigits(s), false),
+  EVEN_SPACING_ABS: (n, s) => rngEvenSpacing(rngDigits(s), true),
+  HOPSCOTCH: (n, s) => { if (s.length < 3 || rngDistinct(s) < 2) return false; for (let o = 0; o + 3 <= s.length; o++) { if (s[o] !== s[o + 2]) continue; if (!((o + 4 < s.length && s[o + 4] === s[o]) || (o >= 2 && s[o - 2] === s[o]))) return true; } return false; },
+  DOUBLE_HOP: (n, s) => { if (s.length < 5 || rngDistinct(s) < 2) return false; for (let o = 0; o + 5 <= s.length; o++) if (s[o + 2] === s[o] && s[o + 4] === s[o]) return true; return false; },
+
+  // --- sequences
+  SEQUENCE_3: rngSeqRun(3),
+  SEQUENCE_4: rngSeqRun(4),
+  SEQUENCE_6: rngSeqRun(6),
+  STRAIGHT: rngSeqRun(5),
+  ROYAL_FLUSH: rngHas("56789"),
+  STRAIGHT_FLUSH: rngParityRun,
+  MINI_SCRAMBLE: (n, s) => rngWindowRun(s, 3),
+  SCRAMBLE: (n, s) => { const d = rngDigits(s).sort((a, b) => a - b); if (d.length < 2) return false; for (let i = 1; i < d.length; i++) if (d[i] !== d[i - 1] + 1) return false; return true; },
+  ARITHMETIC: (n, s) => rngProgression(s, "arith"),
+  GEOMETRIC: (n, s) => rngProgression(s, "geom"),
+
+  // --- consecutive integers
+  CONSEC_PAIR_EXACT: (n, s) => rngSplitTwo(s),
+  CONSEC_PAIR_ADJACENT: (n, s) => rngAdjConsec(s),
+  CONSEC_PAIR_NEARBY: (n, s) => rngNearbyConsec(s),
+  CONSEC_TRIPLE_EXACT: (n, s) => rngSplitConsec(s, 3, true),
+  CONSEC_TRIPLE_SCRAMBLED: (n, s) => rngSplitConsec(s, 3, false),
+  CONSEC_TRIPLE_CONTAINS: (n, s) => rngContainsConsec(s, 3),
+  CONSEC_QUAD_EXACT: (n, s) => rngSplitConsec(s, 4, true),
+  CONSEC_QUAD_SCRAMBLED: (n, s) => rngSplitConsec(s, 4, false),
+  CONSEC_QUAD_CONTAINS: (n, s) => rngContainsConsec(s, 4),
+
+  // --- mirrors / repeats
+  PALINDROME: (n, s) => rngIsPal(s),
+  POCKET_MIRROR: (n, s) => rngPalSub(s, 4),
+  STROBOGRAMMATIC: (n, s) => rngIsStrobo(s),
+  ECHO: (n, s) => s.length % 2 === 0 && s.slice(0, s.length / 2) === s.slice(s.length / 2),
+  RHYME: (n, s) => { if (s.length < 4) return false; for (let L = 2; L <= Math.floor(s.length / 2); L++) for (let i = 0; i + L <= s.length; i++) if (s.indexOf(s.slice(i, i + L), i + L) !== -1) return true; return false; },
+  MINI_ECHO: (n, s) => { for (let i = 0; i + 4 <= s.length; i++) if (s.slice(i, i + 2) === s.slice(i + 2, i + 4)) return true; return false; },
+
+  // --- powers
+  SQUARE: (n) => RNG_SQ.has(n),
+  CUBE: (n) => CUBES.has(n),
+  FOURTH_POWER: (n) => P4.has(n),
+  FIFTH_POWER: (n) => P5.has(n),
+  SIXTH_POWER: (n) => P6.has(n),
+  SEVENTH_POWER: (n) => P7.has(n),
+  EIGHTH_POWER: (n) => P8.has(n),
+  NINTH_POWER: (n) => P9.has(n),
+  TENTH_POWER: (n) => P10.has(n),
+  ELEVENTH_POWER: (n) => P11.has(n),
+  THIRTEENTH_POWER: (n) => P13.has(n),
+  SEVENTEENTH_POWER: (n) => P17.has(n),
+  NINETEENTH_POWER: (n) => P19.has(n),
+  POWER_OF_TWO: (n) => RNG_P2.has(n),
+  POWER_OF_THREE: (n) => POW3.has(n),
+  POWER_OF_FIVE: (n) => POW5.has(n),
+  POWER_OF_SEVEN: (n) => POW7.has(n),
+  OUROBOROS: (n) => RNG_OURO.has(n),
+  FACTORIAL: (n) => RNG_FACT.has(n),
+  FIBONACCI: (n) => RNG_FIB.has(n),
+  PRONIC: (n) => RNG_PRONIC.has(n),
+
+  // --- culture
+  LUCKY_7: rngHas("7"),
+  JACKPOT: rngHas("777"),
+  JACKPOT_FOUR: rngHas("7777"),
+  JACKPOT_FIVE: rngHas("77777"),
+  JACKPOT_SIX: rngHas("777777"),
+  JACKPOT_EXACT: rngExact("777"),
+  DEVIL: rngHas("666"),
+  DEVIL_EXACT: rngExact("666"),
+  INFERNAL: rngExact("666666"),
+  NICE: rngHas("69"),
+  VERY_NICE: rngHas("6969"),
+  NICE_EXACT: rngExact("69"),
+  VERY_VERY_NICE: rngExact("696969"),
+  MEANING: rngHas("42"),
+  DEEPER_MEANING: rngHas("4242"),
+  MEANING_EXACT: rngExact("42"),
+  UNIVERSAL_ANSWER: rngExact("424242"),
+  BOTANIST: rngHas("420"),
+  BOTANIST_EXACT: rngExact("420"),
+  HOTBOX: rngExact("420420"),
+  LEET: rngHas("1337"),
+  LEET_EXACT: rngExact("1337"),
+  SIXTY_SEVEN: rngHas("67"),
+  SIXTY_SEVEN_DOUBLE: rngHas("6767"),
+  SIXTY_SEVEN_EXACT: rngExact("67"),
+  BRAINROT: rngExact("676767"),
+  EIGHTY_SIX: rngHas("86"),
+  EIGHTY_SIX_EXACT: rngExact("86"),
+  BIG_BROTHER: rngHas("1984"),
+  BIG_BROTHER_EXACT: rngExact("1984"),
+  ERROR: rngHas("404"),
+  ERROR_EXACT: rngExact("404"),
+  ORIENTATION: rngHas("101"),
+  ORIENTATION_EXACT: rngExact("101"),
+  EMERGENCY: rngHas("911"),
+  EMERGENCY_EXACT: rngExact("911"),
+  MAYDAY: rngExact("911911"),
+  CALENDAR: rngHas("365"),
+  CALENDAR_EXACT: rngExact("365"),
+  GROUNDHOG_DAY: rngExact("365365"),
+  ALWAYS: (n, s) => s === "247365" || s === "365247",
+  SECRET_AGENT: rngHas("007"),
+  HELL: rngHas("7734"),
+  EXACT_HELL: rngExact("7734"),
+  HELLO: rngHas("07734"),
+  BOOB_8008: rngHas("8008"),
+  BOOB_58008: rngHas("58008"),
+  BOOB_80085: rngHas("80085"),
+  EXACT_BOOB: (n, s) => s === "8008" || s === "58008",
+  EXACT_BOOB_80085: rngExact("80085"),
+  ULTIMEME: (n, s) => s.includes("69") && s.includes("420"),
+  ULTIMEME_EXACT: (n, s) => s === "69420" || s === "42069",
+  FOOTBALL_17776: rngExact("17776"),
+  FULL_DAY: rngExact("86400"),
+
+  // --- constants
+  PI: (n, s) => ["314", "3141", "31415", "314159"].includes(s),
+  PI_CONTAINS_3: rngHas("314"),
+  PI_CONTAINS_4: rngHas("3141"),
+  PI_CONTAINS_5: rngHas("31415"),
+  E: (n, s) => ["271", "2718", "27182", "271828"].includes(s),
+  E_CONTAINS_3: rngHas("271"),
+  E_CONTAINS_4: rngHas("2718"),
+  E_CONTAINS_5: rngHas("27182"),
+  TAU: (n, s) => ["6283", "62831", "628318"].includes(s),
+  TAU_SLICE_4: rngHas("6283"),
+  TAU_SLICE_5: rngHas("62831"),
+  GOLDEN_RATIO: (n, s) => ["1618", "16180", "161803"].includes(s),
+};
+
+/** The 233 badge definitions, rarest first.
+ *  [id, label, emoji, tier, ep, count, family, rule-in-words]
+ *  `count` is how many of the 1,000,001 possible rolls earn it -- measured by
+ *  sweeping the whole range, not estimated. EP is the game's own price and
+ *  works out to roughly 100 EP per roll whatever the badge, so a Mythic is
+ *  not better value than a Common, only rarer.
+ */
+const RNG_BADGE_ROWS = [
+  ["BIG_BROTHER_EXACT","Orwellian","👁️","m",100000100,1,"BIG_BROTHER","exactly \"1984\""],
+  ["BOTANIST_EXACT","Exact Botanist","🌿","m",100000100,1,"BOTANIST","exactly \"420\""],
+  ["BRAINROT","Brainrot","🫠","m",100000100,1,"SIXTY_SEVEN","exactly \"676767\""],
+  ["CALENDAR_EXACT","Exact Calendar","📅","m",100000100,1,"CALENDAR","exactly \"365\""],
+  ["DEVIL_EXACT","Exact Devil","😈","m",100000100,1,"DEVIL","exactly \"666\""],
+  ["DIGIT_EIGHT","Eight","8️⃣","m",100000100,1,"SINGLE_DIGIT","the number eight"],
+  ["DIGIT_FIVE","Five","5️⃣","m",100000100,1,"SINGLE_DIGIT","the number five"],
+  ["DIGIT_FOUR","Four","4️⃣","m",100000100,1,"SINGLE_DIGIT","the number four"],
+  ["DIGIT_NINE","Nine","9️⃣","m",100000100,1,"SINGLE_DIGIT","the number nine"],
+  ["DIGIT_ONE","One","1️⃣","m",100000100,1,"SINGLE_DIGIT","the number one"],
+  ["DIGIT_SEVEN","Seven","7️⃣","m",100000100,1,"SINGLE_DIGIT","the number seven"],
+  ["DIGIT_SIX","Six","6️⃣","m",100000100,1,"SINGLE_DIGIT","the number six"],
+  ["DIGIT_THREE","Three","3️⃣","m",100000100,1,"SINGLE_DIGIT","the number three"],
+  ["DIGIT_TWO","Two","2️⃣","m",100000100,1,"SINGLE_DIGIT","the number two"],
+  ["DIGIT_ZERO","Zero","0️⃣","m",100000100,1,"SINGLE_DIGIT","the number zero"],
+  ["EIGHTY_SIX_EXACT","Exact Eighty-Six","🍽️","m",100000100,1,"EIGHTY_SIX","exactly \"86\""],
+  ["EMERGENCY_EXACT","Exact Emergency","🚑","m",100000100,1,"EMERGENCY","exactly \"911\""],
+  ["ERROR_EXACT","Not Found","🚫","m",100000100,1,"ERROR","exactly \"404\""],
+  ["EXACT_BOOB_80085","Exact 80085","💎","m",100000100,1,"BOOB","exactly \"80085\""],
+  ["EXACT_HELL","Exact Hell","👹","m",100000100,1,"HELL","exactly \"7734\""],
+  ["FOOTBALL_17776","17776","🏈","m",100000100,1,"","exactly \"17776\""],
+  ["FULL_DAY","Full Day","⏳","m",100000100,1,"","exactly \"86400\", the number of seconds in a day"],
+  ["GROUNDHOG_DAY","Groundhog Day","📅","m",100000100,1,"CALENDAR","exactly \"365365\""],
+  ["HOTBOX","Hotbox","🌿","m",100000100,1,"BOTANIST","exactly \"420420\""],
+  ["INFERNAL","Infernal","🔱","m",100000100,1,"DEVIL","exactly \"666666\""],
+  ["JACKPOT_EXACT","Exact Jackpot","💰","m",100000100,1,"JACKPOT","exactly \"777\""],
+  ["JACKPOT_SIX","Jackpot Six","🏦","m",100000100,1,"JACKPOT","contains six 7s in a row"],
+  ["LEET_EXACT","Exact Leet","💻","m",100000100,1,"LEET","exactly \"1337\""],
+  ["MAYDAY","Mayday","🚑","m",100000100,1,"EMERGENCY","exactly \"911911\""],
+  ["MEANING_EXACT","Exact Meaning","🌌","m",100000100,1,"BOTANIST","exactly \"42\""],
+  ["NICE_EXACT","Exact Nice","😏","m",100000100,1,"NICE","exactly \"69\""],
+  ["ONE_MILLION","One Million","🐐","m",100000100,1,"","the number one million"],
+  ["ORIENTATION_EXACT","Exact Orientation","🧭","m",100000100,1,"ORIENTATION","exactly \"101\""],
+  ["SIXTY_SEVEN_EXACT","Exact Six-Seven","🫠","m",100000100,1,"SIXTY_SEVEN","exactly \"67\""],
+  ["UNIVERSAL_ANSWER","Universal Answer","🌌","m",100000100,1,"MEANING","exactly \"424242\""],
+  ["VERY_VERY_NICE","Very Very Nice","😏","m",100000100,1,"NICE","exactly \"696969\""],
+  ["ALWAYS","Always","♾️","m",50000050,2,"CALENDAR","exactly \"247365\" or \"365247\" (24/7, 365)"],
+  ["EXACT_BOOB","Exact Boob","🍈","m",50000050,2,"BOOB","exactly \"8008\" or \"58008\""],
+  ["ULTIMEME_EXACT","Funny Number","😂","m",50000050,2,"ULTIMEME","exactly \"69420\" or \"42069\""],
+  ["GOLDEN_RATIO","Golden Ratio","🐚","m",33333367,3,"","exactly φ (1618, 16180, or 161803)"],
+  ["NINETEENTH_POWER","19th Power","🌑","m",33333367,3,"POWER","a perfect nineteenth power (n¹⁹)"],
+  ["SEVENTEENTH_POWER","17th Power","🧙","m",33333367,3,"POWER","a perfect seventeenth power (n¹⁷)"],
+  ["TAU","Tau","🌀","m",33333367,3,"TAU","exactly τ (6283, 62831, or 628318)"],
+  ["THIRTEENTH_POWER","13th Power","💀","m",33333367,3,"POWER","a perfect thirteenth power (n¹³)"],
+  ["CONSEC_QUAD_EXACT","4 Consecutive Numbers","⛓️","m",25000025,4,"CONSECUTIVE","the entire number splits into four consecutive integers in order"],
+  ["E","Euler's Number","📈","m",25000025,4,"E","the number e (271, 2718, 27182, or 271828)"],
+  ["ELEVENTH_POWER","11th Power","🕚","m",25000025,4,"POWER","a perfect eleventh power (n¹¹)"],
+  ["PI","Pi","🥧","m",25000025,4,"PI","exactly π (314, 3141, 31415, or 314159)"],
+  ["TENTH_POWER","10th Power","🔟","m",25000025,4,"POWER","a perfect tenth power (n¹⁰)"],
+  ["NINTH_POWER","9th Power","☁️","m",20000020,5,"POWER","a perfect ninth power (n⁹)"],
+  ["EIGHTH_POWER","8th Power","🎱","m",16666683,6,"POWER","a perfect eighth power (n⁸)"],
+  ["OUROBOROS","Ouroboros","🐍","m",14285729,7,"POWER","a number raised to itself: nⁿ (1¹, 2², ... 7⁷)"],
+  ["POWER_OF_SEVEN","Power of Seven","7️⃣","m",12500013,8,"","a power of 7 (7ⁿ)"],
+  ["SEVENTH_POWER","7th Power","🌈","m",12500013,8,"POWER","a perfect seventh power (n⁷)"],
+  ["FACTORIAL","Factorial","❗","m",11111122,9,"","a factorial number (n!)"],
+  ["HELLO","Hello","👋","m",11111122,9,"","contains \"07734\" (spells HELLO upside-down)"],
+  ["POWER_OF_FIVE","Power of Five","5️⃣","m",11111122,9,"","a power of 5 (5ⁿ)"],
+  ["SEQUENCE_6","Sequence (6)","🔢","m",11111122,9,"PROGRESSION","contains a sequence of 6 consecutive digits"],
+  ["CONTIGUOUS_SIXES","Contiguous Sixes","➖➖➖➖","m",10000010,10,"CONTIGUOUS_RUN","six identical consecutive digits"],
+  ["DEEP_VOID_FIVE","Deep Void (5)","⚫","m",10000010,10,"VOID_DEPTH","contains \"00000\""],
+  ["EON","Eon","🗿","m",10000010,10,"VOID_DEPTH","ends in five zeros"],
+  ["ONE_DIGIT","Single Digit","☝️","m",10000010,10,"SINGLE_DIGIT","has exactly one digit"],
+  ["QUINT_NINE","Quint Nine","🥳","m",10000010,10,"NINE_ENDING","ends in 99999"],
+  ["SEMI_EON","Semi-Eon","🦴","m",10000010,10,"VOID_DEPTH","ends in \"50000\""],
+  ["SIXTH_POWER","6th Power","🎲","a",9090918,11,"POWER","a perfect sixth power (n⁶)"],
+  ["POWER_OF_THREE","Power of Three","🔺","a",7692315,13,"","a power of 3 (3ⁿ)"],
+  ["FIFTH_POWER","5th Power","🖐️","a",6250006,16,"POWER","a perfect fifth power (n⁵)"],
+  ["JACKPOT_FIVE","Jackpot Five","💰💰💰","a",5263163,19,"JACKPOT","contains five 7s in a row"],
+  ["BOOB_58008","58008","🔠","a",5000005,20,"BOOB","contains \"58008\" (spells BOOBS upside-down)"],
+  ["BOOB_80085","80085","🅱️","a",5000005,20,"BOOB","contains \"80085\" (spells BOOBS)"],
+  ["E_CONTAINS_5","E Slice (5)","📈","a",5000005,20,"E","contains \"27182\""],
+  ["PI_CONTAINS_5","Pi Slice (5)","🥧","a",5000005,20,"PI","contains \"31415\""],
+  ["POWER_OF_TWO","Power of Two","💾","a",5000005,20,"","a power of 2 (2ⁿ)"],
+  ["ROYAL_FLUSH","Royal Flush","👑","a",5000005,20,"STRAIGHT","contains 56789 — the highest possible straight"],
+  ["TAU_SLICE_5","Tau Slice (5)","🌀","a",5000005,20,"TAU","contains \"62831\""],
+  ["CASCADE","Cascade","🌊","a",3333337,30,"PROGRESSION","every digit increases by exactly 1 from the previous"],
+  ["FIBONACCI","Fibonacci Number","🐚","a",3333337,30,"","part of the golden ratio sequence found in nature"],
+  ["FOURTH_POWER","4th Power","📦","a",3125003,32,"POWER","a perfect fourth power (n⁴)"],
+  ["WATERFALL","Waterfall","🚿","a",2857146,35,"PROGRESSION","every digit decreases by exactly 1 from the previous"],
+  ["CONSEC_QUAD_CONTAINS","4 Consecutive Numbers (Contains)","🔗","a",2631582,38,"CONSECUTIVE","contains four adjacent consecutive integers"],
+  ["CONSEC_QUAD_SCRAMBLED","4 Consecutive Numbers (Scrambled)","🔀","a",2272730,44,"CONSECUTIVE","the entire number splits into four consecutive integers, but not in order"],
+  ["HOMOGENEOUS","Homogeneous","🥛","a",2222224,45,"","all digits are the same"],
+  ["ULTIMEME","Funny Numbers","😂","a",1666668,60,"ULTIMEME","contains both \"69\" and \"420\""],
+  ["BINARY_SOUL","Binary Soul","🤖","a",1538463,65,"","only 0s and 1s"],
+  ["STRAIGHT_FLUSH","Straight Flush","🃏","a",1449277,69,"STRAIGHT","contains 5 consecutive same-parity digits (02468, 13579, or their reverse)"],
+  ["TWO_DIGITS","Two Digits","✌️","a",1111112,90,"","has exactly two digits"],
+  ["SPY","Spy Number","🕵️","a",1030929,97,"","the sum of its digits equals the product of its digits"],
+  ["EPOCH","Epoch","🏛️","a",1000001,100,"VOID_DEPTH","ends in four zeros"],
+  ["QUAD_NINE","Quad Nine","🎊","a",1000001,100,"NINE_ENDING","ends in 9999"],
+  ["SEMI_EPOCH","Semi-Epoch","⌛","a",1000001,100,"VOID_DEPTH","ends in \"5000\""],
+  ["CUBE","3rd Power","🧊","e",990100,101,"POWER","a perfect cube (n³)"],
+  ["EVEN_SPACING","Even Spacing","📏","e",862070,116,"PROGRESSION","all digits are evenly spaced in an arithmetic sequence"],
+  ["CONSEC_TRIPLE_EXACT","3 Consecutive Numbers","⛓️","e",555556,180,"CONSECUTIVE","the entire number splits into three consecutive integers in order"],
+  ["CONTIGUOUS_FIVES","Contiguous Fives","➖➖➖","e",552487,181,"CONTIGUOUS_RUN","five identical consecutive digits"],
+  ["DEEP_VOID_FOUR","Deep Void (4)","🌌","e",552487,181,"VOID_DEPTH","contains \"0000\""],
+  ["STROBOGRAMMATIC","Strobogrammatic","🙃","e",502513,199,"","looks the same when rotated 180 degrees"],
+  ["STRAIGHT","Straight","📏","e",454546,220,"STRAIGHT","contains a sequence of 5 consecutive digits (ascending or descending)"],
+  ["JACKPOT_FOUR","Jackpot Four","💰💰","e",357143,280,"JACKPOT","contains four 7s in a row"],
+  ["DEEPER_MEANING","Deeper Meaning","🌌","e",334448,299,"MEANING","contains \"4242\""],
+  ["SIXTY_SEVEN_DOUBLE","6767","🫠","e",334448,299,"SIXTY_SEVEN","contains \"6767\""],
+  ["VERY_NICE","Very Nice","🥵","e",334448,299,"NICE","contains \"6969\""],
+  ["BIG_BROTHER","Big Brother","👁️","e",333334,300,"BIG_BROTHER","contains \"1984\""],
+  ["BOOB_8008","8008","🔢","e",333334,300,"BOOB","contains \"8008\" (spells BOOB upside-down)"],
+  ["E_CONTAINS_4","E Slice (4)","📈","e",333334,300,"E","contains \"2718\""],
+  ["HELL","Hell","🔥","e",333334,300,"HELL","contains \"7734\" (spells HELL upside-down)"],
+  ["LEET","Leet","💻","e",333334,300,"LEET","contains \"1337\""],
+  ["PI_CONTAINS_4","Pi Slice (4)","🥧","e",333334,300,"PI","contains \"3141\""],
+  ["TAU_SLICE_4","Tau Slice (4)","🌀","e",333334,300,"TAU","contains \"6283\""],
+  ["CONSEC_TRIPLE_SCRAMBLED","3 Consecutive Numbers (Scrambled)","🔀","e",277778,360,"CONSECUTIVE","the entire number splits into three consecutive integers, but not in order"],
+  ["ZIPPER","Zipper","🤐","e",246914,405,"","two digits alternating perfectly"],
+  ["ASCENSION","Ascension","📈","e",219298,456,"MONOTONIC","every digit is strictly larger than the previous"],
+  ["GEOMETRIC","Crescendo","🔊","e",208334,480,"PROGRESSION","splits into three or more numbers with a constant ratio"],
+  ["FIVE_OF_A_KIND","Five of a Kind","🃏","e",198020,505,"OF_A_KIND","contains five identical digits"],
+  ["CONSEC_TRIPLE_CONTAINS","3 Consecutive Numbers (Contains)","🔗","e",157978,633,"CONSECUTIVE","contains three adjacent consecutive integers"],
+  ["CONTIGUOUS_THREE_PAIR","Contiguous Three Pair","👨‍👩‍👧‍👦👯","e",154321,648,"PAIRS","contains three adjacent contiguous pairs"],
+  ["FRAMED_PAIR","Framed Pair","🖼️","e",137174,729,"PAIRS","a 4-digit number where the middle two digits match each other but differ from both end digits"],
+  ["FRAMED_QUAD","Framed Quad","🪟","e",137174,729,"OF_A_KIND","four of a kind in the middle, bookended by different digits"],
+  ["FRAMED_TRIPLE","Framed Triple","🖼️🖼️","e",137174,729,"OF_A_KIND","a triple in the middle, bookended by different digits"],
+  ["DECAY","Decay","📉","e",119474,837,"MONOTONIC","every digit is strictly smaller than the previous"],
+  ["THREE_DIGITS","Three Digits","🤟","e",111111,900,"","has exactly three digits"],
+  ["ECHO","Echo","📣","e",100100,999,"","the first half repeats as the second half"],
+  ["COLOSSAL","Colossal","🪨","e",100000,1000,"","a number greater than 999,000"],
+  ["MILLENNIUM","Millennium","🗓️","e",100000,1000,"VOID_DEPTH","ends in triple zeros"],
+  ["PRONIC","Pronic Number","🧮","e",100000,1000,"","the product of two consecutive integers (n * n+1)"],
+  ["SEMI_MILLENNIUM","Semi-Millennium","📜","e",100000,1000,"VOID_DEPTH","ends in \"500\""],
+  ["TRIPLE_NINE","Triple Nine","🎉","e",100000,1000,"NINE_ENDING","ends in 999"],
+  ["SQUARE","2nd Power","🟦","r",99900,1001,"POWER","a perfect square (n²)"],
+  ["EVEN_SPACING_ABS","Even Spacing (Absolute)","📐","r",90992,1099,"PROGRESSION","all digits have the same absolute spacing (e.g., ±2 each time)"],
+  ["FIREFLY","Firefly","🪲","r",82237,1216,"DUALITY","one unique digit among identical others"],
+  ["CONSEC_PAIR_EXACT","2 Consecutive Numbers","🔗","r",50505,1980,"CONSECUTIVE","the entire number splits into two consecutive integers"],
+  ["PALINDROME","Palindrome","🪞","r",50025,1999,"PALINDROME","reads the same forwards and backwards"],
+  ["CONTIGUOUS_QUADS","Contiguous Quads","➖➖","r",37023,2701,"CONTIGUOUS_RUN","four identical consecutive digits"],
+  ["DEEP_VOID_THREE","Deep Void (3)","🌑","r",37023,2701,"VOID_DEPTH","contains \"000\""],
+  ["TURTLE","Turtle","🐢","r",36049,2774,"PROGRESSION","all consecutive digits differ by at most 1"],
+  ["SECRET_AGENT","Secret Agent","🕶️","r",34614,2889,"","contains \"007\""],
+  ["HEAVY","Heavy","🧱","r",33300,3003,"","the sum of its digits exceeds 45"],
+  ["CONTIGUOUS_BOAT","Contiguous Full House","🏰","r",30111,3321,"BOAT","contains a contiguous set of three adjacent to a contiguous set of two"],
+  ["DEVIL","Devil","😈","r",27027,3700,"DEVIL","contains \"666\""],
+  ["JACKPOT","Jackpot","💰","r",27027,3700,"JACKPOT","contains \"777\""],
+  ["SEQUENCE_4","Sequence (4)","🔢","r",25907,3860,"PROGRESSION","contains a sequence of 4 consecutive digits"],
+  ["ERROR","Error 404","🚫","r",25132,3979,"ERROR","contains \"404\""],
+  ["ORIENTATION","Orientation","🧭","r",25132,3979,"ORIENTATION","contains \"101\" (intro course number)"],
+  ["BOTANIST","Botanist","🌿","r",25006,3999,"BOTANIST","contains \"420\""],
+  ["CALENDAR","Calendar","📅","r",25006,3999,"CALENDAR","contains \"365\" (days in a year)"],
+  ["E_CONTAINS_3","E Slice (3)","📈","r",25006,3999,"E","contains \"271\""],
+  ["EMERGENCY","Emergency","🚑","r",25006,3999,"EMERGENCY","contains \"911\""],
+  ["PI_CONTAINS_3","Pi Slice (3)","🥧","r",25006,3999,"PI","contains \"314\""],
+  ["DIVISIBLE_BY_THREE","Divisible by Three","🔺","r",24414,4096,"","every digit is divisible by 3"],
+  ["SCRAMBLE","Scramble","🔀","r",22722,4401,"PROGRESSION","all digits form a consecutive sequence when sorted"],
+  ["DUALITY","Duality","☯️","r",21654,4618,"DUALITY","uses exactly two different digits"],
+  ["STEPS","Steps","🪜","r",20202,4950,"MONOTONIC","digits never decrease"],
+  ["ARITHMETIC","Metronome","🎼","r",17784,5623,"PROGRESSION","splits into three or more numbers with a constant difference"],
+  ["FRAMED_DOUBLE","Framed Double","🖼️🖼️🖼️","r",15242,6561,"PAIRS","two pairs in the middle, bookended by different digits"],
+  ["SLOPES","Slopes","🛝","r",12582,7948,"MONOTONIC","digits never increase"],
+  ["PAIRED_BOOKENDS","Paired Bookends","👐","r",11122,8991,"BOOKENDS","starts with a pair and ends with a different pair"],
+  ["FOUR_DIGITS","Four Digits","🍀","r",11111,9000,"","has exactly four digits"],
+  ["THREE_PAIR","Three Pair","👯‍♀️👯","r",10288,9720,"PAIRS","contains three distinct pairs of matching digits"],
+  ["BOOKENDS","Bookends","📚","r",10010,9990,"BOOKENDS","the first two digits match the last two"],
+  ["MIRROR_BOOKENDS","Mirror Bookends","📖","r",10010,9990,"BOOKENDS","first two digits are reversed as the last two"],
+  ["CENTURY","Century","💯","r",10000,10000,"VOID_DEPTH","ends in double zeros"],
+  ["DOUBLE_NINE","Double Nine","🎈","r",10000,10000,"NINE_ENDING","ends in 99"],
+  ["QUARTER_CENTURY","Quarter-Century","🪙","r",10000,10000,"","ends in \"25\""],
+  ["SEMI_CENTURY","Semi-Century","🗓️","r",10000,10000,"VOID_DEPTH","ends in \"50\""],
+  ["THREE_QUARTER_CENTURY","Three-Quarter Century","🕰️","r",10000,10000,"","ends in \"75\""],
+  ["QUADS","Four of a Kind","🍀","u",8436,11854,"OF_A_KIND","contains four identical digits"],
+  ["EQUATION","Equation","🟰","u",7720,12954,"","insert one of + − × ÷ and an equals sign to make a true equation"],
+  ["LOW_BALL","Low Ball","📉","u",6400,15626,"","contains only digits from 0 to 4"],
+  ["MOUNTAIN","Mountain","🏔️","u",5885,16992,"PEAK","digits ascend to a peak and then descend"],
+  ["DOUBLE_HOP","Double Hop","🦘🦘","u",5321,18793,"HOPSCOTCH","a digit appears at every other position (3 times)"],
+  ["HIGH_ROLLER","High Roller","🤑","u",5120,19530,"","contains only digits from 5 to 9"],
+  ["VALLEY","Valley","🏜️","u",4199,23817,"PEAK","digits descend to a trough and then ascend"],
+  ["CONTIGUOUS_TWO_PAIR","Contiguous Two Pair","👨‍👩‍👧‍👦","u",3957,25272,"PAIRS","contains two adjacent contiguous pairs"],
+  ["MINI_ECHO","Mini Echo","🔂","u",3704,27001,"REPEAT","contains an adjacent 2-digit repeat"],
+  ["ALTERNATOR","Alternator","⚡","u",2845,35145,"","digits strictly alternate between even and odd"],
+  ["FLUSH","Flush","🎨","u",2845,35155,"","all digits are either all even or all odd"],
+  ["CONTIGUOUS_TRIPS","Contiguous Trips","➖","u",2784,35920,"CONTIGUOUS_RUN","three identical consecutive digits"],
+  ["DEEP_VOID","Deep Void","🕳️","u",2784,35920,"VOID_DEPTH","contains \"00\""],
+  ["FEATHER","Feather","🪶","u",2667,37501,"","the sum of its digits is less than 15"],
+  ["BLACKJACK","Blackjack","♠️","u",2521,39662,"","digits sum exactly to 21"],
+  ["BOAT","Full House","🏠","u",2397,41715,"BOAT","contains a set of three and a set of two"],
+  ["POCKET_MIRROR","Pocket Mirror","🪞","u",2124,47089,"PALINDROME","contains a palindrome of 4 or more digits"],
+  ["SNAKE_EYES","Snake Eyes","🎲","u",2121,47139,"","contains a single pair of ones and no other pairs"],
+  ["EIGHTY_SIX","Eighty-Six","🍽️","u",2024,49401,"EIGHTY_SIX","contains \"86\" (restaurant slang for \"out of\")"],
+  ["MEANING","Meaning of Life","🌌","u",2024,49401,"BOTANIST","contains \"42\""],
+  ["NICE","Nice","😏","u",2024,49401,"NICE","contains the number 69"],
+  ["SIXTY_SEVEN","Six-Seven","🫠","u",2024,49401,"SIXTY_SEVEN","contains \"67\""],
+  ["BALANCED","Balanced","⚖️","u",1959,51036,"","sum of first half of digits equals sum of second half"],
+  ["RHYME","Rhyme","🎶","u",1872,53407,"REPEAT","contains the same 2+ digit substring twice"],
+  ["SEQUENCE_3","Sequence (3)","🔢","u",1716,58287,"PROGRESSION","contains a sequence of 3 consecutive digits"],
+  ["CONSEC_PAIR_ADJACENT","2 Consecutive Numbers (Contains)","🔗","u",1659,60270,"CONSECUTIVE","contains two adjacent substrings that are consecutive integers"],
+  ["CONSEC_PAIR_NEARBY","2 Consecutive Numbers (Nearby)","🔗","u",1575,63491,"CONSECUTIVE","contains two non-adjacent substrings that are consecutive integers"],
+  ["MESA","Mesa","🗻","u",1568,63762,"PEAK","digits rise to a peak, then fall (flat stretches allowed)"],
+  ["PRIME","Prime Number","💎","u",1274,78498,"","divisible only by 1 and itself"],
+  ["TRINITY","Trinity","⚜️","u",1265,79056,"","uses exactly three different digits"],
+  ["DOZEN","Dozen","🍩","u",1200,83333,"","divisible by 12"],
+  ["CANYON","Canyon","🌄","u",1184,84432,"PEAK","digits fall to a floor, then rise (flat stretches allowed)"],
+  ["FIVE_DIGITS","Five Digits","🖐️","u",1111,90000,"","has exactly five digits"],
+  ["ELEVEN","Eleven","🕚","u",1100,90909,"","divisible by 11"],
+  ["HARSHAD","Harshad Number","🤝","u",1048,95428,"","divisible by the sum of its own digits"],
+  ["SANDWICH","Sandwich","🥪","u",1000,99954,"EQUILIBRIUM","first and last digits match, with at least one different digit between them"],
+  ["EQUILIBRIUM","Equilibrium","🧘","u",1000,99999,"EQUILIBRIUM","the first and last digits are identical"],
+  ["SEMI_CLEAN","Semi-Clean","🧹","u",1000,100000,"","ends in a 5"],
+  ["CLEAN","Clean","🧼","u",1000,100001,"VOID_DEPTH","ends in a zero"],
+  ["HILLS","Hills","🏞️","c",733,136425,"HILLS","digits strictly alternate between rising and falling"],
+  ["TRIPS","Three of a Kind","🎰","c",724,138033,"OF_A_KIND","contains three identical digits"],
+  ["LUCKY_SEVEN_DIV","Lucky Seven (Divisible)","🎰","c",700,142857,"","divisible by 7"],
+  ["HETEROGENEOUS","Heterogeneous","🥗","c",593,168571,"","no repeated digits"],
+  ["MINI_SCRAMBLE","Mini Scramble","🧩","c",579,172847,"PROGRESSION","contains 3 or more adjacent digits that form a run when sorted"],
+  ["GAP_ONE","Gap One","↕️","c",529,188888,"","the first and last digits differ by exactly 1"],
+  ["TWO_PAIR","Two Pair","👯‍♀️","c",377,265518,"PAIRS","contains two distinct pairs of matching digits"],
+  ["DUNES","Dunes","🐫","c",364,274590,"HILLS","rises and falls keep alternating (flat stretches allowed)"],
+  ["HOPSCOTCH","Hopscotch","🦘","c",312,320193,"HOPSCOTCH","a digit appears at every other position (2 times)"],
+  ["GHOST","Ghost","👻","c",309,323848,"","contains exactly one \"0\""],
+  ["QUARTET","Quartet","🎻","c",290,344736,"","uses exactly four different digits"],
+  ["BERYLLIUM","Beryllium (4)","💎","c",282,354294,"","contains exactly one \"4\""],
+  ["BORON","Boron (5)","🧼","c",282,354294,"","contains exactly one \"5\""],
+  ["CARBON","Carbon (6)","✏️","c",282,354294,"","contains exactly one \"6\""],
+  ["FLUORINE","Fluorine (9)","🦷","c",282,354294,"","contains exactly one \"9\""],
+  ["HELIUM","Helium (2)","🎈","c",282,354294,"","contains exactly one \"2\""],
+  ["LITHIUM","Lithium (3)","🔋","c",282,354294,"","contains exactly one \"3\""],
+  ["NITROGEN","Nitrogen (7)","❄️","c",282,354294,"","contains exactly one \"7\""],
+  ["OXYGEN","Oxygen (8)","💨","c",282,354294,"","contains exactly one \"8\""],
+  ["HYDROGEN","Hydrogen (1)","💧","c",282,354295,"","contains exactly one \"1\""],
+  ["GROUNDED","Grounded","⚓","c",250,399996,"","the first digit is smaller than the last"],
+  ["CONTIGUOUS_PAIR","Contiguous Pair","🫂","c",249,402130,"PAIRS","contains a contiguous pair of matching digits"],
+  ["LUCKY_7","Lucky Seven","7️⃣","c",213,468559,"","contains the number 7"],
+  ["LIFTOFF","Liftoff","🚀","c",200,499996,"","the first digit is larger than the last"],
+  ["ODD","Odd","🦄","c",200,500000,"","not divisible by 2"],
+  ["EVEN","Even","⚖️","c",200,500001,"","divisible by 2"],
+  ["VOID","Void","🕳️","c",167,597870,"","contains no zeros"],
+  ["NEIGHBORS","Neighbors","🏘️","c",161,620689,"","contains two digits that are adjacent in value"],
+  ["PAIR","Pair","👯","c",120,831430,"PAIRS","contains a pair of matching digits"],
+  ["SIX_DIGITS","Six Digits","🐝","c",111,900000,"","has exactly six digits"],
+];
+
+const RNG_CURVE = [[1759,0],[1915,0.182],[1976,0.486],[2081,0.999],[2210,1.988],[2300,2.839],[2432,3.994],[2542,4.981],[2666,5.978],[2797,6.996],[2879,7.969],[2968,8.997],[3033,9.991],[3099,10.996],[3174,11.999],[3226,12.963],[3295,13.989],[3366,14.982],[3445,15.98],[3522,16.974],[3606,17.999],[3673,18.991],[3737,19.998],[3799,20.997],[3866,21.959],[3925,22.967],[3980,23.989],[4040,24.999],[4105,25.989],[4169,26.997],[4234,27.995],[4296,28.984],[4360,29.988],[4426,30.985],[4486,31.984],[4551,32.994],[4622,33.991],[4683,34.986],[4754,35.981],[4826,36.984],[4893,37.971],[4962,38.996],[5027,39.99],[5095,40.997],[5161,41.99],[5229,42.996],[5304,43.997],[5381,44.994],[5464,45.988],[5547,46.976],[5635,47.998],[5718,48.994],[5801,49.993],[5889,50.99],[5972,51.991],[6060,52.997],[6151,53.994],[6250,54.992],[6355,55.995],[6467,56.992],[6582,57.998],[6693,58.987],[6810,59.999],[6929,60.992],[7061,61.999],[7201,62.999],[7351,63.998],[7509,64.995],[7677,65.996],[7859,66.999],[8042,67.997],[8243,68.996],[8485,69.997],[8744,70.996],[9015,71.999],[9322,72.996],[9691,73.999],[10073,75],[10527,75.998],[11021,76.999],[11628,77.999],[12218,79],[12833,79.998],[13413,80.999],[13993,82],[14565,82.998],[15169,84],[15869,84.999],[16722,85.999],[17686,86.999],[18871,87.999],[20366,88.997],[22292,90],[25465,91],[28158,91.999],[29803,93],[31929,93.999],[35468,94.999],[41348,96],[51811,97],[94666,98],[162291,99],[337578,99.5],[514418,99.8],[1053947,99.9],[2278448,99.95],[13933656,99.99],[112146596,99.999],[186186584,100]];
+
+const RNG_TIER_NAMES = { c: "common", u: "uncommon", r: "rare", e: "epic", a: "anomaly", m: "mythic" };
+const RNG_TIER_ORDER = ["c", "u", "r", "e", "a", "m"];
+/** Tier -> the class that colours it. One place, so a chip, a collection
+ *  cell and a filter button can never disagree about what "rare" looks like. */
+const RNG_TIER_CLASS = { c: "t-common", u: "t-uncommon", r: "t-rare", e: "t-epic", a: "t-anomaly", m: "t-mythic" };
+
+const RNG_BADGES = RNG_BADGE_ROWS.map(([id, label, emoji, tier, ep, count, family, desc]) => ({
+  id, label, emoji, tier, ep, count, family: family || null, desc,
+  odds: count / (RNG_MAX + 1),
+}));
+const RNG_BY_ID = Object.fromEntries(RNG_BADGES.map((b) => [b.id, b]));
+
+/** Roll-level rarity bands. These are percentile slices of the EP
+ *  distribution over every possible roll, so "mythic" really is the top 1%
+ *  and not a guess. Measured, then pinned here as constants so scoring works
+ *  offline and costs nothing.
+ */
+const RNG_BANDS = [
+  { key: "mythic",   min: 162292, label: "MYTHIC",   note: "top 1%",       coins: 60 },
+  { key: "anomaly",  min: 35469,  label: "ANOMALY",  note: "top 5%",       coins: 30 },
+  { key: "epic",     min: 22293,  label: "EPIC",     note: "top 10%",      coins: 15 },
+  { key: "rare",     min: 10074,  label: "RARE",     note: "top 25%",      coins: 8 },
+  { key: "uncommon", min: 5802,   label: "UNCOMMON", note: "top half",     coins: 4 },
+  { key: "common",   min: 2087,   label: "COMMON",   note: "bottom half",  coins: 2 },
+  { key: "trash",    min: 0,      label: "TRASH",    note: "bottom 1%",    coins: 1 },
+];
+
+/** Scores one roll.
+ *
+ *  The family rule is the part everyone gets wrong: 168 of the 233 badges sit
+ *  in one of 39 families, and inside a family only the highest-EP badge you
+ *  matched is paid. Adding up every badge on screen gives a bigger number
+ *  than the game's, which is why two calculators disagree about the same roll.
+ */
+function rngScore(n) {
+  const s = String(n);
+  const earned = [];
+  for (let i = 0; i < RNG_BADGES.length; i++) {
+    const b = RNG_BADGES[i];
+    const rule = RNG_RULES[b.id];
+    if (rule && rule(n, s)) earned.push(b);
+  }
+  const best = {};
+  for (const b of earned) {
+    if (!b.family) continue;
+    if (!best[b.family] || b.ep > best[b.family].ep) best[b.family] = b;
+  }
+  const paid = [], outranked = [];
+  for (const b of earned) {
+    if (!b.family || best[b.family].id === b.id) paid.push(b);
+    else outranked.push(b);
+  }
+  const ep = paid.reduce((a, b) => a + b.ep, 0);
+  paid.sort((a, b) => b.ep - a.ep);
+  outranked.sort((a, b) => b.ep - a.ep);
+  return { n, ep, earned, paid, outranked, band: rngBand(ep), percentile: rngPercentile(ep) };
+}
+
+function rngBand(ep) {
+  for (const b of RNG_BANDS) if (ep >= b.min) return b;
+  return RNG_BANDS[RNG_BANDS.length - 1];
+}
+
+/** Where this EP total lands against every other possible roll.
+ *  RNG_CURVE is 109 measured quantile points; linear interpolation between
+ *  them is within 0.3 percentile points of the true answer everywhere.
+ */
+function rngPercentile(ep) {
+  const c = RNG_CURVE;
+  if (ep <= c[0][0]) return c[0][1];
+  if (ep >= c[c.length - 1][0]) return c[c.length - 1][1];
+  let lo = 0, hi = c.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (c[mid][0] <= ep) lo = mid; else hi = mid;
+  }
+  const [x0, y0] = c[lo], [x1, y1] = c[hi];
+  if (x1 === x0) return y1;
+  return y0 + ((ep - x0) * (y1 - y0)) / (x1 - x0);
+}
+
+/** One roll a day, and the same roll all day.
+ *
+ *  Seeded from the date plus a per-install salt: re-opening the app must not
+ *  reshuffle the number, and two phones should not get the same one. Nothing
+ *  here talks to a server, so the seed is all there is.
+ */
+function rngDailyNumber(dayStr, salt) {
+  let h = 2166136261;
+  const key = `rngdle|${dayStr}|${salt || ""}`;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  let a = h >>> 0;
+  a = (a + 0x6d2b79f5) | 0;
+  let t = Math.imul(a ^ (a >>> 15), 1 | a);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * (RNG_MAX + 1));
+}
+
+/** Formats 1000000 as 1,000,000 without pulling in Intl on every render. */
+function rngGroup(n) {
+  const s = String(n);
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += ",";
+    out += s[i];
+  }
+  return out;
+}
+
+const RNGI_PRODUCT_ROWS = [
+  ["skill-bay-1","skill-slot","Skill Bay I",1000000,0,0,"","a second slot on the rack, so two skills can fire on one roll."],
+  ["skill-bay-2","skill-slot","Skill Bay II",4000000,0,0,"skill-bay-1","a third slot. three skills, one roll."],
+  ["quickwind-1", "roll", "Quickwind I", 30000, 2200, 3000, "", "a tighter spring on the reveal. every digit still gets its moment, just sooner."],
+  ["quickwind-2", "roll", "Quickwind II", 110000, 1600, 2200, "quickwind-1", "fine-tunes the mechanism. the badges still land in order."],
+  ["quickwind-3", "roll", "Quickwind III", 380000, 1000, 1600, "quickwind-2", "a brisk reveal with the whole sequence intact."],
+  ["quickwind-4", "roll", "Quickwind IV", 1200000, 600, 1000, "quickwind-3", "the fastest reveal the mechanism allows."],
+  ["clockwork-1", "cooldown", "Clockwork I", 50000, 3000, 4000, "", "a stronger spring brings the next roll round sooner."],
+  ["clockwork-2", "cooldown", "Clockwork II", 180000, 2000, 3000, "clockwork-1", "rewound harder. less standing about between numbers."],
+  ["clockwork-3", "cooldown", "Clockwork III", 620000, 1000, 2000, "clockwork-2", "the wait stops being a wait."],
+  ["clockwork-4", "cooldown", "Clockwork IV", 1700000, 600, 1000, "clockwork-3", "barely a pause now."],
+  ["clockwork-5", "cooldown", "Clockwork V", 3800000, 300, 600, "clockwork-4", "a blink between rolls."],
+  ["clockwork-6", "cooldown", "Clockwork VI", 9000000, 120, 300, "clockwork-5", "as close to continuous as the ladder goes."],
+  ["flywheel", "pace", "Flywheel", 450000, 0, 0, "", "rolling without stopping builds momentum: +2% banked every 10 rolls in a row, up to +30%. breaking the run resets it."],
+  ["flywheel-2", "pace", "Flywheel II", 1500000, 0, 0, "flywheel", "a heavier wheel. +3% every 8 rolls, up to +60%."],
+  ["flywheel-3", "pace", "Flywheel III", 3600000, 0, 0, "flywheel-2", "+5% every 6 rolls, up to double. the reward for not putting the phone down."],
+  ["glitch", "aura", "Glitchwave", 1650000, 0, 0, "", "The digits tear and re-register on every rarity change."],
+  ["monolith", "aura", "Monolith", 2700000, 0, 0, "", "A single flat slab, no gradient, no glow. Just the number."],
+  ["blueprint", "aura", "Blueprint", 1450000, 0, 0, "", "Draughting-paper grid behind the number, in cold cyan."],
+  ["static", "aura", "Scanline", 260000, 0, 0, "", "Horizontal sweep across the rarity box, like a CRT refreshing."],
+  ["scramble", "aura", "Scramble", 1800000, 0, 0, "", "Unresolved digits churn through glyphs before they settle."],
+  ["hexdump", "aura", "Hex Dump", 3000000, 0, 0, "", "Faint hexadecimal spill behind the result, like a memory view."],
+  ["offline-roller", "utility", "Offline Roller", 2600000, 0, 0, "", "keeps rolling while the app is shut. pays the median roll, not the jackpot one — closing the app must never beat opening it."],
+  ["offline-clock-1", "offline", "Offline Clock I", 3600000, 90000, 120000, "offline-roller", "the offline mechanism ticks over faster."],
+  ["offline-clock-2", "offline", "Offline Clock II", 5400000, 60000, 90000, "offline-clock-1", "faster still."],
+  ["offline-clock-3", "offline", "Offline Clock III", 8500000, 36000, 60000, "offline-clock-2", "the quickest the offline clock runs."],
+  ["offline-vault-1", "offline-cap", "Offline Vault I", 6000000, 216, 144, "offline-clock-1", "a bigger store, so a long absence is not wasted."],
+  ["offline-vault-2", "offline-cap", "Offline Vault II", 11000000, 288, 216, "offline-vault-1", "bigger again."],
+  ["offline-vault-3", "offline-cap", "Offline Vault III", 18000000, 360, 288, "offline-vault-2", "the largest store. a weekend away still fills it."],
+  ["auto-roll", "utility", "Auto-Roll", 1600000, 0, 0, "", "fires the next roll the moment the cooldown clears. off by default — an idle game that plays itself is a screensaver."],
+  ["persistence-core", "utility", "Persistence Core", 4800000, 0, 0, "auto-roll", "auto-roll keeps running while you are on another tab of the app."],
+  ["archive-lens", "utility", "Archive Lens", 120000, 0, 0, "", "keeps a longer history of your rolls on the stats page."],
+];
+
+const RNGI_PET_ROWS = [
+  ["pebble", "Pebble", "#a8a29e", 1.05, 125000, 40, "a small loyal rock. does very little, extremely reliably."],
+  ["moth", "Lumen Moth", "#fbbf24", 1.09, 300000, 30, "drawn to bright numbers. flutters round the reveal."],
+  ["kit", "Static Kit", "#fb923c", 1.13, 600000, 22, "a fox with a permanent case of bed-hair."],
+  ["snail", "Lunar Snail", "#a78bfa", 1.17, 900000, 16, "crosses the whole screen during a single cooldown."],
+  ["jelly", "Tide Jelly", "#38bdf8", 1.21, 1250000, 12, "drifts through the cooldown without a care."],
+  ["bee", "Amber Bee", "#facc15", 1.26, 1650000, 9, "busy. audibly so."],
+  ["corvid", "Ledger Corvid", "#818cf8", 1.31, 2050000, 7, "keeps a ledger of everything you have rolled. will not show you."],
+  ["owl", "Archive Owl", "#f59e0b", 1.37, 2500000, 5, "has read the whole badge catalogue. mentions it."],
+  ["turtle", "Patient Turtle", "#34d399", 1.43, 3100000, 4, "in no hurry. gets there anyway."],
+  ["griffin", "Storm Griffin", "#60a5fa", 1.5, 3800000, 3, "arrives with weather."],
+  ["unicorn", "Astral Unicorn", "#f472b6", 1.6, 5000000, 2, "improbable, which is rather the point."],
+  ["serpent", "Void Serpent", "#8b5cf6", 1.7, 7000000, 1, "swallows the numbers you did not keep."],
+  ["dragonet", "Ember Dragonet", "#ef4444", 1.8, 10000000, 1, "small, extremely warm, sits on the wallet."],
+];
+
+const RNGI_SKILL_ROWS = [
+  ["surge", "shop", "", "Surge", "wallet", 2, 0, 0, 5, 180000, "the next roll banks double EP. the number, its badges and its scored EP are untouched."],
+  ["trail", "shop", "", "Trail", "pet-luck", 4, 0, 0, 5, 160000, "a friend is four times as likely to turn up on the next roll. their luck is its own draw."],
+  ["bounce", "shop", "", "Bounce", "waive", 0, 0, 0, 4, 500000, "the next roll has no cooldown after its reveal."],
+  ["twice", "shop", "", "Double Vision", "best-of", 0, 2, 0, 7, 900000, "the next roll is drawn twice; you keep whichever scores more. both draws are ordinary."],
+  ["bedrock", "shop", "", "Bedrock", "floor", 0, 4, 25000, 6, 1600000, "redraws until the roll clears 25,000 EP, up to four draws. keeps the best if none do."],
+  ["turbo", "shop", "", "Turbo", "overdrive", 3, 0, 0, 7, 2600000, "the next roll counts triple towards the flywheel and every skill's charge."],
+  ["quarry", "shop", "", "Big Game", "floor", 0, 5, 100000, 11, 6000000, "redraws until the roll clears 100,000 EP, up to five draws."],
+  ["miser", "shop", "", "Miser", "wallet", 3, 0, 0, 7, 9000000, "the next roll banks triple EP."],
+  ["triptych", "shop", "", "Triptych", "best-of", 0, 3, 0, 6, 12000000, "drawn three times; you keep the highest."],
+  ["pebble-steady", "pet", "pebble", "Steady Step", "floor", 0, 3, 8000, 5, 0, "redraws until the roll clears 8,000 EP, up to three draws."],
+  ["moth-glow", "pet", "moth", "Glow", "wallet", 1.5, 0, 0, 4, 0, "the next roll banks 50% more."],
+  ["kit-spark", "pet", "kit", "Static Spark", "waive", 0, 0, 0, 5, 0, "the next roll has no cooldown after its reveal."],
+  ["snail-shell", "pet", "snail", "Shell", "best-of", 0, 2, 0, 6, 0, "drawn twice; you keep the better one."],
+  ["jelly-drift", "pet", "jelly", "Drift", "pet-luck", 3, 0, 0, 4, 0, "friends are likelier to turn up on the next roll."],
+  ["bee-swarm", "pet", "bee", "Swarm", "wallet", 1.75, 0, 0, 5, 0, "the next roll banks more."],
+  ["corvid-ledger", "pet", "corvid", "Ledger", "overdrive", 2, 0, 0, 6, 0, "the next roll counts double towards every charge."],
+  ["owl-lore", "pet", "owl", "Lore", "floor", 0, 4, 20000, 7, 0, "redraws until the roll clears its bar."],
+  ["turtle-long", "pet", "turtle", "Long Game", "floor", 0, 5, 15000, 6, 0, "redraws patiently, several times, for a floor."],
+  ["griffin-dive", "pet", "griffin", "Dive", "best-of", 0, 3, 0, 8, 0, "drawn twice; the better one is kept."],
+  ["unicorn-wish", "pet", "unicorn", "Wish", "wallet", 2.5, 0, 0, 7, 0, "the next roll banks considerably more."],
+  ["serpent-maw", "pet", "serpent", "Maw", "floor", 0, 5, 60000, 8, 0, "redraws hard for a high floor."],
+  ["dragonet-pyre", "pet", "dragonet", "Pyre", "floor", 0, 6, 150000, 8, 0, "redraws for the highest floor any friend offers."],
+  ["reborn-drive", "rebirth", "", "Reborn Drive", "wallet", 1.5, 0, 0, 5, 0, "a rebirth's own skill: the next roll banks more."],
+  ["reborn-tempo", "rebirth", "", "Reborn Tempo", "waive", 0, 0, 0, 4, 0, "a rebirth's own skill: no cooldown on the next roll."],
+  ["reborn-depth", "rebirth", "", "Reborn Depth", "best-of", 0, 2, 0, 6, 0, "a rebirth's own skill: an extra draw, best kept."],
+  ["reborn-vault", "rebirth", "", "Reborn Vault", "floor", 0, 4, 30000, 7, 0, "a rebirth's own skill: redraws for a floor."],
+  ["reborn-omen", "rebirth", "", "Reborn Omen", "best-of", 0, 3, 0, 9, 0, "a rebirth's own skill: several draws, best kept."],
+  ["reborn-paragon", "rebirth", "", "Reborn Paragon", "floor", 0, 6, 75000, 10, 0, "a rebirth's own skill: the highest floor on the ladder."],
+];
+
+// ============================================================
+// RNGDLE INFINITE
+//
+// A port of jaime-gaming/RNGdle-Infinite's game loop onto the badge engine
+// above. Credit: the original game is by jaime-gaming, itself a recreation of
+// RNGdle by Cam / sparrowpatch, scored from the RNGdle Tools badge catalogue.
+//
+// What changed on the way in, and why:
+//
+//   * THE CLOCK IS 15x FASTER. The original is an idle game: a 45-second
+//     reveal and a 60-second cooldown, upgradeable to 10s/2s. Inside a task
+//     app nobody is going to watch a phone for 45 seconds, so the base roll
+//     is 3s + 4s and the ladder ends at 0.6s + 0.12s.
+//   * PRICES ARE UNTOUCHED. Their economy is balanced and audited; rescaling
+//     it would be guessing. The measured consequence of the faster clock is
+//     stated plainly: the whole 195,300,000 EP catalogue is about 9,000 rolls,
+//     which was ~260 hours at the original pace and is ~18 here.
+//   * EP IS ITS OWN WALLET. It never touches the app's coins, so no amount of
+//     rolling can buy a real-world reward.
+//   * DROPPED: 20 of the 26 cosmetic auras, device-link sync, the PWA shell,
+//     the goals/tasks page and the changelog -- tasks.sh already has its own
+//     versions of all of those, or they make no sense inside one tool.
+// ============================================================
+
+const RNGI_BASE_REVEAL_MS = 3000;
+const RNGI_BASE_COOLDOWN_MS = 4000;
+const RNGI_BASE_OFFLINE_MS = 120000;     // one offline roll every two minutes
+const RNGI_BASE_OFFLINE_CAP = 144;       // ...up to this many while away
+const RNGI_PET_DROP_CHANCE = 0.004;      // 1 in 250 rolls
+const RNGI_SKILL_MAX_DRAWS = 6;
+const RNGI_SKILL_STOCK_MS = 300000;      // the skill shelf rotates every 5 min
+const RNGI_SKILL_STOCK_SIZE = 3;
+const RNGI_HISTORY_MAX = 40;
+
+/** Two badges the Infinite fork adds on top of the 233. Their numbers are
+ *  enumerated rather than ruled, because both sets are tiny and a literal
+ *  list cannot drift from its own description. */
+const RNGI_PENDULUMS = (() => {
+  const out = [];
+  for (let a = 1; a <= 9; a++) for (let b = 0; b <= 9; b++) if (a !== b) out.push(Number(`${a}${b}${a}${b}${a}${b}`));
+  return out;
+})();
+const RNGI_LAST_SECONDS = Array.from({ length: 14 }, (_, i) => (i + 10) * 10000 + 5959);
+
+const RNGI_EXTRA_BADGES = [
+  {
+    id: "INFINITE_PENDULUM", label: "Pendulum", emoji: "↕", tier: "a",
+    ep: 25000, count: RNGI_PENDULUMS.length, family: null,
+    desc: "six digits swinging between two values: ABABAB",
+    set: new Set(RNGI_PENDULUMS),
+  },
+  {
+    id: "INFINITE_LAST_SECOND", label: "Last Second", emoji: "⏳", tier: "m",
+    ep: 75000, count: RNGI_LAST_SECONDS.length, family: null,
+    desc: "a 24-hour time at its final second: HH5959, hours 10 to 23",
+    set: new Set(RNGI_LAST_SECONDS),
+  },
+].map((b) => ({ ...b, odds: b.count / (RNG_MAX + 1) }));
+
+const RNGI_ALL_BADGES = [...RNG_BADGES, ...RNGI_EXTRA_BADGES];
+const RNGI_BADGE_TOTAL = RNGI_ALL_BADGES.length;
+const RNGI_BADGE_BY_ID = Object.fromEntries(RNGI_ALL_BADGES.map((b) => [b.id, b]));
+
+/** Scores a number for Infinite: the verified 233-badge result plus the two
+ *  fork-only badges, which have no family and so always pay. */
+function rngiScore(n) {
+  const base = rngScore(n);
+  const extra = RNGI_EXTRA_BADGES.filter((b) => b.set.has(n));
+  if (!extra.length) return base;
+  return {
+    ...base,
+    earned: [...base.earned, ...extra],
+    paid: [...base.paid, ...extra].sort((a, b) => b.ep - a.ep),
+    ep: base.ep + extra.reduce((a, b) => a + b.ep, 0),
+  };
+}
+
+// ---- catalogue -------------------------------------------------------------
+
+const RNGI_PRODUCTS = RNGI_PRODUCT_ROWS.map(([id, kind, name, price, value, from, requires, desc]) =>
+  ({ id, kind, name, price, value, from, requires: requires || null, desc }));
+const RNGI_PRODUCT_BY_ID = Object.fromEntries(RNGI_PRODUCTS.map((p) => [p.id, p]));
+
+const RNGI_PETS = RNGI_PET_ROWS.map(([id, name, accent, multiplier, price, dropWeight, desc]) =>
+  ({ id, name, accent, multiplier, price, dropWeight, desc }));
+const RNGI_PET_BY_ID = Object.fromEntries(RNGI_PETS.map((p) => [p.id, p]));
+
+const RNGI_SKILLS = RNGI_SKILL_ROWS.map(([id, source, petId, name, kind, value, attempts, floor, charges, price, desc]) =>
+  ({ id, source, petId: petId || null, name, kind, value, attempts, floor, charges, price, desc }));
+const RNGI_SKILL_BY_ID = Object.fromEntries(RNGI_SKILLS.map((s) => [s.id, s]));
+
+const RNGI_SHELVES = [
+  { id: "pace", label: "pace", blurb: "shorter reveals, shorter cooldowns", kinds: ["roll", "cooldown", "pace"] },
+  { id: "skills", label: "skills", blurb: "charged effects, and the rack that fires them", kinds: ["skill", "skill-slot"] },
+  { id: "pets", label: "friends", blurb: "wallet multipliers, one worn at a time", kinds: ["companion"] },
+  { id: "offline", label: "offline", blurb: "earn while the app is shut", kinds: ["offline", "offline-cap", "offline-roller"] },
+  { id: "tools", label: "tools", blurb: "automation and the archive", kinds: ["utility"] },
+  { id: "auras", label: "skins", blurb: "cosmetic only, never odds", kinds: ["aura"] },
+];
+
+// ---- derived settings ------------------------------------------------------
+
+/** Timing upgrades are "lowest wins", so an out-of-order save still resolves. */
+function rngiRollSettings(owned = []) {
+  let revealMS = RNGI_BASE_REVEAL_MS, cooldownMS = RNGI_BASE_COOLDOWN_MS;
+  for (const id of owned) {
+    const p = RNGI_PRODUCT_BY_ID[id];
+    if (!p) continue;
+    if (p.kind === "roll") revealMS = Math.min(revealMS, p.value);
+    if (p.kind === "cooldown") cooldownMS = Math.min(cooldownMS, p.value);
+  }
+  return { revealMS, cooldownMS };
+}
+
+function rngiOfflineSettings(owned = []) {
+  let intervalMS = RNGI_BASE_OFFLINE_MS, cap = RNGI_BASE_OFFLINE_CAP;
+  for (const id of owned) {
+    const p = RNGI_PRODUCT_BY_ID[id];
+    if (!p) continue;
+    if (p.kind === "offline") intervalMS = Math.min(intervalMS, p.value);
+    if (p.kind === "offline-cap") cap = Math.max(cap, p.value);
+  }
+  return { intervalMS, cap };
+}
+
+/** Flywheel: every N rolls in a row without stopping, the next one banks more.
+ *  Three tiers, each strictly better than the last. */
+function rngiFlywheel(owned = [], streak = 0) {
+  const tier = owned.includes("flywheel-3") ? 3 : owned.includes("flywheel-2") ? 2 : owned.includes("flywheel") ? 1 : 0;
+  if (!tier) return { tier: 0, step: 0, bonus: 1, cap: 1, next: 0 };
+  const step = [0, 10, 8, 6][tier];
+  const per = [0, 0.02, 0.03, 0.05][tier];
+  const cap = [1, 1.3, 1.6, 2][tier];
+  const steps = Math.floor(Math.max(0, streak) / step);
+  return { tier, step, bonus: Math.min(cap, 1 + steps * per), cap, next: step - (Math.max(0, streak) % step) };
+}
+
+/** Everything that multiplies BANKED EP -- never the scored EP of a number,
+ *  never the draw. Two players rolling 142,857 always score the same; only
+ *  what lands in the wallet differs. That boundary is the whole reason the
+ *  rank and percentile figures stay comparable. */
+function rngiWalletMult(state) {
+  const pet = state.wearing && RNGI_PET_BY_ID[state.wearing] ? RNGI_PET_BY_ID[state.wearing].multiplier : 1;
+  const rebirth = 1 + 0.02 * Math.max(0, state.rebirths || 0);
+  const prestige = 1 + 0.1 * Math.max(0, state.prestiges || 0);
+  const rollback = 1 + 0.25 * Math.max(0, state.rollbacks || 0);
+  const surplus = 1 + Math.max(0, state.surplusPct || 0) / 100;
+  const fly = rngiFlywheel(state.owned, state.streak).bonus;
+  return { pet, rebirth, prestige, rollback, surplus, flywheel: fly,
+           total: pet * rebirth * prestige * rollback * surplus * fly };
+}
+
+// ---- the shop --------------------------------------------------------------
+
+function rngiCatalogueItem(id) {
+  if (RNGI_PRODUCT_BY_ID[id]) return { ...RNGI_PRODUCT_BY_ID[id] };
+  const pet = RNGI_PET_BY_ID[id];
+  if (pet) return { id: pet.id, kind: "companion", name: pet.name, price: pet.price, desc: pet.desc, requires: null };
+  const skill = RNGI_SKILL_BY_ID[id];
+  if (skill && skill.price) return { id: skill.id, kind: "skill", name: skill.name, price: skill.price, desc: skill.desc, requires: null };
+  return null;
+}
+
+function rngiOwns(state, id) {
+  return (state.owned || []).includes(id) ||
+         (state.pets || []).includes(id) ||
+         (state.skills || []).includes(id);
+}
+
+function rngiUnlocked(state, id) {
+  const item = rngiCatalogueItem(id);
+  if (!item) return false;
+  return !item.requires || (state.owned || []).includes(item.requires);
+}
+
+/** The skill shelf is a stall, not a catalogue: three shop skills on sale at
+ *  once, rotating every five minutes. Derived from the clock on every read so
+ *  two tabs and a reload always agree, and nothing has to be stored. */
+function rngiSkillStockWindow(now) {
+  return Math.floor(now / RNGI_SKILL_STOCK_MS);
+}
+
+function rngiSkillStock(windowIndex, owned = [], size = RNGI_SKILL_STOCK_SIZE) {
+  const pool = RNGI_SKILLS.filter((s) => s.source === "shop" && s.price > 0 && !owned.includes(s.id));
+  if (pool.length <= size) return pool.map((s) => s.id);
+  const out = [];
+  // a cheap deterministic shuffle keyed on the window, so the stall looks
+  // random but every device computes the same three
+  let seed = (windowIndex * 2654435761) >>> 0;
+  const taken = new Set();
+  while (out.length < size) {
+    seed = (Math.imul(seed ^ (seed >>> 15), 2246822507) + 374761393) >>> 0;
+    const i = seed % pool.length;
+    if (taken.has(i)) continue;
+    taken.add(i);
+    out.push(pool[i].id);
+  }
+  return out;
+}
+
+/** A pet's signature skill unlocks by owning the pet, not by buying it. */
+function rngiAvailableSkills(state, now) {
+  const stock = rngiSkillStock(rngiSkillStockWindow(now), state.skills || []);
+  const fromPets = RNGI_SKILLS.filter((s) => s.source === "pet" && (state.pets || []).includes(s.petId)).map((s) => s.id);
+  const fromRebirth = (state.rebirths || 0) > 0
+    ? RNGI_SKILLS.filter((s) => s.id.startsWith("reborn-")).map((s) => s.id) : [];
+  return [...new Set([...stock, ...fromPets, ...fromRebirth])];
+}
+
+function rngiBuy(state, id, now = Date.now()) {
+  const item = rngiCatalogueItem(id);
+  if (!item) return state;
+  if (rngiOwns(state, id)) return state;
+  if (!rngiUnlocked(state, id)) return state;
+  if (item.kind === "skill" && !rngiAvailableSkills(state, now).includes(id)) return state;
+  if ((state.ep || 0) < item.price) return state;
+
+  const next = { ...state, ep: state.ep - item.price, spent: (state.spent || 0) + item.price };
+  if (item.kind === "companion") {
+    next.pets = [...(state.pets || []), id];
+    if (!state.wearing) next.wearing = id;
+  } else if (item.kind === "skill") {
+    next.skills = [...(state.skills || []), id];
+  } else {
+    next.owned = [...(state.owned || []), id];
+    if (item.kind === "aura") next.aura = id;
+  }
+  return next;
+}
+
+// ---- rolling ---------------------------------------------------------------
+
+/** Uniform over 0..1,000,000 with no modulo bias. Falls back to Math.random
+ *  only where crypto is absent, which in practice is never on his phone. */
+function rngiDraw(rand) {
+  if (rand) return Math.floor(rand() * (RNG_MAX + 1));
+  const c = typeof crypto !== "undefined" && crypto.getRandomValues ? crypto : null;
+  if (!c) return Math.floor(Math.random() * (RNG_MAX + 1));
+  const span = RNG_MAX + 1;
+  const limit = Math.floor(0x100000000 / span) * span;
+  const word = new Uint32Array(1);
+  do { c.getRandomValues(word); } while (word[0] >= limit);
+  return word[0] % span;
+}
+
+function rngiUnit(rand) {
+  if (rand) return rand();
+  const c = typeof crypto !== "undefined" && crypto.getRandomValues ? crypto : null;
+  if (!c) return Math.random();
+  const word = new Uint32Array(1);
+  c.getRandomValues(word);
+  return word[0] / 0x100000000;
+}
+
+/** Turns the armed skills into a draw plan, then runs it.
+ *
+ *  One rule covers every draw-modifying skill: take this many ordinary,
+ *  independent draws and keep the best. A floor skill stops early the moment
+ *  a draw clears its bar -- the unspent draws are simply not taken. Every
+ *  number kept is paid for; the best one is the roll you see.
+ */
+function rngiPlanDraws(armed) {
+  const picks = [];
+  for (const id of armed) {
+    const s = RNGI_SKILL_BY_ID[id];
+    if (!s) continue;
+    if (s.kind === "best-of") picks.push({ id, attempts: s.attempts || 2, floor: 0 });
+    else if (s.kind === "floor") picks.push({ id, attempts: s.attempts || 3, floor: s.floor || 0 });
+  }
+  return picks;
+}
+
+function rngiRunDraws(picks, rand) {
+  const draws = [];
+  let best = null, winner = null;
+  for (const pick of picks) {
+    const budget = Math.min(pick.attempts, RNGI_SKILL_MAX_DRAWS - draws.length);
+    let bestHere = null;
+    for (let a = 0; a < budget; a++) {
+      const n = rngiDraw(rand);
+      draws.push(n);
+      const scored = rngiScore(n);
+      if (!bestHere || scored.ep > bestHere.ep) bestHere = scored;
+      if (pick.floor > 0 && scored.ep >= pick.floor) break;
+    }
+    if (!bestHere) continue;
+    if (!best || bestHere.ep > best.ep) { best = bestHere; winner = pick.id; }
+  }
+  // the roll always makes one ordinary draw of its own, after the skills'
+  const n = rngiDraw(rand);
+  draws.push(n);
+  const plain = rngiScore(n);
+  if (!best || plain.ep > best.ep) { best = plain; winner = null; }   // ties keep the skill's number
+  return { draws, result: best, winner };
+}
+
+/** Which armed skills do what to the banked total, and to the cooldown. */
+function rngiSkillEffects(armed) {
+  let wallet = 1, overdrive = 1, petLuck = 1, waive = false;
+  for (const id of armed) {
+    const s = RNGI_SKILL_BY_ID[id];
+    if (!s) continue;
+    if (s.kind === "wallet") wallet *= s.value || 1;
+    if (s.kind === "overdrive") overdrive = Math.max(overdrive, s.value || 1);
+    if (s.kind === "pet-luck") petLuck = Math.max(petLuck, s.value || 1);
+    if (s.kind === "waive") waive = true;
+  }
+  return { wallet, overdrive, petLuck, waive };
+}
+
+/** A companion turning up is its own sample. It never consumes, biases or
+ *  correlates with the draw that produced the number. */
+function rngiPetDrop(state, luck, rand) {
+  const missing = RNGI_PETS.filter((p) => !(state.pets || []).includes(p.id));
+  if (!missing.length) return null;
+  if (rngiUnit(rand) >= Math.min(1, RNGI_PET_DROP_CHANCE * luck)) return null;
+  const total = missing.reduce((s, p) => s + p.dropWeight, 0);
+  let cursor = rngiUnit(rand) * total;
+  for (const pet of missing) {
+    cursor -= pet.dropWeight;
+    if (cursor <= 0) return pet.id;
+  }
+  return missing[missing.length - 1].id;
+}
+
+/** Resolves one press of GENERATE into everything that press changes.
+ *  Pure: takes the state and a randomness source, returns the next state and
+ *  an outcome for the UI to animate. Nothing here reads the clock or the DOM.
+ */
+function rngiRoll(state, now = Date.now(), rand = null) {
+  const armed = (state.armed || []).filter((id) => RNGI_SKILL_BY_ID[id]);
+  const fx = rngiSkillEffects(armed);
+  const { draws, result, winner } = rngiRunDraws(rngiPlanDraws(armed), rand);
+
+  const mult = rngiWalletMult(state);
+  const banked = Math.round(result.ep * mult.total * fx.wallet);
+  const { revealMS, cooldownMS } = rngiRollSettings(state.owned);
+  const drop = rngiPetDrop(state, fx.petLuck, rand);
+
+  const seen = { ...(state.seen || {}) };
+  const fresh = [];
+  for (const b of result.earned) {
+    if (!seen[b.id]) fresh.push(b.id);
+    seen[b.id] = (seen[b.id] || 0) + 1;
+  }
+
+  const streak = (state.streak || 0) + fx.overdrive;
+  const entry = { n: result.n, ep: result.ep, banked, at: now, band: result.band.key };
+  const next = {
+    ...state,
+    ep: (state.ep || 0) + banked,
+    earned: (state.earned || 0) + banked,
+    lifetime: (state.lifetime || 0) + banked,
+    rolls: (state.rolls || 0) + 1,
+    totalRolls: (state.totalRolls || 0) + 1,
+    draws: (state.draws || 0) + draws.length,
+    streak,
+    seen,
+    armed: [],
+    charges: rngiSpendCharges(state.charges, armed),
+    best: !state.best || result.ep > state.best.ep ? { n: result.n, ep: result.ep } : state.best,
+    history: [...(state.history || []), entry].slice(-RNGI_HISTORY_MAX),
+    pets: drop ? [...(state.pets || []), drop] : state.pets,
+    wearing: state.wearing || drop || null,
+    revealUntil: now + revealMS,
+    cooldownUntil: now + revealMS + (fx.waive ? 0 : cooldownMS),
+    lastRollAt: now,
+  };
+  return { state: next, outcome: { result, banked, mult, fx, draws, winner, drop, fresh, revealMS, cooldownMS: fx.waive ? 0 : cooldownMS } };
+}
+
+/** A skill is consumed by firing. Charges are per skill and refill by rolling
+ *  -- see rngiChargeTick. */
+function rngiSpendCharges(charges, armed) {
+  const next = { ...(charges || {}) };
+  for (const id of armed) next[id] = 0;
+  return next;
+}
+
+/** Every roll charges every owned skill by one. A skill is ready when its
+ *  charge reaches the number on its card. */
+function rngiChargeTick(state, by = 1) {
+  const charges = { ...(state.charges || {}) };
+  for (const id of state.skills || []) {
+    const s = RNGI_SKILL_BY_ID[id];
+    if (!s) continue;
+    charges[id] = Math.min(s.charges, (charges[id] || 0) + by);
+  }
+  for (const s of RNGI_SKILLS) {
+    if (s.source !== "pet" || !(state.pets || []).includes(s.petId)) continue;
+    charges[s.id] = Math.min(s.charges, (charges[s.id] || 0) + by);
+  }
+  return charges;
+}
+
+function rngiSkillReady(state, id) {
+  const s = RNGI_SKILL_BY_ID[id];
+  if (!s) return false;
+  return ((state.charges || {})[id] || 0) >= s.charges;
+}
+
+function rngiOwnedSkills(state) {
+  const fromShop = (state.skills || []).filter((id) => RNGI_SKILL_BY_ID[id]);
+  const fromPets = RNGI_SKILLS.filter((s) => s.source === "pet" && (state.pets || []).includes(s.petId)).map((s) => s.id);
+  return [...new Set([...fromShop, ...fromPets])];
+}
+
+function rngiRackSize(state) {
+  // one bay by default, two more buyable
+  return 1 + ((state.owned || []).includes("skill-bay-1") ? 1 : 0) + ((state.owned || []).includes("skill-bay-2") ? 1 : 0);
+}
+
+// ---- offline ---------------------------------------------------------------
+
+/** EP that accrued while the app was shut.
+ *
+ *  Needs Offline Roller. Pays the MEDIAN roll rather than the mean: the mean
+ *  is inflated by jackpots nobody actually hit, and paying it would make
+ *  closing the app more profitable than opening it. Capped, and the cap is
+ *  what the Vault upgrades raise.
+ */
+function rngiOfflineGains(state, now = Date.now()) {
+  if (!(state.owned || []).includes("offline-roller")) return null;
+  const since = state.lastSeen || 0;
+  if (!since || now <= since) return null;
+  const { intervalMS, cap } = rngiOfflineSettings(state.owned);
+  const rolls = Math.min(cap, Math.floor((now - since) / intervalMS));
+  if (rolls < 1) return null;
+  const mult = rngiWalletMult({ ...state, streak: 0 });
+  const ep = Math.round(rolls * RNGI_MEDIAN_EP * mult.total);
+  return { rolls, ep, cap, capped: rolls >= cap, awayMS: now - since };
+}
+
+const RNGI_MEDIAN_EP = 5801;   // the exact median of the full distribution
+
+function rngiClaimOffline(state, gains, now = Date.now()) {
+  if (!gains) return { ...state, lastSeen: now };
+  return {
+    ...state,
+    ep: (state.ep || 0) + gains.ep,
+    earned: (state.earned || 0) + gains.ep,
+    lifetime: (state.lifetime || 0) + gains.ep,
+    totalRolls: (state.totalRolls || 0) + gains.rolls,
+    offlineRolls: (state.offlineRolls || 0) + gains.rolls,
+    lastSeen: now,
+  };
+}
+
+// ---- rebirth, prestige, rollback -------------------------------------------
+
+/** The reset ladder.
+ *
+ *  Badge fractions are the original's. The EP gates are the original's x4,
+ *  and that multiplier is the only balance change in the port. Reason, with
+ *  the measurement behind it: the clock here runs 15x faster, so the original
+ *  250,000 EP first rung works out at about 12 rolls -- 84 seconds -- which
+ *  means you would be offered a rebirth before you had bought anything. x4
+ *  puts the first rung near six minutes and the third prestige near eleven
+ *  hours, which is the shape the original has.
+ *
+ *  The badge gates are deliberately NOT scaled: they are clock-independent,
+ *  and they are what makes the end of the ladder long. Rollback needs 177 of
+ *  235 badges, which measures out at ~63,000 rolls however fast they are. */
+const RNGI_GATE_SCALE = 4;
+const RNGI_REBIRTH_STEPS = [
+  { badges: 0.2, ep: 250000 * RNGI_GATE_SCALE },
+  { badges: 0.25, ep: 600000 * RNGI_GATE_SCALE },
+  { badges: 0.3, ep: 1500000 * RNGI_GATE_SCALE },
+  { badges: 0.35, ep: 3500000 * RNGI_GATE_SCALE },
+  { badges: 0.4, ep: 7500000 * RNGI_GATE_SCALE },
+  { badges: 0.45, ep: 15000000 * RNGI_GATE_SCALE },
+];
+const RNGI_PRESTIGE_STEP = { badges: 0.5, ep: 30000000 * RNGI_GATE_SCALE };
+const RNGI_ROLLBACK_STEP = { badges: 0.75, ep: 60000000 * RNGI_GATE_SCALE };
+const RNGI_PRESTIGE_LIMIT = 3;
+const RNGI_REBIRTH_VISIBLE_AT = Math.ceil(RNGI_BADGE_TOTAL * 0.15);
+
+function rngiDiscovered(state) {
+  return Object.keys(state.seen || {}).length;
+}
+
+/** What the next reset asks for, and whether it is reachable yet.
+ *  Returns null once the whole ladder is finished. */
+function rngiResetGate(state) {
+  const done = state.rebirths || 0;
+  const prestiges = state.prestiges || 0;
+  const badges = rngiDiscovered(state);
+  const earned = state.earned || 0;
+
+  let kind, step;
+  if (done < RNGI_REBIRTH_STEPS.length) { kind = "rebirth"; step = RNGI_REBIRTH_STEPS[done]; }
+  else if (prestiges < RNGI_PRESTIGE_LIMIT) { kind = "prestige"; step = RNGI_PRESTIGE_STEP; }
+  else { kind = "rollback"; step = RNGI_ROLLBACK_STEP; }
+
+  const needBadges = Math.ceil(RNGI_BADGE_TOTAL * step.badges);
+  return {
+    kind, needBadges, needEp: step.ep, badges, earned,
+    ready: badges >= needBadges && earned >= step.ep,
+    visible: badges >= RNGI_REBIRTH_VISIBLE_AT,
+    bonus: kind === "rebirth" ? 2 : kind === "prestige" ? 10 : 25,
+  };
+}
+
+/** Overshoot pays. A quarter of the EP earned above the gate carries into the
+ *  next cycle, and every full 5,000,000 of surplus adds a permanent +1% to
+ *  banked EP, capped at +5% per reset. Without this, every roll taken after
+ *  the gate was met would be dead weight. */
+function rngiSurplus(earned, gate) {
+  const surplus = Math.max(0, (earned || 0) - Math.max(0, gate || 0));
+  if (!surplus) return { surplus: 0, starter: 0, bankedPct: 0 };
+  return {
+    surplus,
+    starter: Math.floor(surplus * 0.25),
+    bankedPct: Math.min(5, Math.floor(surplus / (5000000 * RNGI_GATE_SCALE))),
+  };
+}
+
+/** Resets the cycle. The COLLECTION, the companions and every permanent
+ *  multiplier survive -- a rebirth restarts the run, not the account. */
+function rngiReset(state, now = Date.now()) {
+  const gate = rngiResetGate(state);
+  if (!gate || !gate.ready) return state;
+  const { starter, bankedPct } = rngiSurplus(state.earned, gate.needEp);
+
+  const rebirths = gate.kind === "rebirth" ? (state.rebirths || 0) + 1 : (state.rebirths || 0);
+  const prestiges = gate.kind === "prestige" ? (state.prestiges || 0) + 1 : (state.prestiges || 0);
+  const rollbacks = gate.kind === "rollback" ? (state.rollbacks || 0) + 1 : (state.rollbacks || 0);
+  const base = 250000 * RNGI_GATE_SCALE * rebirths + 1000000 * RNGI_GATE_SCALE * prestiges;
+
+  return {
+    ...state,
+    ep: base + starter,
+    earned: 0,
+    rolls: 0,
+    streak: 0,
+    owned: [],                       // the shop is re-bought every cycle
+    armed: [],
+    charges: {},
+    skills: gate.kind === "rebirth" ? state.skills : [],
+    best: null,
+    history: [],
+    aura: null,
+    rebirths, prestiges, rollbacks,
+    surplusPct: (state.surplusPct || 0) + bankedPct,
+    cycles: [...(state.cycles || []), { kind: gate.kind, at: now, earned: state.earned || 0, rolls: state.rolls || 0 }].slice(-20),
+    revealUntil: 0,
+    cooldownUntil: 0,
+  };
+}
+
+// ---- formatting ------------------------------------------------------------
+
+/** 1,234,567 EP is unreadable at 9px on a phone; 1.23M is not. Exact below
+ *  10,000 because that is where the difference still means something. */
+function rngiEP(n) {
+  const v = Math.round(n || 0);
+  if (v < 10000) return rngGroup(v);
+  if (v < 1000000) return `${(v / 1000).toFixed(v < 100000 ? 1 : 0)}K`;
+  if (v < 1000000000) return `${(v / 1000000).toFixed(v < 10000000 ? 2 : 1)}M`;
+  return `${(v / 1000000000).toFixed(2)}B`;
+}
+
+function rngiDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 100) / 10);
+  return s >= 10 ? `${Math.round(s)}s` : `${s}s`;
+}
+
+const STORAGE_KEY_RNGI = "tasksh.rngdle.v2";
+
+const RNGI_BLANK = {
+  ep: 0, earned: 0, lifetime: 0, spent: 0,
+  rolls: 0, totalRolls: 0, offlineRolls: 0, draws: 0, streak: 0,
+  owned: [], pets: [], wearing: null, skills: [], armed: [], charges: {},
+  seen: {}, best: null, history: [], cycles: [],
+  rebirths: 0, prestiges: 0, rollbacks: 0, surplusPct: 0,
+  aura: null, autoRoll: false,
+  revealUntil: 0, cooldownUntil: 0, lastRollAt: 0, lastSeen: 0,
+};
+
+function loadRngi() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY_RNGI) || "null");
+    if (!raw || typeof raw !== "object") return { ...RNGI_BLANK };
+    const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
+    const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+    return {
+      ...RNGI_BLANK,
+      ...raw,
+      ep: Math.max(0, num(raw.ep)),
+      earned: Math.max(0, num(raw.earned)),
+      lifetime: Math.max(0, num(raw.lifetime)),
+      rolls: Math.max(0, num(raw.rolls)),
+      totalRolls: Math.max(0, num(raw.totalRolls)),
+      streak: Math.max(0, num(raw.streak)),
+      owned: list(raw.owned).filter((id) => RNGI_PRODUCT_BY_ID[id]),
+      pets: list(raw.pets).filter((id) => RNGI_PET_BY_ID[id]),
+      skills: list(raw.skills).filter((id) => RNGI_SKILL_BY_ID[id]),
+      armed: list(raw.armed).filter((id) => RNGI_SKILL_BY_ID[id]),
+      seen: raw.seen && typeof raw.seen === "object" ? raw.seen : {},
+      history: Array.isArray(raw.history) ? raw.history.slice(-RNGI_HISTORY_MAX) : [],
+      wearing: RNGI_PET_BY_ID[raw.wearing] ? raw.wearing : null,
+      aura: RNGI_PRODUCT_BY_ID[raw.aura] ? raw.aura : null,
+    };
+  } catch {
+    return { ...RNGI_BLANK };
+  }
+}
+
+function saveRngi(state) {
+  try { localStorage.setItem(STORAGE_KEY_RNGI, JSON.stringify(state)); } catch {}
+}
+
+/** A ticking "now" that only runs while something is actually counting down.
+ *  A permanent 100ms interval behind an idle screen is the kind of thing that
+ *  shows up as battery drain and never as a bug report. */
+function useRngiTick(active, ms = 80) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => force((n) => n + 1), ms);
+    return () => clearInterval(t);
+  }, [active, ms]);
+  return Date.now();
+}
+
+// ---- small pieces ----------------------------------------------------------
+
+function RngiBar({ frac, className = "" }) {
+  return (
+    <div className={`rngi-bar ${className}`}>
+      <span style={{ width: `${Math.max(0, Math.min(1, frac)) * 100}%` }} />
+    </div>
+  );
+}
+
+/** The number. During the reveal the digits churn and settle left to right;
+ *  the Scramble aura keeps unresolved digits cycling through glyphs, which is
+ *  the one place a skin changes anything you can see move. */
+function RngiNumber({ value, revealFrac, aura }) {
+  const text = rngGroup(value);
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const settled = reduced ? text.length : Math.floor(revealFrac * text.length + 0.0001);
+  const glyphs = aura === "scramble" ? "0123456789#%&@$?" : "0123456789";
+  const churn = (i) => glyphs[(i * 7 + Math.floor(Date.now() / 55)) % glyphs.length];
+  return (
+    <div className={`rngi-number ${settled >= text.length ? "settled" : "rolling"}`} aria-label={text}>
+      {[...text].map((ch, i) => (
+        <span key={i} className={ch === "," ? "sep" : i < settled ? "on" : "off"}>
+          {ch === "," ? "," : i < settled ? ch : churn(i)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function RngiBadgeChip({ badge, dim, note }) {
+  return (
+    <div className={`rngi-chip ${RNG_TIER_CLASS[badge.tier]} ${dim ? "dim" : ""}`}>
+      <span className="rngi-chip-ico">{badge.emoji}</span>
+      <span className="rngi-chip-body">
+        <span className="rngi-chip-name">{badge.label}</span>
+        <span className="rngi-chip-note">{note || badge.desc}</span>
+      </span>
+      <span className="rngi-chip-ep">{rngiEP(badge.ep)}</span>
+    </div>
+  );
+}
+
+// ---- the roll screen -------------------------------------------------------
+
+function RngiRoll({ state, setState, outcome, setOutcome }) {
+  const [offline, setOffline] = useState(null);
+  const settings = rngiRollSettings(state.owned);
+  const now = useRngiTick(Date.now() < state.cooldownUntil);
+
+  const revealing = now < state.revealUntil;
+  const cooling = now < state.cooldownUntil;
+  const revealFrac = revealing && outcome
+    ? 1 - (state.revealUntil - now) / Math.max(1, outcome.revealMS)
+    : 1;
+
+  // offline earnings are claimed on open, not silently banked, so the number
+  // is something you are told rather than something you have to notice
+  useEffect(() => {
+    const gains = rngiOfflineGains(state, Date.now());
+    if (gains) setOffline(gains);
+    else setState((s) => ({ ...s, lastSeen: Date.now() }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // keep lastSeen fresh while the tool is open, so closing it is the only
+  // thing that starts the offline clock
+  useEffect(() => {
+    const t = setInterval(() => setState((s) => ({ ...s, lastSeen: Date.now() })), 20000);
+    return () => clearInterval(t);
+  }, [setState]);
+
+  const roll = useCallback(() => {
+    const at = Date.now();
+    if (at < state.cooldownUntil) { sound.error(); return; }
+    const { state: next, outcome: o } = rngiRoll(state, at);
+    setState({ ...next, charges: rngiChargeTick(next, o.fx.overdrive) });
+    setOutcome(o);
+    // the sweep lasts exactly as long as the reveal, and the chord that ends
+    // it is pitched by rarity -- a mythic should sound like one before you
+    // have finished reading the word
+    const tiers = ["trash", "common", "uncommon", "rare", "epic", "anomaly", "mythic"];
+    sound.reveal(o.revealMS);
+    const tier = Math.max(0, tiers.indexOf(o.result.band.key) - 1);
+    setTimeout(() => sound.land(tier), o.revealMS);
+    if (o.drop) setTimeout(() => sound.achievement(), o.revealMS + 320);
+  }, [state, setState, setOutcome]);
+
+  // Auto-Roll fires the next roll the instant the cooldown clears. It is a
+  // shop item, not a default: an idle game that plays itself by default is
+  // a screensaver.
+  useEffect(() => {
+    if (!state.autoRoll || !(state.owned || []).includes("auto-roll")) return;
+    if (Date.now() >= state.cooldownUntil) { const t = setTimeout(roll, 120); return () => clearTimeout(t); }
+    const t = setTimeout(roll, state.cooldownUntil - Date.now() + 60);
+    return () => clearTimeout(t);
+  }, [state.autoRoll, state.owned, state.cooldownUntil, roll]);
+
+  const mult = rngiWalletMult(state);
+  const fly = rngiFlywheel(state.owned, state.streak);
+  const result = outcome && outcome.result;
+  const showBadges = result && (!revealing || revealFrac > 0.55);
+
+  const claim = () => {
+    setState((s) => rngiClaimOffline(s, offline, Date.now()));
+    setOffline(null);
+    sound.success();
+  };
+
+  return (
+    <>
+      {offline && (
+        <div className="rngi-offline">
+          <span className="rngi-offline-head">while you were away</span>
+          <span className="rngi-offline-ep">+{rngiEP(offline.ep)} EP</span>
+          <span className="rngi-offline-sub">
+            {offline.rolls} offline roll{offline.rolls === 1 ? "" : "s"}
+            {offline.capped ? " · vault full" : ""}
+          </span>
+          <button className="rngi-btn small" onClick={claim}>collect</button>
+        </div>
+      )}
+
+      <div className={`rngi-stage ${result ? `band-${result.band.key}` : ""} ${state.aura ? `aura-${state.aura}` : ""}`}>
+        {state.aura && <span className="rngi-aura-layer" aria-hidden="true" />}
+        {result ? (
+          <>
+            <RngiNumber value={result.n} revealFrac={revealFrac} aura={state.aura} />
+            <div className="rngi-verdict">
+              <span className={`rngi-band band-${result.band.key}`}>{result.band.label}</span>
+              <span className="rngi-rank">
+                {result.percentile >= 50
+                  ? `top ${(100 - result.percentile).toFixed(result.percentile > 99 ? 3 : 1)}%`
+                  : `bottom ${result.percentile.toFixed(1)}%`}
+              </span>
+            </div>
+            <div className="rngi-scored">{rngGroup(result.ep)} EP scored</div>
+            <div className="rngi-banked">
+              <span className="rngi-banked-v">+{rngiEP(outcome.banked)}</span>
+              <span className="rngi-banked-l">banked</span>
+              {mult.total * outcome.fx.wallet > 1.001 && (
+                <span className="rngi-banked-m">×{(mult.total * outcome.fx.wallet).toFixed(2)}</span>
+              )}
+            </div>
+            {outcome.draws.length > 1 && (
+              <div className="rngi-draws">
+                kept the best of {outcome.draws.length}
+                {outcome.winner ? ` · ${RNGI_SKILL_BY_ID[outcome.winner].name}` : " · the plain draw won"}
+              </div>
+            )}
+            {outcome.drop && (
+              <div className="rngi-drop">a friend turned up: {RNGI_PET_BY_ID[outcome.drop].name}</div>
+            )}
+          </>
+        ) : (
+          <div className="rngi-idle">
+            <div className="rngi-idle-glyph">∞</div>
+            <div className="rngi-idle-msg">one number, 0 to 1,000,000.<br />no limit, no seed, no picking.</div>
+          </div>
+        )}
+      </div>
+
+      <div className="rngi-controls">
+        {cooling ? (
+          <>
+            <RngiBar
+              frac={revealing
+                ? revealFrac
+                : 1 - (state.cooldownUntil - now) / Math.max(1, outcome ? outcome.cooldownMS : settings.cooldownMS)}
+              className={revealing ? "reveal" : "cool"}
+            />
+            <div className="rngi-wait">
+              {revealing ? "REVEALING" : "NEXT ROLL IN"} {((state.cooldownUntil - now) / 1000).toFixed(1)}s
+            </div>
+          </>
+        ) : (
+          <button className="rngi-btn generate" onClick={roll}>
+            {state.totalRolls ? "ROLL AGAIN" : "GENERATE"}
+          </button>
+        )}
+        <div className="rngi-pace">
+          reveal {rngiDuration(settings.revealMS)} · cooldown {rngiDuration(settings.cooldownMS)}
+          {fly.tier > 0 && <> · flywheel ×{fly.bonus.toFixed(2)}{fly.bonus < fly.cap ? ` (${fly.next} to next)` : ""}</>}
+        </div>
+        {(state.owned || []).includes("auto-roll") && (
+          <button
+            className={`rngi-auto ${state.autoRoll ? "on" : ""}`}
+            onClick={() => { setState((s) => ({ ...s, autoRoll: !s.autoRoll })); sound.toggle(); }}
+          >
+            auto-roll {state.autoRoll ? "on" : "off"}
+          </button>
+        )}
+      </div>
+
+      <RngiRack state={state} setState={setState} />
+
+      {showBadges && (
+        <>
+          <div className="rngi-section">
+            <span>PAID · {result.paid.length}</span>
+            <span className="rngi-section-note">{result.earned.length} earned</span>
+          </div>
+          <div className="rngi-chips">
+            {result.paid.map((b) => (
+              <RngiBadgeChip key={b.id} badge={b} note={outcome.fresh.includes(b.id) ? "NEW — first time seen" : null} />
+            ))}
+          </div>
+          {result.outranked.length > 0 && (
+            <>
+              <div className="rngi-section">
+                <span>OUTRANKED · {result.outranked.length}</span>
+                <span className="rngi-section-note">same family, lower EP</span>
+              </div>
+              <div className="rngi-chips">
+                {result.outranked.map((b) => <RngiBadgeChip key={b.id} badge={b} dim />)}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+/** The rack: skills you own, charged by rolling, armed for the next roll. */
+function RngiRack({ state, setState }) {
+  const owned = rngiOwnedSkills(state);
+  if (!owned.length) return null;
+  const size = rngiRackSize(state);
+  const armed = state.armed || [];
+
+  const toggle = (id) => {
+    if (!rngiSkillReady(state, id)) { sound.error(); return; }
+    setState((s) => {
+      const on = (s.armed || []).includes(id);
+      if (on) return { ...s, armed: s.armed.filter((x) => x !== id) };
+      if ((s.armed || []).length >= size) { return s; }
+      return { ...s, armed: [...(s.armed || []), id] };
+    });
+    sound.toggle();
+  };
+
+  return (
+    <>
+      <div className="rngi-section">
+        <span>RACK</span>
+        <span className="rngi-section-note">{armed.length}/{size} armed · fires on the next roll</span>
+      </div>
+      <div className="rngi-rack">
+        {owned.map((id) => {
+          const s = RNGI_SKILL_BY_ID[id];
+          const have = (state.charges || {})[id] || 0;
+          const ready = have >= s.charges;
+          return (
+            <button
+              key={id}
+              className={`rngi-skill ${ready ? "ready" : ""} ${armed.includes(id) ? "armed" : ""}`}
+              onClick={() => toggle(id)}
+              title={s.desc}
+            >
+              <span className="rngi-skill-name">{s.name}</span>
+              <span className="rngi-skill-charge">{ready ? "READY" : `${have}/${s.charges}`}</span>
+              <RngiBar frac={have / s.charges} />
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ---- the shop --------------------------------------------------------------
+
+function RngiShop({ state, setState }) {
+  const [shelf, setShelf] = useState("pace");
+  const now = Date.now();
+  const stock = rngiAvailableSkills(state, now);
+
+  const items = useMemo(() => {
+    if (shelf === "pets") {
+      return RNGI_PETS.map((p) => ({
+        id: p.id, kind: "companion", name: p.name, price: p.price, desc: p.desc,
+        owned: (state.pets || []).includes(p.id), extra: `×${p.multiplier} banked`,
+      }));
+    }
+    if (shelf === "skills") {
+      // the rack bays are ordinary permanent products; the skills themselves
+      // are a rotating stall, so the shelf is the two lists joined
+      const bays = RNGI_PRODUCTS.filter((p) => p.kind === "skill-slot").map((p) => ({
+        id: p.id, kind: p.kind, name: p.name, price: p.price, desc: p.desc,
+        requires: p.requires,
+        owned: (state.owned || []).includes(p.id),
+        locked: p.requires && !(state.owned || []).includes(p.requires),
+        extra: "+1 skill slot",
+      }));
+      const sold = stock.map((id) => RNGI_SKILL_BY_ID[id]).filter(Boolean).map((sk) => ({
+        id: sk.id, kind: "skill", name: sk.name, price: sk.price, desc: sk.desc,
+        owned: (state.skills || []).includes(sk.id) || sk.source !== "shop",
+        free: sk.source !== "shop",
+        extra: `${sk.charges} rolls to charge`,
+      }));
+      return [...bays, ...sold].sort((a, b) => a.price - b.price);
+    }
+    const kinds = (RNGI_SHELVES.find((x) => x.id === shelf) || {}).kinds || [];
+    return RNGI_PRODUCTS
+      .filter((p) => kinds.includes(p.kind) || (shelf === "offline" && p.id === "offline-roller"))
+      .map((p) => ({
+        id: p.id, kind: p.kind, name: p.name, price: p.price, desc: p.desc,
+        requires: p.requires,
+        owned: (state.owned || []).includes(p.id),
+        locked: p.requires && !(state.owned || []).includes(p.requires),
+        extra: p.kind === "roll" ? `reveal ${rngiDuration(p.from)} → ${rngiDuration(p.value)}`
+             : p.kind === "cooldown" ? `cooldown ${rngiDuration(p.from)} → ${rngiDuration(p.value)}`
+             : p.kind === "offline" ? `one offline roll every ${rngiDuration(p.value)}`
+             : p.kind === "offline-cap" ? `store up to ${p.value} offline rolls`
+             : null,
+      }))
+      .sort((a, b) => a.price - b.price);
+  }, [shelf, state.owned, state.pets, state.skills, stock]);
+
+  const buy = (id) => {
+    const before = state.ep;
+    const next = rngiBuy(state, id, Date.now());
+    if (next.ep === before && next === state) { sound.error(); return; }
+    setState(next);
+    sound.success();
+  };
+
+  const wear = (id) => { setState((s) => ({ ...s, wearing: s.wearing === id ? null : id })); sound.toggle(); };
+  const skin = (id) => { setState((s) => ({ ...s, aura: s.aura === id ? null : id })); sound.toggle(); };
+
+  return (
+    <>
+      <div className="rngi-shelves">
+        {RNGI_SHELVES.map((s) => (
+          <button key={s.id} className={shelf === s.id ? "on" : ""} onClick={() => { setShelf(s.id); sound.whoosh(); }}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <div className="rngi-shelf-blurb">{(RNGI_SHELVES.find((x) => x.id === shelf) || {}).blurb}</div>
+      {shelf === "skills" && (
+        <div className="rngi-shelf-blurb dim">
+          three on sale at a time · the stall rotates every 5 minutes
+        </div>
+      )}
+
+      <div className="rngi-items">
+        {items.length === 0 && <div className="rngi-empty">nothing on this shelf yet</div>}
+        {items.map((it) => {
+          const affordable = state.ep >= it.price;
+          return (
+            <div key={it.id} className={`rngi-item ${it.owned ? "owned" : ""} ${it.locked ? "locked" : ""}`}>
+              <div className="rngi-item-top">
+                <span className="rngi-item-name">{it.name}</span>
+                {it.owned
+                  ? <span className="rngi-item-have">owned</span>
+                  : <span className={`rngi-item-price ${affordable ? "ok" : ""}`}>{rngiEP(it.price)}</span>}
+              </div>
+              <div className="rngi-item-desc">{it.desc}</div>
+              {it.extra && <div className="rngi-item-extra">{it.extra}</div>}
+              {it.locked && (
+                <div className="rngi-item-lock">needs {RNGI_PRODUCT_BY_ID[it.requires]?.name || it.requires}</div>
+              )}
+              {!it.owned && !it.locked && !it.free && (
+                <button className="rngi-btn small" disabled={!affordable} onClick={() => buy(it.id)}>buy</button>
+              )}
+              {it.owned && it.kind === "companion" && (
+                <button className={`rngi-btn small ${state.wearing === it.id ? "on" : "ghost"}`} onClick={() => wear(it.id)}>
+                  {state.wearing === it.id ? "worn" : "wear"}
+                </button>
+              )}
+              {it.owned && it.kind === "aura" && (
+                <button className={`rngi-btn small ${state.aura === it.id ? "on" : "ghost"}`} onClick={() => skin(it.id)}>
+                  {state.aura === it.id ? "active" : "use"}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ---- collection ------------------------------------------------------------
+
+function RngiBadges({ state }) {
+  const [tier, setTier] = useState("all");
+  const seen = state.seen || {};
+  const owned = Object.keys(seen).length;
+  const list = useMemo(() => {
+    const all = [...RNGI_ALL_BADGES].sort((a, b) => a.ep - b.ep);
+    return tier === "all" ? all : all.filter((b) => b.tier === tier);
+  }, [tier]);
+
+  return (
+    <>
+      <div className="rngi-section">
+        <span>COLLECTION</span>
+        <span className="rngi-section-note">{owned} / {RNGI_BADGE_TOTAL}</span>
+      </div>
+      <RngiBar frac={owned / RNGI_BADGE_TOTAL} />
+      <div className="rngi-filters">
+        <button className={tier === "all" ? "on" : ""} onClick={() => { setTier("all"); sound.click(); }}>all</button>
+        {RNG_TIER_ORDER.map((t) => {
+          const have = RNGI_ALL_BADGES.filter((b) => b.tier === t && seen[b.id]).length;
+          const total = RNGI_ALL_BADGES.filter((b) => b.tier === t).length;
+          return (
+            <button key={t} className={`${RNG_TIER_CLASS[t]} ${tier === t ? "on" : ""}`}
+                    onClick={() => { setTier(t); sound.click(); }}>
+              {RNG_TIER_NAMES[t].slice(0, 4)} {have}/{total}
+            </button>
+          );
+        })}
+      </div>
+      <div className="rngi-grid">
+        {list.map((b) => {
+          const n = seen[b.id] || 0;
+          return (
+            <div key={b.id} className={`rngi-cell ${RNG_TIER_CLASS[b.tier]} ${n ? "got" : "locked"}`}
+                 title={`${b.label} — ${b.desc} (${rngGroup(b.count)} of 1,000,001)`}>
+              <span className="rngi-cell-ico">{n ? b.emoji : "·"}</span>
+              <span className="rngi-cell-name">{n ? b.label : "???"}</span>
+              {n > 1 && <span className="rngi-cell-n">×{n > 999 ? "999+" : n}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ---- stats and the reset ladder -------------------------------------------
+
+function RngiStats({ state, setState }) {
+  const gate = rngiResetGate(state);
+  const mult = rngiWalletMult(state);
+  const settings = rngiRollSettings(state.owned);
+  const [confirm, setConfirm] = useState(false);
+
+  const doReset = () => {
+    if (!gate.ready) { sound.error(); return; }
+    setState((s) => rngiReset(s, Date.now()));
+    setConfirm(false);
+    sound.success();
+  };
+
+  const rows = [
+    ["rolls this cycle", rngGroup(state.rolls || 0)],
+    ["rolls all time", rngGroup(state.totalRolls || 0)],
+    ["numbers drawn", rngGroup(state.draws || 0)],
+    ["EP this cycle", rngiEP(state.earned || 0)],
+    ["EP all time", rngiEP(state.lifetime || 0)],
+    ["EP spent", rngiEP(state.spent || 0)],
+    ["badges found", `${Object.keys(state.seen || {}).length} / ${RNGI_BADGE_TOTAL}`],
+    ["friends found", `${(state.pets || []).length} / ${RNGI_PETS.length}`],
+    ["best roll", state.best ? `${rngGroup(state.best.n)} · ${rngiEP(state.best.ep)} EP` : "—"],
+    ["roll streak", rngGroup(state.streak || 0)],
+  ];
+
+  return (
+    <>
+      <div className="rngi-section"><span>WALLET MULTIPLIER</span><span className="rngi-section-note">×{mult.total.toFixed(3)}</span></div>
+      <div className="rngi-mults">
+        {[["friend", mult.pet], ["rebirth", mult.rebirth], ["prestige", mult.prestige],
+          ["rollback", mult.rollback], ["surplus", mult.surplus], ["flywheel", mult.flywheel]]
+          .filter(([, v]) => v > 1.0001)
+          .map(([k, v]) => <span key={k} className="rngi-mult">{k} ×{v.toFixed(2)}</span>)}
+        {mult.total <= 1.0001 && <span className="rngi-mult dim">nothing yet — wear a friend</span>}
+      </div>
+      <div className="rngi-note">
+        multipliers only ever touch EP that lands in your wallet. the number, its
+        badges, its scored EP and its rank are the same for everyone.
+      </div>
+
+      <div className="rngi-section"><span>PACE</span></div>
+      <div className="rngi-mults">
+        <span className="rngi-mult">reveal {rngiDuration(settings.revealMS)}</span>
+        <span className="rngi-mult">cooldown {rngiDuration(settings.cooldownMS)}</span>
+      </div>
+
+      <div className="rngi-section"><span>NUMBERS</span></div>
+      <div className="rngi-rows">
+        {rows.map(([k, v]) => (
+          <div key={k} className="rngi-row"><span>{k}</span><span className="rngi-row-v">{v}</span></div>
+        ))}
+      </div>
+
+      {gate.visible && (
+        <>
+          <div className="rngi-section">
+            <span>{gate.kind.toUpperCase()}</span>
+            <span className="rngi-section-note">+{gate.bonus}% banked, forever</span>
+          </div>
+          <div className="rngi-gate">
+            <div className="rngi-gate-row">
+              <span>badges</span>
+              <span className={gate.badges >= gate.needBadges ? "ok" : ""}>{gate.badges} / {gate.needBadges}</span>
+            </div>
+            <RngiBar frac={gate.badges / gate.needBadges} />
+            <div className="rngi-gate-row">
+              <span>EP this cycle</span>
+              <span className={gate.earned >= gate.needEp ? "ok" : ""}>{rngiEP(gate.earned)} / {rngiEP(gate.needEp)}</span>
+            </div>
+            <RngiBar frac={gate.earned / gate.needEp} />
+            <div className="rngi-gate-note">
+              keeps: the collection, your friends and every permanent bonus.
+              resets: EP, the shop, the rack and this cycle's streak.
+            </div>
+            {confirm ? (
+              <div className="rngi-gate-actions">
+                <button className="rngi-btn small" onClick={doReset}>yes, {gate.kind}</button>
+                <button className="rngi-btn small ghost" onClick={() => setConfirm(false)}>cancel</button>
+              </div>
+            ) : (
+              <button className="rngi-btn small" disabled={!gate.ready} onClick={() => { setConfirm(true); sound.click(); }}>
+                {gate.ready ? gate.kind : "not yet"}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {(state.history || []).length > 0 && (
+        <>
+          <div className="rngi-section"><span>RECENT</span></div>
+          <div className="rngi-log">
+            {[...state.history].reverse().slice(0, 15).map((r, i) => (
+              <div key={`${r.at}-${i}`} className="rngi-log-row">
+                <span className="rngi-log-n">{rngGroup(r.n)}</span>
+                <span className={`rngi-log-band band-${r.band}`}>{r.band}</span>
+                <span className="rngi-log-ep">+{rngiEP(r.banked)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="rngi-credit">
+        ported from RNGdle Infinite by jaime-gaming, itself a recreation of
+        RNGdle by Cam / sparrowpatch. badge catalogue and EP values from RNGdle
+        Tools. the clock here runs 15× faster than the original and the reset
+        EP gates are 4× — everything else is theirs.
+      </div>
+    </>
+  );
+}
+
+// ---- the tool --------------------------------------------------------------
+
+function RngdleTool() {
+  const [state, setState] = useState(loadRngi);
+  const [outcome, setOutcome] = useState(null);
+  const [view, setView] = useState("roll");
+
+  useEffect(() => { saveRngi(state); }, [state]);
+  useEffect(() => () => saveRngi({ ...loadRngi(), lastSeen: Date.now() }), []);
+
+  return (
+    <div className="rngi">
+      <div className="rngi-wallet">
+        <span className="rngi-wallet-ep">{rngiEP(state.ep)}</span>
+        <span className="rngi-wallet-l">EP</span>
+        {state.wearing && <span className="rngi-wallet-pet">{RNGI_PET_BY_ID[state.wearing].name}</span>}
+        {(state.rebirths > 0 || state.prestiges > 0 || state.rollbacks > 0) && (
+          <span className="rngi-wallet-marks">
+            {state.rollbacks > 0 && `◆${state.rollbacks} `}
+            {state.prestiges > 0 && `★${state.prestiges} `}
+            {state.rebirths > 0 && `↻${state.rebirths}`}
+          </span>
+        )}
+      </div>
+
+      <div className="rngi-tabs">
+        {[["roll", "roll"], ["shop", "shop"], ["badges", "badges"], ["stats", "stats"]].map(([k, l]) => (
+          <button key={k} className={view === k ? "on" : ""} onClick={() => { setView(k); sound.whoosh(); }}>{l}</button>
+        ))}
+      </div>
+
+      {view === "roll" && <RngiRoll state={state} setState={setState} outcome={outcome} setOutcome={setOutcome} />}
+      {view === "shop" && <RngiShop state={state} setState={setState} />}
+      {view === "badges" && <RngiBadges state={state} />}
+      {view === "stats" && <RngiStats state={state} setState={setState} />}
+    </div>
+  );
+}
+
+// ============================================================
+// EXPENSES (v46)
+//
+// Deliberately the "simple" tier you asked for: spending, categories and
+// charts. No income, no balance, no budgets, no bank link. Everything is
+// local, like the rest of the app.
+//
+// The three things the research kept naming as the difference between a
+// tracker you keep using and one you abandon in a week:
+//   1. entry has to be fast -- amount first, big keys, one hand
+//   2. a daily view with an average, not just a monthly total
+//   3. categories that are quick to pick and quick to read back
+// Those are what got built. Receipt capture and auto-categorisation need a
+// camera and a server, which this app is not.
+// ============================================================
+
+const STORAGE_KEY_EXPENSES = "tasksh.expenses.v1";
+
+/** Starter categories. Colours come from the existing area palette rather
+ *  than a new one, so a theme change carries them along. */
+const EXPENSE_CATS = [
+  { key: "food",      label: "food",      color: "#F59E0B", glyph: "◍" },
+  { key: "transport", label: "transport", color: "#60A5FA", glyph: "▸" },
+  { key: "bills",     label: "bills",     color: "#FB7185", glyph: "▤" },
+  { key: "shopping",  label: "shopping",  color: "#C084FC", glyph: "◆" },
+  { key: "health",    label: "health",    color: "#5EEAD4", glyph: "✚" },
+  { key: "fun",       label: "fun",       color: "#34D399", glyph: "★" },
+  { key: "other",     label: "other",     color: "#9AA4B2", glyph: "·" },
+];
+
+const EXPENSE_CURRENCIES = ["₹", "$", "€", "£", "¥"];
+
+/** Accepts what a person actually types into an amount box.
+ *
+ *  "1,200" (grouping), "12.50", " 40 ", and running sums like "120+45+30"
+ *  or "500-120" -- the calculator-style entry every fast tracker has, because
+ *  splitting a bill in your head and typing one number is the step people
+ *  skip. Parsed by hand rather than with eval: this takes user text.
+ *  Returns null for anything it cannot read, never NaN.
+ */
+function parseAmount(text) {
+  const raw = String(text == null ? "" : text).replace(/[,\s₹$€£¥]/g, "");
+  if (!raw) return null;
+  // every term must actually contain a digit, so "12+", "1..2" and a bare
+  // operator are refused rather than silently read as the part before them
+  if (!/^\d*\.?\d+([+-]\d*\.?\d+)*$/.test(raw)) return null;
+  const parts = raw.match(/[+-]?[^+-]+/g);
+  if (!parts) return null;
+  let total = 0;
+  for (const p of parts) {
+    const sign = p[0] === "-" ? -1 : 1;
+    const body = p.replace(/^[+-]/, "");
+    if (body === "" || body === ".") return null;
+    const v = Number(body);
+    if (!Number.isFinite(v)) return null;
+    total += sign * v;
+  }
+  if (!Number.isFinite(total) || total <= 0) return null;
+  // money is stored in whole minor units (paise/cents) so repeated addition
+  // can never drift the way 0.1 + 0.2 does
+  return Math.round(total * 100);
+}
+
+/** Minor units back to something readable. Whole amounts lose the ".00",
+ *  because "₹240" is the number you remember and "₹240.00" is noise. */
+function formatMoney(minor, currency = "₹", { compact = false } = {}) {
+  const neg = minor < 0;
+  const abs = Math.abs(Math.round(minor || 0));
+  if (compact && abs >= 10000000) return `${neg ? "−" : ""}${currency}${(abs / 10000000).toFixed(1)}L`;
+  if (compact && abs >= 100000) return `${neg ? "−" : ""}${currency}${(abs / 100000).toFixed(1)}k`;
+  const whole = Math.floor(abs / 100);
+  const cents = abs % 100;
+  const grouped = rngGroup(whole);
+  return `${neg ? "−" : ""}${currency}${grouped}${cents ? `.${String(cents).padStart(2, "0")}` : ""}`;
+}
+
+/** "2026-10-18" -> "2026-10". The month key everything groups by. */
+function expenseMonthKey(dateStr) {
+  return String(dateStr || "").slice(0, 7);
+}
+
+function expenseMonthLabel(monthKey) {
+  const [y, m] = String(monthKey).split("-").map(Number);
+  return `${MONTH_NAMES[(m || 1) - 1]} ${y}`;
+}
+
+function daysInMonth(monthKey) {
+  const [y, m] = String(monthKey).split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** Everything the month view needs, in one pass.
+ *
+ *  `today` is passed in rather than read from the clock so the per-day
+ *  average can be "so far this month" for the current month and "the whole
+ *  month" for a past one -- dividing October's spending by 31 on the 3rd
+ *  gives an average that is wrong by a factor of ten.
+ */
+function summariseExpenses(items, monthKey, today) {
+  const mine = (items || []).filter((e) => expenseMonthKey(e.d) === monthKey);
+  const total = mine.reduce((s, e) => s + e.amt, 0);
+
+  const byCat = {};
+  const byDay = {};
+  let biggest = null;
+  for (const e of mine) {
+    byCat[e.cat] = (byCat[e.cat] || 0) + e.amt;
+    byDay[e.d] = (byDay[e.d] || 0) + e.amt;
+    if (!biggest || e.amt > biggest.amt) biggest = e;
+  }
+
+  const span = daysInMonth(monthKey);
+  const isCurrent = expenseMonthKey(today) === monthKey;
+  const elapsed = isCurrent ? Math.max(1, Number(String(today).slice(8, 10))) : span;
+  const daysWithSpend = Object.keys(byDay).length;
+
+  const cats = Object.entries(byCat)
+    .map(([key, amt]) => ({ key, amt, share: total ? amt / total : 0 }))
+    .sort((a, b) => b.amt - a.amt);
+
+  return {
+    total, count: mine.length, byCat, byDay, cats, biggest,
+    span, elapsed, daysWithSpend,
+    perDay: Math.round(total / elapsed),
+    perSpendDay: daysWithSpend ? Math.round(total / daysWithSpend) : 0,
+    today: byDay[today] || 0,
+    projected: isCurrent ? Math.round((total / elapsed) * span) : total,
+    isCurrent,
+  };
+}
+
+/** One bar per day of the month, zeros included -- a gap in the chart has to
+ *  mean "nothing spent", and it cannot if missing days are simply absent. */
+function expenseDailySeries(items, monthKey) {
+  const byDay = {};
+  for (const e of items || []) {
+    if (expenseMonthKey(e.d) === monthKey) byDay[e.d] = (byDay[e.d] || 0) + e.amt;
+  }
+  const span = daysInMonth(monthKey);
+  const out = [];
+  for (let day = 1; day <= span; day++) {
+    const d = `${monthKey}-${String(day).padStart(2, "0")}`;
+    out.push({ d, day, amt: byDay[d] || 0 });
+  }
+  return out;
+}
+
+/** Months that actually contain something, newest first, with the current
+ *  month always present so a fresh install has somewhere to stand. */
+function expenseMonths(items, today) {
+  const set = new Set((items || []).map((e) => expenseMonthKey(e.d)));
+  set.add(expenseMonthKey(today));
+  return [...set].filter(Boolean).sort().reverse();
+}
+
+function shiftMonthKey(monthKey, delta) {
+  const [y, m] = String(monthKey).split("-").map(Number);
+  const m0 = y * 12 + (m - 1) + delta;
+  return `${Math.floor(m0 / 12)}-${String((m0 % 12) + 1).padStart(2, "0")}`;
+}
+
+/** Spending grouped into day headings, newest first. */
+function groupExpensesByDay(items, monthKey) {
+  const mine = (items || []).filter((e) => expenseMonthKey(e.d) === monthKey);
+  const days = {};
+  for (const e of mine) (days[e.d] = days[e.d] || []).push(e);
+  return Object.keys(days)
+    .sort()
+    .reverse()
+    .map((d) => ({
+      d,
+      total: days[d].reduce((s, e) => s + e.amt, 0),
+      items: days[d].slice().sort((a, b) => (b.at || 0) - (a.at || 0)),
+    }));
+}
+
+/** This month against the same stretch of last month. "You are spending more
+ *  than last month" is only true if it compares like with like -- the 10th of
+ *  October against the whole of September is not a comparison. */
+function compareToPreviousMonth(items, monthKey, today) {
+  const now = summariseExpenses(items, monthKey, today);
+  const prevKey = shiftMonthKey(monthKey, -1);
+  const upTo = now.elapsed;
+  const prevItems = (items || []).filter((e) => {
+    if (expenseMonthKey(e.d) !== prevKey) return false;
+    return Number(e.d.slice(8, 10)) <= upTo;
+  });
+  const prev = prevItems.reduce((s, e) => s + e.amt, 0);
+  if (!prev) return null;
+  return { prev, now: now.total, delta: now.total - prev, pct: (now.total - prev) / prev, upTo };
+}
+
+/** Comma-separated, quoted, with a UTF-8 BOM so a note with a ₹ or an
+ *  accent does not arrive as mojibake in Excel. */
+function expensesToCSV(items, cats) {
+  const label = (key) => (cats.find((c) => c.key === key) || { label: key }).label;
+  const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const rows = [["date", "category", "amount", "note"].map(esc).join(",")];
+  for (const e of [...(items || [])].sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0))) {
+    rows.push([esc(e.d), esc(label(e.cat)), (e.amt / 100).toFixed(2), esc(e.note || "")].join(","));
+  }
+  return "\ufeff" + rows.join("\n");
+}
+
+function loadExpenses() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY_EXPENSES) || "null");
+    if (!raw || typeof raw !== "object") throw 0;
+    const items = (Array.isArray(raw.items) ? raw.items : [])
+      .filter((e) => e && Number.isFinite(e.amt) && e.amt > 0 && typeof e.d === "string")
+      .map((e) => ({
+        id: e.id || makeId(),
+        amt: Math.round(e.amt),
+        cat: typeof e.cat === "string" ? e.cat : "other",
+        note: typeof e.note === "string" ? e.note.slice(0, 120) : "",
+        d: e.d.slice(0, 10),
+        at: Number.isFinite(e.at) ? e.at : 0,
+      }));
+    const cats = Array.isArray(raw.cats) && raw.cats.length
+      ? raw.cats.filter((c) => c && typeof c.key === "string")
+      : EXPENSE_CATS;
+    return {
+      items,
+      cats,
+      currency: EXPENSE_CURRENCIES.includes(raw.currency) ? raw.currency : "₹",
+    };
+  } catch {
+    return { items: [], cats: EXPENSE_CATS, currency: "₹" };
+  }
+}
+
+function saveExpenses(state) {
+  try { localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(state)); } catch {}
+}
+
+/** Vertical bars, one per day. Not a library: the whole app is one file with
+ *  no chart dependency, and a month of bars is forty lines of SVG. */
+function DayBars({ series, currency, max, onPick, picked, today }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+  const peak = Math.max(1, max || Math.max(...series.map((s) => s.amt), 1));
+
+  return (
+    <div className="xp-bars" role="img" aria-label={`daily spending, peak ${formatMoney(peak, currency)}`}>
+      {series.map((s) => {
+        const frac = s.amt / peak;
+        const isToday = s.d === today;
+        return (
+          <button
+            key={s.d}
+            className={`xp-bar ${picked === s.d ? "on" : ""} ${isToday ? "today" : ""} ${s.amt ? "" : "empty"}`}
+            style={{ "--h": `${mounted ? Math.max(s.amt ? 3 : 1, frac * 100) : 0}%` }}
+            onClick={() => onPick && onPick(picked === s.d ? null : s.d)}
+            aria-label={`${s.d}: ${formatMoney(s.amt, currency)}`}
+            title={`${s.d} · ${formatMoney(s.amt, currency)}`}
+          >
+            <span />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Amount first, then category: the order the money arrives in your head.
+ *  The keypad is here rather than relying on the phone keyboard because a
+ *  numeric keyboard still costs a layout shift and half the screen, and this
+ *  one can carry +, − and a decimal point that actually behave. */
+function ExpenseComposer({ cats, currency, onAdd, defaultCat }) {
+  const [text, setText] = useState("");
+  const [cat, setCat] = useState(defaultCat || cats[0].key);
+  const [note, setNote] = useState("");
+  const [flash, triggerFlash] = useFlash();
+  const parsed = parseAmount(text);
+
+  const key = (k) => {
+    sound.tick();
+    if (k === "del") { setText((t) => t.slice(0, -1)); return; }
+    if (k === "." && /\.\d*$/.test(text)) return;          // one point per term
+    if ((k === "+" || k === "-") && /[+-]$/.test(text)) {
+      setText((t) => t.slice(0, -1) + k);                  // swap the operator
+      return;
+    }
+    if ((k === "+" || k === "-") && !text) return;
+    setText((t) => (t + k).slice(0, 18));
+  };
+
+  const commit = () => {
+    if (!parsed) { triggerFlash(); sound.error(); return; }
+    onAdd({ amt: parsed, cat, note: note.trim().slice(0, 120) });
+    setText("");
+    setNote("");
+    sound.cash();
+  };
+
+  return (
+    <div className={`xp-composer ${flash ? "shake" : ""}`}>
+      <div className="xp-amount-row">
+        <span className="xp-cur">{currency}</span>
+        <span className={`xp-amount ${text ? "" : "ghost"}`}>{text || "0"}</span>
+        {parsed !== null && /[+-]/.test(text) && (
+          <span className="xp-amount-sum">= {formatMoney(parsed, currency)}</span>
+        )}
+      </div>
+
+      <div className="xp-cats">
+        {cats.map((c) => (
+          <button
+            key={c.key}
+            className={`xp-cat ${cat === c.key ? "on" : ""}`}
+            style={{ "--cc": c.color }}
+            onClick={() => { setCat(c.key); sound.toggle(); }}
+          >
+            <span className="xp-cat-glyph">{c.glyph}</span>
+            {c.label}
+          </button>
+        ))}
+      </div>
+
+      <input
+        className="xp-note"
+        placeholder="note (optional)"
+        value={note}
+        maxLength={120}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+      />
+
+      {/* Four columns, operators down the right-hand edge where a thumb
+          already is. DOM order IS the layout -- a grid that relies on
+          auto-flow for a keypad reflows the moment a key is added. */}
+      <div className="xp-pad">
+        {["1", "2", "3", "del",
+          "4", "5", "6", "+",
+          "7", "8", "9", "-",
+          ".", "0"].map((k) => (
+          <button
+            key={k}
+            className={`xp-key ${k === "+" || k === "-" ? "op" : ""} ${k === "del" ? "op" : ""}`}
+            onClick={() => key(k)}
+            aria-label={k === "del" ? "Delete" : k === "-" ? "Minus" : k === "+" ? "Plus" : k}
+          >
+            {k === "del" ? "⌫" : k === "-" ? "−" : k}
+          </button>
+        ))}
+        <button className="xp-key add" disabled={parsed === null} onClick={commit}>add</button>
+      </div>
+    </div>
+  );
+}
+
+function ExpenseRow({ item, cat, currency, onDelete, onRepeat }) {
+  const swipe = useSwipeMark({ onLeft: () => onDelete(item.id), threshold: 72 });
+  return (
+    <div className="swipe-rail">
+      <div className={`swipe-hint left ${swipe.dx < 0 ? "show" : ""} ${swipe.armed === "left" ? "armed" : ""}`}>
+        <span>✗ delete</span>
+      </div>
+      <div
+        className="xp-row"
+        style={{
+          transform: swipe.dx ? `translateX(${Math.min(0, swipe.dx)}px)` : undefined,
+          transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(.65,0,.35,1)",
+        }}
+        {...swipe.handlers}
+      >
+        <span className="xp-row-dot" style={{ background: cat.color }} />
+        <span className="xp-row-main">
+          <span className="xp-row-cat">{item.note || cat.label}</span>
+          {item.note && <span className="xp-row-sub">{cat.label}</span>}
+        </span>
+        <span className="xp-row-amt">{formatMoney(item.amt, currency)}</span>
+        <button className="xp-repeat" onClick={() => onRepeat(item)} aria-label="Log this again" title="log again">
+          ↻
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ExpensesTool() {
+  const [state, setState] = useState(loadExpenses);
+  const [month, setMonth] = useState(() => expenseMonthKey(getISTDateString(0)));
+  const [view, setView] = useState("add");
+  const [pickedDay, setPickedDay] = useState(null);
+  const [armed, setArmed] = useState(null);
+  const today = getISTDateString(0);
+
+  useEffect(() => { saveExpenses(state); }, [state]);
+
+  const catOf = useCallback(
+    (key) => state.cats.find((c) => c.key === key) || { key, label: key, color: "#9AA4B2", glyph: "·" },
+    [state.cats]
+  );
+
+  const sum = useMemo(() => summariseExpenses(state.items, month, today), [state.items, month, today]);
+  const series = useMemo(() => expenseDailySeries(state.items, month), [state.items, month]);
+  const days = useMemo(() => groupExpensesByDay(state.items, month), [state.items, month]);
+  const vsPrev = useMemo(() => compareToPreviousMonth(state.items, month, today), [state.items, month, today]);
+
+  const add = ({ amt, cat, note }) => {
+    setState((s) => ({
+      ...s,
+      items: [...s.items, { id: makeId(), amt, cat, note, d: today, at: Date.now() }],
+    }));
+    setMonth(expenseMonthKey(today));
+  };
+
+  const repeat = (item) => {
+    setState((s) => ({
+      ...s,
+      items: [...s.items, { id: makeId(), amt: item.amt, cat: item.cat, note: item.note, d: today, at: Date.now() }],
+    }));
+    setMonth(expenseMonthKey(today));
+    sound.success();
+  };
+
+  const del = (id) => {
+    setState((s) => ({ ...s, items: s.items.filter((e) => e.id !== id) }));
+    sound.delete();
+  };
+
+  const exportCSV = () => {
+    try {
+      const blob = new Blob([expensesToCSV(state.items, state.cats)], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `expenses-${month}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      sound.success();
+    } catch { sound.error(); }
+  };
+
+  const lastFew = useMemo(
+    () => [...state.items].sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 4),
+    [state.items]
+  );
+
+  const dayDetail = pickedDay ? (state.items || []).filter((e) => e.d === pickedDay) : null;
+
+  return (
+    <div className="xp">
+      <div className="xp-month">
+        <button onClick={() => { setMonth(shiftMonthKey(month, -1)); setPickedDay(null); sound.click(); }} aria-label="Previous month">‹</button>
+        <div className="xp-month-mid">
+          <span className="xp-month-label">{expenseMonthLabel(month)}</span>
+          <span className="xp-month-total">{formatMoney(sum.total, state.currency)}</span>
+        </div>
+        <button
+          disabled={month >= expenseMonthKey(today)}
+          onClick={() => { setMonth(shiftMonthKey(month, 1)); setPickedDay(null); sound.click(); }}
+          aria-label="Next month"
+        >›</button>
+      </div>
+
+      <div className="xp-tabs">
+        {[["add", "add"], ["report", "report"], ["list", "history"]].map(([k, l]) => (
+          <button key={k} className={view === k ? "on" : ""} onClick={() => { setView(k); sound.whoosh(); }}>{l}</button>
+        ))}
+      </div>
+
+      {view === "add" && (
+        <>
+          <ExpenseComposer
+            cats={state.cats}
+            currency={state.currency}
+            onAdd={add}
+            defaultCat={lastFew[0] ? lastFew[0].cat : undefined}
+          />
+          {lastFew.length > 0 && (
+            <>
+              <div className="xp-section"><span>AGAIN</span><span className="xp-section-note">one tap to log a repeat</span></div>
+              <div className="xp-again">
+                {lastFew.map((e) => (
+                  <button key={e.id} className="xp-again-btn" style={{ "--cc": catOf(e.cat).color }} onClick={() => repeat(e)}>
+                    <span className="xp-again-amt">{formatMoney(e.amt, state.currency)}</span>
+                    <span className="xp-again-cat">{e.note || catOf(e.cat).label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          <div className="xp-quickstats">
+            <div><span className="xp-qs-n">{formatMoney(sum.today, state.currency, { compact: true })}</span><span className="xp-qs-l">today</span></div>
+            <div><span className="xp-qs-n">{formatMoney(sum.perDay, state.currency, { compact: true })}</span><span className="xp-qs-l">a day</span></div>
+            <div><span className="xp-qs-n">{sum.count}</span><span className="xp-qs-l">entries</span></div>
+          </div>
+        </>
+      )}
+
+      {view === "report" && (
+        <>
+          {sum.count === 0 ? (
+            <div className="empty-state">
+              <div className="glyph">{"{ }"}</div>
+              <div className="msg">nothing logged in {expenseMonthLabel(month)}</div>
+            </div>
+          ) : (
+            <>
+              <div className="xp-section">
+                <span>BY DAY</span>
+                <span className="xp-section-note">
+                  {sum.isCurrent ? `${sum.elapsed} of ${sum.span} days` : `${sum.span} days`}
+                </span>
+              </div>
+              <DayBars
+                series={series}
+                currency={state.currency}
+                today={today}
+                picked={pickedDay}
+                onPick={(d) => { setPickedDay(d); sound.click(); }}
+              />
+              {pickedDay && (
+                <div className="xp-day-pop">
+                  <div className="xp-day-head">
+                    <span>{pickedDay}</span>
+                    <span className="xp-day-total">{formatMoney(sum.byDay[pickedDay] || 0, state.currency)}</span>
+                    <button className="axis-pop-close" onClick={() => setPickedDay(null)} aria-label="Close">×</button>
+                  </div>
+                  {dayDetail.length === 0 ? (
+                    <div className="xp-day-empty">nothing spent</div>
+                  ) : dayDetail.map((e) => (
+                    <div key={e.id} className="xp-day-row">
+                      <span className="xp-row-dot" style={{ background: catOf(e.cat).color }} />
+                      <span className="xp-day-label">{e.note || catOf(e.cat).label}</span>
+                      <span>{formatMoney(e.amt, state.currency)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="xp-section"><span>WHERE IT WENT</span></div>
+              <div className="xp-donut-card">
+                <DonutChart
+                  size={126}
+                  stroke={17}
+                  segments={sum.cats.map((c) => ({ key: c.key, value: c.amt, color: catOf(c.key).color }))}
+                  centerLabel={formatMoney(sum.total, state.currency, { compact: true })}
+                  centerSublabel={expenseMonthLabel(month).split(" ")[0]}
+                />
+                <div className="xp-legend">
+                  {sum.cats.map((c) => (
+                    <div key={c.key} className="xp-legend-row">
+                      <span className="xp-row-dot" style={{ background: catOf(c.key).color }} />
+                      <span className="xp-legend-label">{catOf(c.key).label}</span>
+                      <span className="xp-legend-pct">{Math.round(c.share * 100)}%</span>
+                      <span className="xp-legend-amt">{formatMoney(c.amt, state.currency, { compact: true })}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="xp-section"><span>THE NUMBERS</span></div>
+              <div className="xp-rows">
+                {[
+                  ["spent", formatMoney(sum.total, state.currency)],
+                  [sum.isCurrent ? "a day so far" : "a day", formatMoney(sum.perDay, state.currency)],
+                  ["a day you spent", formatMoney(sum.perSpendDay, state.currency)],
+                  ["days with spending", `${sum.daysWithSpend} of ${sum.elapsed}`],
+                  ["biggest single", sum.biggest ? `${formatMoney(sum.biggest.amt, state.currency)} · ${sum.biggest.note || catOf(sum.biggest.cat).label}` : "—"],
+                  ...(sum.isCurrent ? [["on track for", formatMoney(sum.projected, state.currency)]] : []),
+                ].map(([k, v]) => (
+                  <div key={k} className="xp-rowline"><span>{k}</span><span className="xp-rowline-v">{v}</span></div>
+                ))}
+              </div>
+
+              {vsPrev && (
+                <div className={`xp-compare ${vsPrev.delta > 0 ? "up" : "down"}`}>
+                  {vsPrev.delta > 0 ? "▲" : "▼"} {formatMoney(Math.abs(vsPrev.delta), state.currency)}
+                  {" "}({Math.abs(Math.round(vsPrev.pct * 100))}%) {vsPrev.delta > 0 ? "more" : "less"} than the
+                  {" "}first {vsPrev.upTo} days of {expenseMonthLabel(shiftMonthKey(month, -1)).split(" ")[0]}
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {view === "list" && (
+        <>
+          {days.length === 0 ? (
+            <div className="empty-state">
+              <div className="glyph">{"{ }"}</div>
+              <div className="msg">nothing logged in {expenseMonthLabel(month)}</div>
+            </div>
+          ) : (
+            <>
+              <div className="xp-section">
+                <span>{sum.count} ENTRIES</span>
+                <span className="xp-section-note">swipe left to delete</span>
+              </div>
+              {days.map((g) => (
+                <div key={g.d} className="xp-group">
+                  <div className="xp-group-head">
+                    <span>{g.d === today ? "today" : g.d.slice(5)}</span>
+                    <span className="xp-group-total">{formatMoney(g.total, state.currency)}</span>
+                  </div>
+                  {g.items.map((e) => (
+                    <ExpenseRow key={e.id} item={e} cat={catOf(e.cat)} currency={state.currency}
+                                onDelete={del} onRepeat={repeat} />
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
+          <div className="xp-foot">
+            <button className="rngi-btn small ghost" onClick={exportCSV}>export csv</button>
+            <div className="xp-cur-pick">
+              {EXPENSE_CURRENCIES.map((c) => (
+                <button key={c} className={state.currency === c ? "on" : ""}
+                        onClick={() => { setState((s) => ({ ...s, currency: c })); sound.toggle(); }}>{c}</button>
+              ))}
+            </div>
+          </div>
+          <div className="xp-note-foot">
+            kept on this device and in every backup. no bank link, no account,
+            nothing leaves the phone.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const TOOLS = [
+  {
+    id: "rngdle",
+    glyph: "∞",
+    name: "rngdle ∞",
+    desc: "roll numbers, collect 235 badges, buy your way faster",
+    Component: RngdleTool,
+  },
+  {
+    id: "expenses",
+    glyph: "₹",
+    name: "expenses",
+    desc: "what you spent, by day and by category",
+    Component: ExpensesTool,
+  },
   {
     id: "pomodoro",
     glyph: "◴",
@@ -8111,10 +11987,47 @@ function collectMaxId(data) {
   return max;
 }
 
+/** One of today's drawn quests, on the Today tab. Swipe right or tap the
+ *  box -- the gesture and the button do the same thing on purpose. */
+function TodayQuestRow({ quest, index, onComplete }) {
+  const swipe = useSwipeMark({
+    onRight: () => { if (!quest.done) onComplete(); },
+    enabled: !quest.done,
+  });
+  return (
+    <div className="swipe-rail">
+      <div className={`swipe-hint right ${swipe.dx > 0 ? "show" : ""} ${swipe.armed === "right" ? "armed" : ""}`}>
+        <span>✓ done</span>
+      </div>
+      <div
+        className={`today-task-row quest ${quest.done ? "is-done" : ""}`}
+        style={{
+          animationDelay: `${index * 35}ms`,
+          transform: swipe.dx ? `translateX(${swipe.dx}px)` : undefined,
+          transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(.65,0,.35,1)",
+        }}
+        {...swipe.handlers}
+      >
+        <button
+          className={`today-task-check ${quest.done ? "on" : ""}`}
+          style={{ "--dc": quest.diff.color }}
+          onClick={() => !quest.done && onComplete()}
+          aria-label={quest.done ? "Completed" : "Complete quest"}
+        />
+        <span className={`today-task-text ${quest.done ? "done" : ""}`}>{quest.text}</span>
+        <span className="today-quest-tag" style={{ color: quest.diff.color }}>
+          {quest.done ? "✓" : `+${quest.diff.coins}◉`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // combined "today" dashboard: next/current routine, top open tasks, and
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
-function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0 }) {
+function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0,
+                     daily, inventory, onQuestComplete }) {
   const spendableXP = coins;   // v41: rewards cost coins, XP is progression only
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
@@ -8137,10 +12050,32 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
     if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
   };
 
+  /** v45 (#5): today's drawn quests belong here.
+   *
+   *  The Tasks tab became the quest board in v35 and Today's "open tasks"
+   *  kept listing the old free-form task list, which nothing writes to any
+   *  more -- so the one thing you are actually meant to do today was the one
+   *  thing the Today tab did not show. Quests come first, hardest first;
+   *  whatever is left of the legacy list follows so nothing is orphaned.
+   */
+  const openQuests = useMemo(() => {
+    const picks = (daily && daily.picks) || {};
+    const done = (daily && daily.done) || [];
+    return DIFFICULTIES
+      .map((d) => {
+        const id = picks[d.key];
+        const item = id ? (inventory || []).find((t) => t.id === id) : null;
+        return item ? { ...item, diff: d, done: done.includes(item.id) } : null;
+      })
+      .filter(Boolean);
+  }, [daily, inventory]);
+
   const openTasks = useMemo(() => {
     const order = { high: 0, mid: 1, low: 2 };
     return [...tasks].filter((t) => !t.done).sort((a, b) => order[a.priority] - order[b.priority]);
   }, [tasks]);
+
+  const questsLeft = openQuests.filter((q) => !q.done).length;
 
   const toggleTask = (id) => {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
@@ -8212,21 +12147,29 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
 
       <div className="filters today-section-header">
         <span>OPEN TASKS</span>
-        {openTasks.length > 0 && (
+        {(openQuests.length > 0 || openTasks.length > 0) && (
           <button className="today-view-all" onClick={() => setTab("tasks")}>
             view all in tasks →
           </button>
         )}
       </div>
-      {openTasks.length === 0 ? (
+      {openQuests.length === 0 && openTasks.length === 0 ? (
         <div className="empty-state">
           <div className="glyph">{"{ }"}</div>
           <div className="msg">nothing pending — nice</div>
         </div>
       ) : (
         <div className="today-list">
+          {openQuests.map((q, i) => (
+            <TodayQuestRow
+              key={`q${q.id}`}
+              quest={q}
+              index={i}
+              onComplete={() => onQuestComplete && onQuestComplete(q.id, q.diff.coins)}
+            />
+          ))}
           {openTasks.slice(0, 5).map((t, i) => (
-            <div key={t.id} className="today-task-row" style={{ animationDelay: `${i * 35}ms` }}>
+            <div key={t.id} className="today-task-row" style={{ animationDelay: `${(openQuests.length + i) * 35}ms` }}>
               <button
                 className="today-task-check"
                 onClick={() => toggleTask(t.id)}
@@ -8240,6 +12183,13 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
             <button className="today-more" onClick={() => setTab("tasks")}>
               +{openTasks.length - 5} more
             </button>
+          )}
+          {openQuests.length > 0 && (
+            <div className="today-quest-note">
+              {questsLeft === 0
+                ? "every quest done today"
+                : `${questsLeft} quest${questsLeft === 1 ? "" : "s"} left · swipe right to complete`}
+            </div>
           )}
         </div>
       )}
@@ -8364,6 +12314,20 @@ function TodoApp() {
 
   const achCtl = useAchievements(achSnapshot);
 
+  /** v45: a quest can now be completed from the Tasks board or from Today,
+   *  so the rule about paying for it lives in exactly one place. Two buttons
+   *  wired to two copies of this is how a quest gets paid for twice. */
+  const completeQuest = useCallback((id, coins) => {
+    if ((daily.done || []).includes(id)) return;          // paid once, never twice
+    // the guard above answers "should this pay?"; the updater below is
+    // idempotent anyway, because the two are not the same question and
+    // React does not promise the updater runs when you call it
+    setDaily((d) => ((d.done || []).includes(id) ? d : { ...d, done: [...(d.done || []), id] }));
+    achCtl.addCoins(coins);
+    sound.success();
+    petBus.emit("habitDone");
+  }, [daily, achCtl]);
+
   // Level-up detection. Stored separately from XP so a reward screen fires
   // once per level crossed, even if the app was closed when it happened.
   const [levelReward, setLevelReward] = useState(null);
@@ -8439,7 +12403,7 @@ function TodoApp() {
         showDataMsg("success", "Notifications turned off");
       } else {
         await subscribeToPush();
-        await syncRoutinesToWorker(routines);
+        await syncRoutinesToWorker(routines, { force: true });
         localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "1");
         setNotifyEnabled(true);
         showDataMsg("success", "Notifications on — you'll get pinged when a routine starts");
@@ -8933,44 +12897,51 @@ function TodoApp() {
         .data-toast.ok { border-color: var(--accent); color: var(--accent); }
         .data-toast.err { border-color: var(--danger); color: var(--danger); }
 
+        /* v44: the navigation lives at the bottom now, as icons.
+           Seven targets across 360px is 51px each -- comfortably past the
+           44px minimum -- so the row no longer needs to scroll, and the
+           labels shrink to a caption under each glyph rather than being
+           the whole target. */
         .tabs {
           display: flex;
           flex-shrink: 0;
-          min-height: 42px;
-          gap: 2px;
-          padding: 10px 14px 0;
-          scroll-behavior: smooth;
-          -webkit-overflow-scrolling: touch;
-          /* the last tab fades out instead of being cut in half */
-          mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
-          -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
-          border-bottom: 1px solid var(--track);
-          overflow-x: auto;
-          scrollbar-width: none;
+          align-items: stretch;
+          gap: 0;
+          padding: 4px 2px calc(4px + env(safe-area-inset-bottom, 0px));
+          border-top: 1px solid var(--track);
+          border-bottom: none;
+          background: var(--panel);
+          position: relative;
+          z-index: 2;
         }
 
-        .tabs::-webkit-scrollbar { display: none; }
-
         .tabs button {
+          flex: 1 1 0;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 3px;
           border: none;
           background: transparent;
           color: #7C8591;
           font-family: var(--font-mono);
-          /* v41: back to comfortable spacing. v39 squeezed seven tabs into
-             360px by halving the padding, which fixed the overflow and made
-             the row look crushed. The bar scrolls instead, with a fade at
-             the right edge so it reads as scrollable rather than clipped,
-             and changeTab() pulls the active tab into view. */
-          font-size: 11px;
-          letter-spacing: 0.04em;
+          font-size: 8.5px;
+          letter-spacing: 0.02em;
           text-transform: uppercase;
-          padding: 9px 13px;
-          white-space: nowrap;
-          flex-shrink: 0;
-          min-height: 30px;
+          padding: 7px 2px 5px;
+          min-height: 46px;
           cursor: pointer;
           position: relative;
           transition: color 150ms ease;
+        }
+
+        .tab-label {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .tabs button.active { color: var(--text); }
@@ -10256,7 +14227,10 @@ function TodoApp() {
            once that test started hit-testing a tab that was actually on
            screen. Bottom is where the app's other toasts live anyway. */
         .ach-toast {
-          position: fixed; left: 50%; bottom: 18px;
+          position: fixed; left: 50%;
+          /* v44: clears the bottom navigation, which did not exist when
+             this moved down in v41 -- it was sitting on top of the tabs */
+          bottom: calc(64px + env(safe-area-inset-bottom, 0px));
           transform: translateX(-50%);
           z-index: 90; width: calc(100% - 32px); max-width: 380px;
           display: flex; align-items: center; gap: 11px;
@@ -11455,6 +15429,710 @@ function TodoApp() {
           background: transparent; border: none; cursor: pointer;
           color: var(--accent); font-family: var(--font-mono);
           font-size: 10px; letter-spacing: 0.06em; padding: 0;
+        }
+
+
+
+        /* ---- swipe to complete / fail (v45) ----
+           The rail holds two hint layers behind the card. They only paint
+           while a drag is in progress, so a row at rest is exactly what it
+           was before -- no permanent coloured gutters down the list. */
+        .swipe-rail { position: relative; overflow: hidden; border-radius: var(--r-card); }
+        .swipe-hint {
+          position: absolute; inset: 0; display: flex; align-items: center;
+          padding: 0 16px; pointer-events: none; opacity: 0;
+          font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em;
+          border-radius: var(--r-card);
+          transition: opacity 120ms ease;
+        }
+        .swipe-hint.right { justify-content: flex-start; color: var(--accent); background: rgba(94,234,212,0.08); }
+        .swipe-hint.left  { justify-content: flex-end;  color: var(--danger); background: rgba(155,51,65,0.14); }
+        .swipe-hint.show { opacity: 0.75; }
+        .swipe-hint.armed { opacity: 1; }
+        .swipe-hint.armed span { text-shadow: 0 0 10px currentColor; }
+        .swipe-rail .quest-habit-card { touch-action: pan-y; }
+        .swipe-rail .today-task-row { touch-action: pan-y; }
+
+        .hist-btn {
+          background: transparent; border: none; cursor: pointer; padding: 3px;
+          color: var(--muted); display: flex; align-items: center;
+        }
+        .hist-btn:active { color: var(--accent); }
+
+        .today-task-row.quest .today-task-check {
+          border-color: var(--dc, var(--accent));
+        }
+        .today-task-row.quest .today-task-check.on {
+          background: var(--dc, var(--accent));
+        }
+        .today-task-row.is-done { opacity: 0.5; }
+        .today-quest-tag { font-size: 9px; font-variant-numeric: tabular-nums; }
+        .today-quest-note {
+          font-size: 8.5px; color: var(--muted); padding: 4px 2px 0;
+        }
+
+        /* ---- radar axis popup (v45, #8) ---- */
+        .radar-hint {
+          text-align: center; font-size: 8.5px; color: var(--muted);
+          margin-top: 2px; letter-spacing: 0.04em;
+        }
+        .radar-label.on { fill: var(--text); }
+        .axis-pop {
+          margin-top: 10px; padding: 10px 11px 11px;
+          border: var(--border-w) solid var(--accent); border-radius: var(--r-card);
+          background: var(--panel);
+          animation: rowIn 180ms ease backwards;
+        }
+        .axis-pop-head { display: flex; align-items: center; gap: 7px; }
+        .axis-pop-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .axis-pop-name { flex: 1; font-size: 11.5px; color: var(--text); letter-spacing: 0.03em; }
+        .axis-pop-close {
+          background: transparent; border: none; color: var(--muted);
+          font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px;
+        }
+        .axis-pop-value { display: flex; align-items: baseline; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+        .axis-pop-xp { font-size: 21px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .axis-pop-unit { font-size: 9px; color: var(--muted); letter-spacing: 0.1em; }
+        .axis-pop-raw { font-size: 8.5px; color: var(--danger); margin-left: 4px; }
+        .axis-pop-split {
+          display: flex; align-items: baseline; gap: 5px; margin-top: 5px;
+          font-size: 10px; flex-wrap: wrap;
+        }
+        .axis-pop-gain { color: var(--accent); }
+        .axis-pop-lose { color: var(--danger); }
+        .axis-pop-sep { color: var(--muted); }
+        .axis-pop-meta { font-size: 8.5px; color: var(--muted); margin-left: 4px; }
+        .axis-pop-rows { margin-top: 9px; display: flex; flex-direction: column; gap: 3px; }
+        .axis-pop-row {
+          display: flex; justify-content: space-between; gap: 8px;
+          font-size: 9.5px; color: var(--muted);
+          padding: 3px 0; border-bottom: 1px solid var(--track);
+        }
+        .axis-pop-row:last-child { border-bottom: none; }
+        .axis-pop-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .axis-pop-row-net { font-variant-numeric: tabular-nums; flex-shrink: 0; }
+        .axis-pop-row-net.pos { color: var(--accent); }
+        .axis-pop-row-net.neg { color: var(--danger); }
+        .axis-pop-more, .axis-pop-empty { font-size: 8.5px; color: var(--muted); margin-top: 6px; }
+
+        /* ---- per-quest calendar (v45, #10) ---- */
+        .qh-sheet { max-width: 340px; }
+        .qh-nav {
+          display: flex; align-items: center; justify-content: space-between;
+          margin: 4px 0 10px;
+        }
+        .qh-nav button {
+          background: transparent; border: var(--border-w) solid var(--border);
+          border-radius: var(--r-chip); color: var(--text); cursor: pointer;
+          width: 30px; height: 28px; font-size: 15px; line-height: 1;
+          font-family: var(--font-mono);
+        }
+        .qh-nav button:disabled { color: var(--track); cursor: default; }
+        .qh-month { font-size: 11px; letter-spacing: 0.1em; color: var(--text); }
+        .qh-dow, .qh-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .qh-dow { margin-bottom: 4px; }
+        .qh-dow span { text-align: center; font-size: 8px; color: var(--muted); }
+        .qh-cell {
+          aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+          border-radius: 5px; font-size: 9px; color: var(--muted);
+          background: var(--track); border: 1px solid transparent;
+          font-variant-numeric: tabular-nums;
+        }
+        .qh-cell.blank { background: transparent; }
+        .qh-cell.future { opacity: 0.3; }
+        .qh-cell.done { background: var(--accent); color: #0B0D10; }
+        .qh-cell.slip { background: var(--danger); color: #fff; }
+        .qh-cell.today { border-color: var(--text); }
+        .qh-key {
+          display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+          margin-top: 10px; font-size: 8px; color: var(--muted);
+        }
+        .qh-key span { display: flex; align-items: center; gap: 4px; }
+        .qh-swatch {
+          width: 8px; height: 8px; border-radius: 2px; background: var(--track);
+          display: inline-block;
+        }
+        .qh-swatch.done { background: var(--accent); }
+        .qh-swatch.slip { background: var(--danger); }
+        .qh-stats {
+          display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+          margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--track);
+        }
+        .qh-stats > div { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+        .qh-stat-n { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+        .qh-stat-l { font-size: 7.5px; color: var(--muted); text-align: center; line-height: 1.3; }
+        .qh-all { margin-top: 9px; text-align: center; font-size: 8.5px; color: var(--muted); }
+
+        /* ---- sound (v47) ---- */
+        .snd { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 9px; }
+        .snd-mute {
+          padding: 9px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 10.5px;
+          letter-spacing: 0.06em;
+        }
+        .snd-mute.on { color: var(--accent); border-color: var(--accent); }
+        .snd-slider { display: flex; align-items: center; gap: 8px; }
+        .snd-label { font-size: 9px; color: var(--muted); width: 58px; flex-shrink: 0; }
+        .snd-slider input { flex: 1; min-width: 0; accent-color: var(--accent); height: 22px; }
+        .snd-val {
+          font-size: 9px; color: var(--text); width: 24px; text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        .snd-sub { font-size: 8.5px; letter-spacing: 0.12em; color: var(--muted); margin-top: 4px; }
+        .snd-scenes { display: flex; gap: 4px; flex-wrap: wrap; }
+        .snd-scenes button {
+          padding: 6px 9px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 9px;
+        }
+        .snd-scenes button.on { color: var(--accent); border-color: var(--accent); }
+        .snd-test { margin-left: auto; }
+        .snd-test.on { color: var(--danger) !important; border-color: var(--danger) !important; }
+        .snd-hint { font-size: 8px; color: var(--muted); line-height: 1.6; }
+
+        .pomo-silence {
+          display: block; margin: 10px auto 0; padding: 9px 22px; cursor: pointer;
+          background: transparent; color: var(--danger);
+          border: 1px solid var(--danger); border-radius: var(--r-card);
+          font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
+          animation: pulseRing 900ms ease-in-out infinite;
+        }
+        @keyframes pulseRing {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.55; }
+        }
+
+        /* ---- expenses (v46) ----
+           Amount first, big keys, one hand. The keypad is deliberately not
+           the phone keyboard: a numeric keyboard still costs a layout shift
+           and half the screen, and this one carries + and − that behave. */
+        .xp { padding: 4px 14px 20px; }
+
+        .xp-month {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 8px; padding: 8px 10px; margin-bottom: 8px;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-card);
+          background: var(--panel);
+        }
+        .xp-month button {
+          background: transparent; border: var(--border-w) solid var(--border);
+          border-radius: var(--r-chip); color: var(--text); cursor: pointer;
+          width: 30px; height: 28px; font-size: 15px; line-height: 1;
+          font-family: var(--font-mono); flex-shrink: 0;
+        }
+        .xp-month button:disabled { color: var(--track); cursor: default; }
+        .xp-month-mid { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+        .xp-month-label { font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
+        .xp-month-total { font-size: 17px; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+        .xp-tabs { display: flex; gap: 5px; margin-bottom: 11px; }
+        .xp-tabs button {
+          flex: 1; padding: 7px 3px; cursor: pointer;
+          background: transparent; color: var(--muted);
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em;
+        }
+        .xp-tabs button.on { color: var(--accent); border-color: var(--accent); }
+
+        /* ---- composer ---- */
+        .xp-composer {
+          border: var(--border-w) solid var(--border); border-radius: var(--r-card);
+          padding: 12px 11px 11px; background: var(--panel);
+        }
+        .xp-amount-row {
+          display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap;
+          padding-bottom: 10px; border-bottom: 1px solid var(--track);
+        }
+        .xp-cur { font-size: 15px; color: var(--muted); }
+        .xp-amount {
+          font-size: 28px; color: var(--text); font-variant-numeric: tabular-nums;
+          letter-spacing: 0.02em; word-break: break-all;
+        }
+        .xp-amount.ghost { color: var(--track); }
+        .xp-amount-sum { margin-left: auto; font-size: 10px; color: var(--accent); }
+
+        .xp-cats { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0 8px; }
+        .xp-cat {
+          display: flex; align-items: center; gap: 4px;
+          padding: 5px 8px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 9px;
+        }
+        .xp-cat.on { color: var(--cc); border-color: var(--cc); }
+        .xp-cat-glyph { color: var(--cc); font-size: 10px; }
+
+        .xp-note {
+          width: 100%; padding: 8px 9px; margin-bottom: 9px;
+          background: var(--bg); color: var(--text);
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          font-family: var(--font-mono); font-size: 11px;
+        }
+        .xp-note:focus { outline: none; border-color: var(--accent); }
+
+        .xp-pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+        .xp-key {
+          padding: 13px 0; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--text); font-family: var(--font-mono); font-size: 15px;
+          min-height: 46px;
+        }
+        .xp-key:active { border-color: var(--accent); background: rgba(94,234,212,0.05); }
+        .xp-key.op { color: var(--muted); font-size: 16px; }
+        .xp-key.add {
+          grid-column: span 2; color: var(--accent); border-color: var(--accent);
+          font-size: 11px; letter-spacing: 0.1em;
+        }
+        .xp-key.add:disabled { color: var(--muted); border-color: var(--border); }
+
+        /* ---- repeat ---- */
+        .xp-again { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+        .xp-again-btn {
+          display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+          padding: 8px 9px; cursor: pointer; text-align: left; background: transparent;
+          border: var(--border-w) solid var(--border); border-left: 2px solid var(--cc);
+          border-radius: var(--r-chip); font-family: var(--font-mono); color: var(--text);
+        }
+        .xp-again-amt { font-size: 12px; font-variant-numeric: tabular-nums; }
+        .xp-again-cat {
+          font-size: 8.5px; color: var(--muted); max-width: 100%;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+
+        .xp-quickstats {
+          display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+          margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--track);
+        }
+        .xp-quickstats > div { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+        .xp-qs-n { font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; }
+        .xp-qs-l { font-size: 8px; color: var(--muted); letter-spacing: 0.05em; }
+
+        /* ---- sections ---- */
+        .xp-section {
+          display: flex; justify-content: space-between; align-items: baseline;
+          font-size: 9.5px; letter-spacing: 0.1em; color: var(--muted); margin: 15px 0 7px;
+        }
+        .xp-section-note { letter-spacing: 0; }
+
+        /* ---- day bars ---- */
+        .xp-bars {
+          display: flex; align-items: flex-end; gap: 2px; height: 92px;
+          padding: 6px 7px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--border);
+        }
+        .xp-bar {
+          flex: 1 1 0; min-width: 0; height: 100%; padding: 0; cursor: pointer;
+          background: transparent; border: none;
+          display: flex; align-items: flex-end;
+        }
+        .xp-bar > span {
+          display: block; width: 100%; height: var(--h, 0%);
+          background: var(--accent); border-radius: 2px 2px 0 0;
+          transition: height 600ms cubic-bezier(0.22,1,0.36,1), background 120ms ease;
+        }
+        /* A day with nothing spent still has to occupy its slot, or the
+           chart reads as "cut off after the 18th" rather than "the month
+           has 31 days and 13 of them are still ahead". */
+        .xp-bar.empty > span { background: var(--track); min-height: 2px; }
+        .xp-bar.today > span { background: #FBBF24; }
+        .xp-bar.on > span { background: var(--text); }
+
+        .xp-day-pop {
+          margin-top: 8px; padding: 9px 10px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--accent);
+          animation: rowIn 180ms ease backwards;
+        }
+        .xp-day-head {
+          display: flex; align-items: baseline; gap: 8px;
+          font-size: 10px; color: var(--muted);
+          padding-bottom: 6px; border-bottom: 1px solid var(--track);
+        }
+        .xp-day-total { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .xp-day-row {
+          display: flex; align-items: center; gap: 7px; padding: 5px 0;
+          font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+        }
+        .xp-day-label { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .xp-day-empty { font-size: 9px; color: var(--muted); padding: 7px 0; }
+
+        /* ---- donut + legend ---- */
+        .xp-donut-card {
+          display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+          padding: 11px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--border);
+        }
+        .xp-legend { flex: 1; min-width: 150px; display: flex; flex-direction: column; gap: 3px; }
+        .xp-legend-row {
+          display: flex; align-items: center; gap: 6px; font-size: 9.5px;
+          color: var(--muted); font-variant-numeric: tabular-nums;
+        }
+        .xp-legend-label { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .xp-legend-pct { width: 30px; text-align: right; }
+        .xp-legend-amt { width: 56px; text-align: right; color: var(--text); }
+        .xp-row-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+        .xp-rows { display: flex; flex-direction: column; gap: 2px; }
+        .xp-rowline {
+          display: flex; justify-content: space-between; gap: 8px;
+          font-size: 9.5px; color: var(--muted); padding: 4px 0;
+          border-bottom: 1px solid var(--track);
+        }
+        .xp-rowline:last-child { border-bottom: none; }
+        .xp-rowline-v { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+
+        .xp-compare {
+          margin-top: 10px; padding: 8px 10px; font-size: 9px; line-height: 1.6;
+          border-radius: var(--r-chip); border: var(--border-w) solid var(--border);
+        }
+        .xp-compare.up { color: var(--danger); border-left: 2px solid var(--danger); }
+        .xp-compare.down { color: var(--accent); border-left: 2px solid var(--accent); }
+
+        /* ---- history ---- */
+        .xp-group { margin-bottom: 11px; }
+        .xp-group-head {
+          display: flex; justify-content: space-between; align-items: baseline;
+          font-size: 9px; color: var(--muted); margin-bottom: 4px;
+          font-variant-numeric: tabular-nums;
+        }
+        .xp-group-total { color: var(--text); }
+        .xp-row {
+          display: flex; align-items: center; gap: 8px;
+          padding: 8px 10px; margin-bottom: 4px;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          background: var(--panel); touch-action: pan-y;
+        }
+        .xp-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .xp-row-cat { font-size: 10.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .xp-row-sub { font-size: 8px; color: var(--muted); }
+        .xp-row-amt { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+        .xp-repeat {
+          background: transparent; border: none; cursor: pointer; padding: 2px 4px;
+          color: var(--muted); font-size: 13px; line-height: 1;
+        }
+        .xp-repeat:active { color: var(--accent); }
+
+        .xp-foot {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 8px; margin-top: 14px; flex-wrap: wrap;
+        }
+        .xp-cur-pick { display: flex; gap: 3px; }
+        .xp-cur-pick button {
+          width: 26px; height: 26px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 11px;
+        }
+        .xp-cur-pick button.on { color: var(--accent); border-color: var(--accent); }
+        .xp-note-foot {
+          margin-top: 11px; font-size: 8px; color: var(--muted); line-height: 1.7;
+          padding-left: 8px; border-left: 2px solid var(--track);
+        }
+
+        @media (max-width: 340px) {
+          .xp-amount { font-size: 23px; }
+          .xp-again { grid-template-columns: 1fr; }
+          .xp-key { padding: 11px 0; min-height: 42px; font-size: 14px; }
+        }
+
+        /* ---- rngdle infinite (v45) ----
+           Tier and band colour is the only decoration. The six "skins" are
+           cosmetic layers over the result stage and deliberately read as
+           terminal effects -- scanline, grid, tear, churn, slab, hex spill --
+           rather than the gradients the original uses. */
+        .rngi { padding: 4px 14px 20px; }
+
+        .rngi-wallet {
+          display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+          padding: 8px 10px; margin-bottom: 8px;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-card);
+          background: var(--panel);
+        }
+        .rngi-wallet-ep { font-size: 17px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .rngi-wallet-l { font-size: 9px; color: var(--muted); letter-spacing: 0.12em; }
+        .rngi-wallet-pet { margin-left: auto; font-size: 9px; color: var(--muted); }
+        .rngi-wallet-marks { font-size: 9px; color: var(--accent); letter-spacing: 0.06em; }
+
+        .rngi-tabs { display: flex; gap: 5px; margin-bottom: 11px; }
+        .rngi-tabs button, .rngi-shelves button {
+          flex: 1; padding: 7px 3px; cursor: pointer;
+          background: transparent; color: var(--muted);
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em;
+        }
+        .rngi-tabs button.on, .rngi-shelves button.on { color: var(--accent); border-color: var(--accent); }
+
+        /* ---- the stage ---- */
+        .rngi-stage {
+          position: relative; overflow: hidden;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-card);
+          background: var(--panel); padding: 18px 12px 15px; text-align: center;
+          margin-bottom: 10px; min-height: 148px;
+          display: flex; flex-direction: column; justify-content: center;
+        }
+        .rngi-stage.band-epic, .rngi-stage.band-anomaly, .rngi-stage.band-mythic { border-color: currentColor; }
+
+        .rngi-number {
+          font-family: var(--font-mono); font-size: 31px; letter-spacing: 0.02em;
+          line-height: 1.1; font-variant-numeric: tabular-nums;
+          display: flex; justify-content: center; flex-wrap: wrap;
+        }
+        .rngi-number .on { color: var(--text); }
+        .rngi-number .off { color: var(--muted); opacity: 0.45; }
+        .rngi-number .sep { color: var(--muted); }
+        .rngi-number.rolling .off { animation: rngiChurn 90ms steps(1) infinite; }
+        @keyframes rngiChurn { 50% { opacity: 0.22; } }
+
+        .rngi-verdict { margin-top: 9px; display: flex; gap: 8px; justify-content: center; align-items: baseline; }
+        .rngi-band { font-size: 11px; letter-spacing: 0.16em; }
+        .rngi-rank { font-size: 9px; color: var(--muted); }
+        .rngi-scored { margin-top: 4px; font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+        .rngi-banked { margin-top: 7px; display: flex; gap: 5px; justify-content: center; align-items: baseline; }
+        .rngi-banked-v { font-size: 16px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .rngi-banked-l { font-size: 9px; color: var(--muted); letter-spacing: 0.08em; }
+        .rngi-banked-m { font-size: 9px; color: var(--accent); opacity: 0.75; }
+        .rngi-draws, .rngi-drop { margin-top: 6px; font-size: 8.5px; color: var(--muted); }
+        .rngi-drop { color: var(--accent); }
+
+        .rngi-idle-glyph { font-size: 34px; color: var(--accent); line-height: 1; }
+        .rngi-idle-msg { margin-top: 10px; font-size: 9.5px; color: var(--muted); line-height: 1.7; }
+
+        .band-trash    { color: #6B7280; }
+        .band-common   { color: #9AA4B2; }
+        .band-uncommon { color: #5EEAD4; }
+        .band-rare     { color: #60A5FA; }
+        .band-epic     { color: #C084FC; }
+        .band-anomaly  { color: #FBBF24; }
+        .band-mythic   { color: #FB7185; }
+
+        /* ---- skins ---- */
+        .rngi-aura-layer { position: absolute; inset: 0; pointer-events: none; }
+        .aura-static .rngi-aura-layer {
+          background: repeating-linear-gradient(
+            to bottom, rgba(94,234,212,0.05) 0 1px, transparent 1px 3px);
+          animation: rngiScan 2.4s linear infinite;
+        }
+        @keyframes rngiScan { to { transform: translateY(3px); } }
+        .aura-blueprint .rngi-aura-layer {
+          background:
+            repeating-linear-gradient(to right, rgba(96,165,250,0.09) 0 1px, transparent 1px 14px),
+            repeating-linear-gradient(to bottom, rgba(96,165,250,0.09) 0 1px, transparent 1px 14px);
+        }
+        .aura-glitch .rngi-number { animation: rngiTear 3.2s steps(1) infinite; }
+        @keyframes rngiTear {
+          0%, 92%, 100% { transform: none; }
+          93% { transform: translateX(-2px) skewX(-6deg); }
+          95% { transform: translateX(3px); }
+          97% { transform: translateX(-1px) skewX(3deg); }
+        }
+        .aura-monolith { background: #0B0D10; }
+        .aura-monolith .rngi-aura-layer { background: none; }
+        .aura-hexdump .rngi-aura-layer {
+          background-image: repeating-linear-gradient(
+            to bottom, rgba(148,163,184,0.055) 0 9px, transparent 9px 18px);
+        }
+        .aura-hexdump::before {
+          content: "4e 55 4d 42 45 52 20 30 78 30 30 30 30 30 30";
+          position: absolute; left: 8px; bottom: 6px; opacity: 0.18;
+          font-size: 7px; letter-spacing: 0.1em; color: var(--muted);
+        }
+
+        /* ---- controls ---- */
+        .rngi-controls { text-align: center; margin-bottom: 4px; }
+        .rngi-btn {
+          padding: 12px 30px; cursor: pointer;
+          background: transparent; color: var(--accent);
+          border: 1px solid var(--accent); border-radius: var(--r-card);
+          font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.16em;
+        }
+        .rngi-btn:active { background: rgba(94,234,212,0.08); }
+        .rngi-btn:disabled { color: var(--muted); border-color: var(--border); cursor: default; }
+        .rngi-btn.small { padding: 7px 13px; font-size: 9.5px; letter-spacing: 0.06em; margin-top: 7px; }
+        .rngi-btn.ghost { color: var(--muted); border-color: var(--border); }
+        .rngi-btn.on { color: #0B0D10; background: var(--accent); }
+        .rngi-generate { width: 100%; }
+
+        .rngi-bar {
+          height: 3px; background: var(--track); border-radius: 2px;
+          overflow: hidden; margin: 2px 0;
+        }
+        .rngi-bar > span { display: block; height: 100%; background: var(--accent); transition: width 90ms linear; }
+        .rngi-bar.reveal > span { background: var(--muted); }
+
+        .rngi-wait {
+          font-size: 9.5px; color: var(--muted); letter-spacing: 0.08em;
+          margin-top: 5px; font-variant-numeric: tabular-nums;
+        }
+        .rngi-pace { margin-top: 7px; font-size: 8.5px; color: var(--muted); }
+        .rngi-auto {
+          margin-top: 7px; padding: 5px 11px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 8.5px;
+        }
+        .rngi-auto.on { color: var(--accent); border-color: var(--accent); }
+
+        .rngi-offline {
+          display: flex; flex-direction: column; align-items: center; gap: 3px;
+          padding: 11px; margin-bottom: 10px; text-align: center;
+          border: var(--border-w) solid var(--accent); border-radius: var(--r-card);
+        }
+        .rngi-offline-head { font-size: 8.5px; color: var(--muted); letter-spacing: 0.1em; }
+        .rngi-offline-ep { font-size: 17px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .rngi-offline-sub { font-size: 8.5px; color: var(--muted); }
+
+        /* ---- sections, chips, rack ---- */
+        .rngi-section {
+          display: flex; justify-content: space-between; align-items: baseline;
+          font-size: 9.5px; letter-spacing: 0.1em; color: var(--muted); margin: 14px 0 7px;
+        }
+        .rngi-section-note { letter-spacing: 0; }
+
+        .rngi-chips { display: flex; flex-direction: column; gap: 4px; }
+        .rngi-chip {
+          display: flex; align-items: center; gap: 8px;
+          padding: 7px 9px; border-radius: var(--r-chip);
+          border: var(--border-w) solid var(--border); border-left: 2px solid currentColor;
+        }
+        .rngi-chip.dim { opacity: 0.4; }
+        .rngi-chip-ico { font-size: 13px; width: 17px; text-align: center; line-height: 1; }
+        .rngi-chip-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+        .rngi-chip-name { font-size: 10.5px; color: var(--text); }
+        .rngi-chip-note {
+          font-size: 8px; color: var(--muted); line-height: 1.4;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .rngi-chip-ep { font-size: 9px; font-variant-numeric: tabular-nums; }
+
+        .t-common   { color: #9AA4B2; }
+        .t-uncommon { color: #5EEAD4; }
+        .t-rare     { color: #60A5FA; }
+        .t-epic     { color: #C084FC; }
+        .t-anomaly  { color: #FBBF24; }
+        .t-mythic   { color: #FB7185; }
+
+        .rngi-rack { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+        .rngi-skill {
+          display: flex; flex-direction: column; gap: 3px; align-items: stretch;
+          padding: 7px 9px; cursor: pointer; text-align: left;
+          background: transparent; color: var(--muted);
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          font-family: var(--font-mono); opacity: 0.6;
+        }
+        .rngi-skill.ready { opacity: 1; color: var(--text); }
+        .rngi-skill.armed { border-color: var(--accent); color: var(--accent); }
+        .rngi-skill-name { font-size: 10px; }
+        .rngi-skill-charge { font-size: 8px; letter-spacing: 0.06em; }
+
+        /* ---- shop ---- */
+        .rngi-shelves { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 7px; }
+        .rngi-shelves button { flex: 1 1 28%; }
+        .rngi-shelf-blurb { font-size: 8.5px; color: var(--muted); margin-bottom: 9px; }
+        .rngi-shelf-blurb.dim { opacity: 0.7; margin-top: -6px; }
+        .rngi-items { display: flex; flex-direction: column; gap: 6px; }
+        .rngi-item {
+          padding: 9px 10px; border-radius: var(--r-chip);
+          border: var(--border-w) solid var(--border);
+        }
+        .rngi-item.owned { border-left: 2px solid var(--accent); }
+        .rngi-item.locked { opacity: 0.45; }
+        .rngi-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+        .rngi-item-name { font-size: 11px; color: var(--text); }
+        .rngi-item-price { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+        .rngi-item-price.ok { color: var(--accent); }
+        .rngi-item-have { font-size: 8.5px; color: var(--accent); letter-spacing: 0.06em; }
+        .rngi-item-desc { margin-top: 4px; font-size: 8.5px; color: var(--muted); line-height: 1.5; }
+        .rngi-item-extra { margin-top: 3px; font-size: 8.5px; color: var(--accent); opacity: 0.8; }
+        .rngi-item-lock { margin-top: 3px; font-size: 8px; color: var(--danger); }
+        .rngi-empty { font-size: 9px; color: var(--muted); padding: 12px 0; text-align: center; }
+
+        /* ---- collection ---- */
+        .rngi-filters { display: flex; gap: 4px; flex-wrap: wrap; margin: 9px 0; }
+        .rngi-filters button {
+          padding: 5px 7px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          font-family: var(--font-mono); font-size: 8px; color: var(--muted);
+        }
+        .rngi-filters button.on { border-color: currentColor; }
+        .rngi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+        .rngi-cell {
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 3px; padding: 8px 4px; min-height: 54px; position: relative;
+          border-radius: var(--r-chip); border: var(--border-w) solid var(--border);
+        }
+        /* A locked cell has to still read as a cell. At 0.28 opacity with a
+           1px solid border the grid dissolved into scattered dots and looked
+           broken rather than unfinished. */
+        /* A locked cell has to still read as a cell. Dimming it to a dot made
+           the grid look broken rather than unfinished, and --track is too
+           dark to be a visible edge, so the border stays --border and only
+           turns dashed. */
+        .rngi-cell.locked {
+          opacity: 0.75; color: var(--muted);
+          border-style: dashed;
+        }
+        .rngi-cell.locked .rngi-cell-ico { opacity: 0.4; }
+        .rngi-cell.locked .rngi-cell-name { opacity: 0.6; }
+        .rngi-cell.got { border-color: currentColor; }
+        .rngi-cell-ico { font-size: 15px; line-height: 1; }
+        .rngi-cell-name {
+          font-size: 7.5px; text-align: center; line-height: 1.3; color: var(--muted);
+          max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .rngi-cell-n {
+          position: absolute; top: 2px; right: 4px; font-size: 7.5px;
+          color: var(--muted); font-variant-numeric: tabular-nums;
+        }
+
+        /* ---- stats ---- */
+        .rngi-mults { display: flex; gap: 5px; flex-wrap: wrap; }
+        .rngi-mult {
+          font-size: 8.5px; color: var(--accent); padding: 4px 7px;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+        }
+        .rngi-mult.dim { color: var(--muted); }
+        .rngi-note {
+          margin-top: 9px; font-size: 8.5px; color: var(--muted); line-height: 1.6;
+          padding-left: 8px; border-left: 2px solid var(--track);
+        }
+        .rngi-rows { display: flex; flex-direction: column; gap: 2px; }
+        .rngi-row {
+          display: flex; justify-content: space-between; gap: 8px;
+          font-size: 9.5px; color: var(--muted); padding: 4px 0;
+          border-bottom: 1px solid var(--track);
+        }
+        .rngi-row:last-child { border-bottom: none; }
+        .rngi-row-v { color: var(--text); font-variant-numeric: tabular-nums; }
+
+        .rngi-gate {
+          padding: 10px 11px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--border);
+        }
+        .rngi-gate-row {
+          display: flex; justify-content: space-between; font-size: 9px;
+          color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums;
+        }
+        .rngi-gate-row .ok { color: var(--accent); }
+        .rngi-gate-note { margin-top: 9px; font-size: 8px; color: var(--muted); line-height: 1.6; }
+        .rngi-gate-actions { display: flex; gap: 6px; }
+
+        .rngi-log { display: flex; flex-direction: column; gap: 3px; }
+        .rngi-log-row {
+          display: grid; grid-template-columns: 1fr 64px 56px; gap: 6px;
+          align-items: baseline; font-size: 9.5px; padding: 4px 8px;
+          border-radius: var(--r-chip); border: var(--border-w) solid var(--border);
+          font-variant-numeric: tabular-nums;
+        }
+        .rngi-log-n { color: var(--text); }
+        .rngi-log-band { font-size: 8px; letter-spacing: 0.05em; }
+        .rngi-log-ep { color: var(--accent); text-align: right; }
+
+        .rngi-credit {
+          margin-top: 16px; font-size: 7.5px; color: var(--muted);
+          line-height: 1.7; opacity: 0.75;
+        }
+
+        @media (max-width: 340px) {
+          .rngi-number { font-size: 25px; }
+          .rngi-grid { grid-template-columns: repeat(2, 1fr); }
+          .rngi-rack { grid-template-columns: 1fr; }
         }
 
         /* ---- ai captions (v40) ---- */
@@ -12741,29 +17419,7 @@ pet, wallet and themes are always included.
         {/* A real tablist: screen readers announce "tab 3 of 6, selected"
             instead of six unrelated buttons. aria-selected also gives the
             active tab a programmatic state, not just a CSS class. */}
-        <div className="tabs" role="tablist" aria-label="Sections">
-          {[
-            ["today", "today"],
-            ["tasks", "tasks"],
-            ["routines", "routines"],
-            ["vault", "vault"],
-            ["quest", "quest"],
-            ["tools", "tools"],
-            ["pet", petCtl.pet.name.toLowerCase()],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              role="tab"
-              id={`tab-${id}`}
-              aria-selected={tab === id}
-              aria-controls="tab-panel"
-              className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
-              onClick={() => changeTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+
 
         <div
           key={tab}
@@ -12778,6 +17434,9 @@ pet, wallet and themes are always included.
             setRoutines={setRoutines}
             tasks={tasks}
             setTasks={setTasks}
+            daily={daily}
+            inventory={inventory}
+            onQuestComplete={completeQuest}
             vaultHabits={vaultHabits}
             habits={habits}
             rewards={rewards}
@@ -12794,18 +17453,12 @@ pet, wallet and themes are always included.
             setDaily={setDaily}
             routines={routines}
             onReward={(c) => achCtl.addCoins(c)}
+            onComplete={completeQuest}
           />
         ) : tab === "routines" ? (
           <RoutinesView routines={routines} setRoutines={setRoutines} />
         ) : tab === "vault" ? (
-          <VaultView
-            vaultHabits={vaultHabits}
-            setVaultHabits={setVaultHabits}
-            projects={projects}
-            setProjects={setProjects}
-            notes={notes}
-            setNotes={setNotes}
-          />
+          <VaultView />
         ) : tab === "tools" ? (
           <ToolsView onReward={(c) => achCtl.addCoins(c)} />
         ) : tab === "quest" ? (
@@ -12837,6 +17490,33 @@ pet, wallet and themes are always included.
             }}
           />
         )}
+        </div>
+
+        <div className="tabs" role="tablist" aria-label="Sections">
+          {[
+            ["today", "today"],
+            ["tasks", "tasks"],
+            ["routines", "routines"],
+            ["vault", "vault"],
+            ["quest", "quest"],
+            ["tools", "tools"],
+            ["pet", petCtl.pet.name.toLowerCase()],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              id={`tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls="tab-panel"
+              aria-label={label}
+              title={label}
+              className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
+              onClick={() => changeTab(id)}
+            >
+              <TabIcon id={id} />
+              <span className="tab-label">{label}</span>
+            </button>
+          ))}
         </div>
       </div>
     </div>

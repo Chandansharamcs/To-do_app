@@ -55,6 +55,12 @@ const TABS = ["today", "tasks", "routines", "vault", "quest", "pip"];
 
 async function open(viewport = { width: 390, height: 844 }) {
   const ctx = await browser.newContext({ viewport });
+  // v46: the app pushes its schedule to the live notify worker on boot. When
+  // that worker answered `500 KV put() limit exceeded`, every test here that
+  // asserts "no console errors" went red for a reason that had nothing to do
+  // with the app. Tests do not get to depend on someone else's uptime.
+  await ctx.route("**/tasksh-notify.techcraftor.workers.dev/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -277,61 +283,9 @@ await test("the radar updates immediately when a habit is logged", async () => {
 
 // ------------------------------------------------------------------ notes ---
 
-await test("a note can be added and survives a reload", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "vault");
-  const input = page.locator('input[placeholder="new note..."]');
-  assert.equal(await input.count(), 1, "the notes composer is missing");
 
-  const label = `idea-${Date.now()}`;
-  await input.fill(label);
-  await input.press("Enter");
-  await page.waitForTimeout(400);
-  assert.ok((await page.locator("body").innerText()).includes(label), "note was not added");
 
-  await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
-  await gotoTab(page, "vault");
-  assert.ok((await page.locator("body").innerText()).includes(label), "note did not persist");
-  await ctx.close();
-});
 
-await test("an empty note is refused", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "vault");
-  const before = await page.locator(".note-card").count();
-  const input = page.locator('input[placeholder="new note..."]');
-  await input.fill("   ");
-  await input.press("Enter");
-  await page.waitForTimeout(350);
-  assert.equal(await page.locator(".note-card").count(), before, "whitespace became a note");
-  await ctx.close();
-});
-
-await test("a note opens inline for editing, with no modal", async () => {
-  // DESIGN.md forbids modals app-wide; editing happens in place
-  const { ctx, page } = await open();
-  await gotoTab(page, "vault");
-  await page.locator(".note-card").first().click();
-  await page.waitForTimeout(300);
-  assert.equal(await page.locator(".note-card.editing").count(), 1, "no inline editor opened");
-  assert.equal(await page.locator('[role="dialog"], .modal').count(), 0, "a modal appeared");
-  await ctx.close();
-});
-
-await test("editing a note saves the new text", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "vault");
-  await page.locator(".note-card").first().click();
-  await page.waitForTimeout(300);
-  const body = page.locator(".note-body-input");
-  const text = `edited-${Date.now()}`;
-  await body.fill(text);
-  await page.locator(".note-card.editing .note-btn.save").click();
-  await page.waitForTimeout(400);
-  assert.ok((await page.locator("body").innerText()).includes(text), "the edit did not save");
-  await ctx.close();
-});
 
 await test("notes are included in the export payload", async () => {
   // a backup that silently drops a section is worse than no backup
@@ -681,8 +635,308 @@ await test("the panel is scrollable on a phone", async () => {
   await ctx.close();
 });
 
+await test("the vault is backup, build and sound now", async () => {
+  // v44: habits, projects and notes were removed from this screen at the
+  // owner's request. The four note tests that used to live here went with
+  // the UI. The DATA is deliberately untouched -- these keys still ride in
+  // every export and cloud snapshot, so restoring the sections is a revert
+  // rather than a recovery.
+  // v47: SOUND joined them. It is here rather than behind the titlebar
+  // speaker because that button's one job is muting in a hurry.
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  const heads = await page.locator(".section-header").allInnerTexts();
+  assert.deepEqual(heads.map((h) => h.trim()), ["CLOUD-BACKUP", "APP-UPDATE", "SOUND"],
+    `vault shows ${heads.join(", ")}`);
+  assert.equal(await page.locator(".note-composer, .vault-habit-row").count(), 0,
+    "a removed section is still rendering");
+  // the storage keys must survive the UI removal
+  assert.ok(/STORAGE_KEY_NOTES/.test(APP), "the notes key was deleted, not just its screen");
+  assert.ok(/STORAGE_KEY_PROJECTS/.test(APP), "the projects key was deleted, not just its screen");
+  await ctx.close();
+});
+
+// ------------------------------------------------- v45: swipe to mark ----
+
+/** The seeded "Deep Work" habit is already completed today, so a swipe test
+ *  that grabs the first card is testing an already-ticked row. These get a
+ *  clean, deliberately untouched set instead. */
+const CLEAN_HABITS = JSON.stringify([
+  { id: 501, label: "Swipe Me", area: "work", sub: "deep", xp: 30, penalty: 10, history: [] },
+  { id: 502, label: "Other One", area: "self", sub: "creative", xp: 10, penalty: 5, history: [] },
+]);
+
+async function openQuests(viewport) {
+  const ctx = await browser.newContext(viewport ? { viewport } : { viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.addInitScript((h) => localStorage.setItem("tasksh.habits.v1", h), CLEAN_HABITS);
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  return { ctx, page, errors };
+}
+
+const swipeCard = (page) => page.locator(".quest-habit-card.good", { hasText: "Swipe Me" });
+
+/** A real finger: pointer events moved in steps so the axis lock sees the
+ *  gesture the way a phone delivers it. The card is scrolled into view first
+ *  -- boundingBox() happily returns coordinates below the fold, and a mouse
+ *  move to y=950 in an 844px viewport lands on nothing at all. */
+async function swipe(page, locator, dx) {
+  await locator.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  const box = await locator.boundingBox();
+  const y = box.y + box.height / 2;
+  const x0 = dx > 0 ? box.x + 18 : box.x + box.width - 18;
+  await page.mouse.move(x0, y);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(x0 + (dx * i) / 8, y, { steps: 1 });
+  await page.mouse.up();
+  await page.waitForTimeout(380);
+}
+
+await test("swiping a quest right completes it", async () => {
+  const { ctx, page, errors } = await openQuests();
+  const card = swipeCard(page);
+  assert.equal(await card.locator(".quest-check.done").count(), 0, "already done before the swipe");
+  await swipe(page, card, 120);
+  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 1, "swipe right did not complete");
+  assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
+  await ctx.close();
+});
+
+await test("swiping a quest left fails it", async () => {
+  const { ctx, page } = await openQuests();
+  await swipe(page, swipeCard(page), -120);
+  assert.equal(await swipeCard(page).locator(".quest-slip.on").count(), 1, "swipe left did not mark a slip");
+  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0, "a fail also completed it");
+  await ctx.close();
+});
+
+await test("a short drag is not a swipe", async () => {
+  // below the trigger distance the row springs back and nothing is recorded
+  const { ctx, page } = await openQuests();
+  await swipe(page, swipeCard(page), 30);
+  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0);
+  assert.equal(await swipeCard(page).locator(".quest-slip.on").count(), 0);
+  await ctx.close();
+});
+
+await test("a vertical drag scrolls instead of marking", async () => {
+  const { ctx, page } = await openQuests();
+  const card = swipeCard(page);
+  await card.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  const box = await card.boundingBox();
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(cx, cy - i * 18, { steps: 1 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0, "a scroll completed a quest");
+  await ctx.close();
+});
+
+await test("the buttons still work -- the swipe is an addition, not a replacement", async () => {
+  const { ctx, page } = await openQuests();
+  const card = swipeCard(page);
+  await card.scrollIntoViewIfNeeded();
+  await card.locator(".quest-check").click();
+  await page.waitForTimeout(300);
+  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 1);
+  await ctx.close();
+});
+
+// --------------------------------------------- v45: radar dot details ----
+
+await test("tapping a radar dot opens the exact points for that axis", async () => {
+  const { ctx, page, errors } = await open();
+  await gotoTab(page, "quest");
+  assert.equal(await page.locator(".axis-pop").count(), 0, "the popup was open before anything was tapped");
+  await page.locator(".radar-chart .radar-hit").first().click();
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator(".axis-pop").count(), 1, "no popup after tapping a dot");
+  assert.match(await page.locator(".axis-pop-xp").innerText(), /^\d+$/);
+  assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
+  await ctx.close();
+});
+
+await test("the popup number is the number the chart is plotting", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const dot = page.locator(".radar-chart .radar-hit").first();
+  const label = await dot.getAttribute("aria-label");          // "Deep Work: 120 XP"
+  const expected = label.match(/:\s*(-?\d+)\s*XP/)[1];
+  await dot.click();
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator(".axis-pop-xp").innerText(), expected);
+  await ctx.close();
+});
+
+await test("tapping the same dot again closes it", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const dot = page.locator(".radar-chart .radar-hit").first();
+  await dot.click();
+  await page.waitForTimeout(200);
+  await dot.click();
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator(".axis-pop").count(), 0);
+  await ctx.close();
+});
+
+await test("every axis has its own finger-sized tap region, even at zero", async () => {
+  // the bug this replaces: at low values every dot collapses to the centre,
+  // so round hit areas overlapped and tapping one axis opened another
+  const { ctx, page } = await open();
+  await page.evaluate(() => {
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([]));
+    localStorage.setItem("tasksh.radarmode.v1", "subs");
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  const hits = page.locator(".radar-chart .radar-hit");
+  const n = await hits.count();
+  assert.ok(n >= 4, `only ${n} tap regions`);
+  for (let i = 0; i < n; i++) {
+    const box = await hits.nth(i).boundingBox();
+    assert.ok(box.width >= 20 && box.height >= 20, `region ${i} is only ${box.width}x${box.height}`);
+    const label = await hits.nth(i).getAttribute("aria-label");
+    await hits.nth(i).click();
+    await page.waitForTimeout(160);
+    const opened = await page.locator(".axis-pop-name").innerText();
+    assert.equal(opened, label.split(":")[0], `tapping ${label} opened ${opened}`);
+    await page.locator(".axis-pop-close").click();
+    await page.waitForTimeout(100);
+  }
+  await ctx.close();
+});
+
+await test("no radar axis is ever plotted below zero", async () => {
+  // v44 floored the four areas but not the tags, and the chart defaults to
+  // tags -- which is the mode the original complaint was about.
+  const { ctx, page } = await open();
+  await page.evaluate(() => {
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([
+      { id: 1, label: "Screen Time", area: "health", sub: "mind", xp: 0, penalty: 40,
+        history: [{ d: "2026-01-01", t: "slip" }, { d: "2026-01-02", t: "slip" }] },
+    ]));
+    localStorage.setItem("tasksh.radarmode.v1", "subs");
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  const labels = await page.locator(".radar-chart .radar-hit").evaluateAll(
+    (els) => els.map((e) => e.getAttribute("aria-label")));
+  for (const l of labels) assert.ok(!/:\s*-/.test(l), `negative axis still plotted: ${l}`);
+  assert.equal(await page.locator(".radar-label-neg").count(), 0);
+  await ctx.close();
+});
+
+await test("a clamped axis admits what zero is hiding", async () => {
+  const { ctx, page } = await open();
+  await page.evaluate(() => {
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([
+      { id: 1, label: "Screen Time", area: "health", sub: "mind", xp: 0, penalty: 40,
+        history: [{ d: "2026-01-01", t: "slip" }, { d: "2026-01-02", t: "slip" }] },
+    ]));
+    localStorage.setItem("tasksh.radarmode.v1", "subs");
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  const dots = page.locator(".radar-chart .radar-hit");
+  const n = await dots.count();
+  const labels = [];
+  let found = false;
+  for (let i = 0; i < n; i++) {
+    const l = await dots.nth(i).getAttribute("aria-label");
+    labels.push(l);
+    if (!/Mind/i.test(l)) continue;
+    await dots.nth(i).click();
+    await page.waitForTimeout(260);
+    found = (await page.locator(".axis-pop-raw").count()) === 1;
+    break;
+  }
+  assert.ok(found, `the Mind axis did not report its hidden deficit. axes: ${labels.join(" | ")}`);
+  await ctx.close();
+});
+
+// ------------------------------------------ v45: per-quest calendar ----
+
+await test("every quest card has a history button", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const cards = await page.locator(".quest-habit-card.good").count();
+  assert.ok(cards > 0);
+  assert.equal(await page.locator(".quest-habit-card.good .hist-btn").count(), cards);
+  await ctx.close();
+});
+
+await test("the history popup shows a full month with completed and skipped days", async () => {
+  const { ctx, page, errors } = await open();
+  const today = await page.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()));
+  const [y, m] = today.split("-");
+  await page.evaluate(({ y, m }) => {
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([
+      { id: 1, label: "Read", area: "self", xp: 10, penalty: 5, history: [
+        { d: `${y}-${m}-01`, t: "done" },
+        { d: `${y}-${m}-02`, t: "done" },
+        { d: `${y}-${m}-03`, t: "slip" },
+      ] },
+    ]));
+  }, { y, m });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  await page.locator(".quest-habit-card.good .hist-btn").first().click();
+  await page.waitForTimeout(300);
+
+  assert.equal(await page.locator(".qh-sheet").count(), 1);
+  assert.equal(await page.locator(".qh-cell").count(), 42, "the grid is not six rows of seven");
+  assert.equal(await page.locator(".qh-cell.done").count(), 2);
+  assert.equal(await page.locator(".qh-cell.slip").count(), 1);
+  assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
+  await ctx.close();
+});
+
+await test("the calendar steps back a month and refuses to step into the future", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  await page.locator(".quest-habit-card.good .hist-btn").first().click();
+  await page.waitForTimeout(300);
+  const started = await page.locator(".qh-month").innerText();
+  assert.ok(await page.locator(".qh-nav button").last().isDisabled(), "next month was offered from today");
+
+  await page.locator(".qh-nav button").first().click();
+  await page.waitForTimeout(250);
+  assert.notEqual(await page.locator(".qh-month").innerText(), started);
+  assert.ok(!(await page.locator(".qh-nav button").last().isDisabled()), "cannot get back to this month");
+  await ctx.close();
+});
+
+await test("the history popup closes and does not block the tab bar", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  await page.locator(".quest-habit-card.good .hist-btn").first().click();
+  await page.waitForTimeout(300);
+  await page.locator(".sheet-close").click();
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator(".qh-sheet").count(), 0);
+  await gotoTab(page, "today");
+  assert.ok((await page.locator("body").innerText()).length > 40);
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 
 console.log(results.join("\n"));
+
+
 console.log(`  regress.spec.mjs — ${passed} passed`);

@@ -87,9 +87,24 @@ const opaqueFraction = (file) => {
 };
 
 let passed = 0;
+// An async test handed to a harness that does not await it passes no matter
+// what it asserts -- the rejection lands as an unhandled promise and the
+// counter has already been incremented. Found exactly that way in v46, with
+// six sync tests reporting green against code that had not run yet.
+const pending = [];
+const fail = (name, err) => {
+  console.error(`\n  ✗ ${name}\n    ${err.message}\n`);
+  process.exitCode = 1;
+};
 const test = (name, fn) => {
-  try { fn(); passed++; }
-  catch (err) { console.error(`\n  ✗ ${name}\n    ${err.message}\n`); process.exitCode = 1; }
+  let out;
+  try { out = fn(); }
+  catch (err) { fail(name, err); return; }
+  if (out && typeof out.then === "function") {
+    pending.push(out.then(() => { passed++; }, (err) => fail(name, err)));
+    return;
+  }
+  passed++;
 };
 
 // ---------------------------------------------------------------- badge --
@@ -143,4 +158,124 @@ test("the last routine of the day omits a dangling 'then'", () => {
   assert.ok(/if \(after\) bits\.push/.test(WORKER), "'then ...' is not conditional");
 });
 
+// ---- KV write budget (v46) -------------------------------------------------
+//
+// Cloudflare's free KV tier allows 1,000 put()s a day across the whole
+// worker. The schedule sync used to spend one on every app open and every
+// routine tick, whether or not anything had changed, and the measured result
+// was `POST /sync` returning
+//   500 {"error":"KV put() limit exceeded for the day."}
+// which also takes cloud backup down with it, because the quota is per
+// account and not per route.
+
+const APP = readFileSync(join(here, "app.jsx"), "utf8");
+
+function syncModule() {
+  const a = APP.indexOf("const STORAGE_KEY_SYNC_SENT");
+  const b = APP.indexOf("\n\n", APP.indexOf("function syncPayloadUnchanged"));
+  const src = APP.slice(a, b);
+  const store = {};
+  const stub = `
+    const localStorage = {
+      getItem: (k) => (k in __store ? __store[k] : null),
+      setItem: (k, v) => { __store[k] = String(v); },
+    };
+    const getDeviceId = () => "dev-1";
+    const NOTIFY_WORKER_URL = "https://worker.test";
+  `;
+  const calls = [];
+  const fetchStub = async (url, opts) => {
+    calls.push({ url, body: opts.body });
+    return { ok: true, status: 200 };
+  };
+  const mod = new Function(
+    "__store", "fetch",
+    `${stub}\n${src}\nreturn { syncRoutinesToWorker, syncPayloadUnchanged, STORAGE_KEY_SYNC_SENT };`
+  )(store, fetchStub);
+  return { ...mod, calls, store };
+}
+
+test("an unchanged schedule is not pushed a second time", async () => {
+  const m = syncModule();
+  const routines = [{ id: 1, time: "07:00", label: "Gym", duration: 60 }];
+  await m.syncRoutinesToWorker(routines);
+  assert.equal(m.calls.length, 1, "the first push must happen");
+  await m.syncRoutinesToWorker(routines);
+  await m.syncRoutinesToWorker(routines);
+  assert.equal(m.calls.length, 1, "an identical schedule spent another KV write");
+});
+
+test("a changed schedule is pushed", async () => {
+  const m = syncModule();
+  await m.syncRoutinesToWorker([{ id: 1, time: "07:00", label: "Gym", duration: 60 }]);
+  await m.syncRoutinesToWorker([{ id: 1, time: "07:30", label: "Gym", duration: 60 }]);
+  assert.equal(m.calls.length, 2, "a real edit must reach the worker");
+});
+
+test("only the four fields the widget needs go up", async () => {
+  const m = syncModule();
+  await m.syncRoutinesToWorker([
+    { id: 1, time: "07:00", label: "Gym", duration: 60, history: ["2026-10-01"], secret: "x" },
+  ]);
+  const sent = JSON.parse(m.calls[0].body);
+  assert.deepEqual(Object.keys(sent.routines[0]).sort(), ["duration", "id", "label", "time"]);
+});
+
+test("a tick that does not change the schedule costs nothing", async () => {
+  // marking a routine complete replaces the array and changes `history`,
+  // which is not in the payload -- so it must not reach the worker
+  const m = syncModule();
+  const before = [{ id: 1, time: "07:00", label: "Gym", duration: 60, history: [] }];
+  const after = [{ id: 1, time: "07:00", label: "Gym", duration: 60, history: ["2026-10-18"] }];
+  await m.syncRoutinesToWorker(before);
+  await m.syncRoutinesToWorker(after);
+  assert.equal(m.calls.length, 1, "ticking a routine spent a KV write");
+});
+
+test("force pushes even when nothing changed", async () => {
+  // turning notifications on subscribes a fresh endpoint that has no
+  // schedule against it yet, so that path must not be deduped
+  const m = syncModule();
+  const routines = [{ id: 1, time: "07:00", label: "Gym", duration: 60 }];
+  await m.syncRoutinesToWorker(routines);
+  await m.syncRoutinesToWorker(routines, { force: true });
+  assert.equal(m.calls.length, 2);
+});
+
+test("a failed push is retried rather than marked sent", async () => {
+  const store = {};
+  const calls = [];
+  const a = APP.indexOf("const STORAGE_KEY_SYNC_SENT");
+  const b = APP.indexOf("\n\n", APP.indexOf("function syncPayloadUnchanged"));
+  const mod = new Function("__store", "fetch", `
+    const localStorage = {
+      getItem: (k) => (k in __store ? __store[k] : null),
+      setItem: (k, v) => { __store[k] = String(v); },
+    };
+    const getDeviceId = () => "dev-1";
+    const NOTIFY_WORKER_URL = "https://worker.test";
+    ${APP.slice(a, b)}
+    return { syncRoutinesToWorker };
+  `)(store, async (url, opts) => { calls.push(opts.body); return { ok: false, status: 500 }; });
+
+  const routines = [{ id: 1, time: "07:00", label: "Gym", duration: 60 }];
+  await mod.syncRoutinesToWorker(routines);
+  await mod.syncRoutinesToWorker(routines);
+  assert.equal(calls.length, 2, "a 500 was treated as success and never retried");
+});
+
+test("storage being unavailable means send, not skip", () => {
+  const a = APP.indexOf("const STORAGE_KEY_SYNC_SENT");
+  const b = APP.indexOf("\n\n", APP.indexOf("function syncPayloadUnchanged"));
+  const mod = new Function(`
+    const localStorage = { getItem() { throw new Error("denied"); }, setItem() {} };
+    const getDeviceId = () => "d";
+    const NOTIFY_WORKER_URL = "x";
+    ${APP.slice(a, b)}
+    return { syncPayloadUnchanged };
+  `)();
+  assert.equal(mod.syncPayloadUnchanged("anything"), false);
+});
+
+await Promise.all(pending);
 console.log(`  notify.test.mjs — ${passed} passed`);

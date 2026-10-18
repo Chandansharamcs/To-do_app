@@ -79,6 +79,15 @@ async function phone(seed = true) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const cloud = { store: new Map(), posts: [] };
 
+  // /backup is faked below, but the app also pushes its schedule to /sync on
+  // boot. That call was reaching the real worker, and the day it answered
+  // `500 KV put() limit exceeded` this suite's console-error assertion went
+  // red for reasons that had nothing to do with cloud backup.
+  await ctx.route("**/sync", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+  await ctx.route("**/timer", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+
   await ctx.route("**/backup**", async (route) => {
     const req = route.request();
     if (req.method() === "POST") {
