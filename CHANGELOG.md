@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v51`** | 2026-10-19 | The coin balance was invisible on both screens that move it, and Today gave rewards away free |
 | **`v50`** | 2026-10-19 | The three rngdle screens the reveal pass did not touch |
 | **`v49`** | 2026-10-18 | RNGdle's real reveal choreography, and rarity you can see |
 | **`v48`** | 2026-10-18 | Named spending that accumulates, and a year view |
@@ -220,6 +221,51 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-19 — `tasksh-v51`**
+
+Reported as "the points of daily task does not add to my current points".
+Completing a quest was paying correctly the whole time — the problem was that
+no screen he was looking at showed the number it paid into.
+
+Three currencies live here and they have been refactored twice:
+**XP** (habits only, drives level and pet), **coins ◉** (daily quests,
+pomodoro, achievements, level-ups; spent on rewards) and **EP** (rngdle's
+own, sealed off). Every bug below was one screen disagreeing with another
+about which of the three it was holding.
+
+- **Fixed: the Today tab showed XP where the spendable balance belongs.**
+  Beside "REWARDS YOU CAN AFFORD" it printed `computeTotalXP(habits)` — a
+  figure a daily quest *never* moves. So the sequence was: complete a quest,
+  coins go up correctly, and the number on screen sits still. The section
+  filtered by coins and displayed XP, which is the worst of both. Shows
+  `◉ coins` now.
+
+- **Fixed: rewards claimed from Today were free.** Measured before the fix:
+  the same 100-coin reward cost `520 → 520` from Today and `500 → 400` from
+  Quest. `TodayView.claimReward` neither checked the balance nor called
+  `spend()`; `QuestView.claimReward` did both. Two implementations of one
+  rule, and only one of them knew the rule. Today now takes the money and
+  refuses when you cannot afford it.
+
+- **Fixed: the quest board showed no balance at all.** The one screen where
+  coins are *earned* had no running total, so completing a quest moved a
+  number that was only visible one tab away. There is a live counter in the
+  header, and a test asserts it changes when a quest is ticked.
+
+- **Reward costs are labelled ◉, not XP.** They have cost coins since v41;
+  the Today tab never got the memo.
+
+- **Checked and left alone**, because they were already right: daily quests
+  pay 10/50/100 by difficulty, pomodoro pays, level-ups pay, achievements
+  pay, coins cannot go negative, an unaffordable reward is not offered, and
+  no amount of rngdle rolling can touch the coin balance.
+
+- **Tests: 460 unit + 149 browser** (was 460 + 142). Seven new economy tests
+  in `regress.spec.mjs`, including one that claims the same reward from both
+  screens and asserts the two prices match — the shape of bug that started
+  this. Three mutations: Today free again, Today showing XP again, the board
+  balance removed again. All three went red.
 
 **2026-10-19 — `tasksh-v50`**
 

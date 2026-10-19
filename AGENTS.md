@@ -154,6 +154,25 @@ reason and the user agrees.
 
 These have each cost real debugging time. Check them *before* going deep.
 
+### Two screens, one rule, one of them wrong (v51)
+
+`claimReward` existed twice: QuestView checked the balance and spent the
+coins, TodayView did neither, so the same reward cost 100 coins on one tab
+and nothing on the other. The same shape produced the v45 double-pay risk on
+quests. **If two screens can perform the same economic action, the action
+lives in one function passed down from the root** -- not copied. A test that
+performs it from both places and compares the cost is cheap, and would have
+caught both.
+
+### Three currencies, and the screens disagree about which is which (v51)
+
+XP is habits-only and drives levels and the pet. Coins come from quests,
+pomodoro, achievements and level-ups, and buy rewards. EP is rngdle's and is
+sealed off from both. The Today tab filtered rewards by coins while
+displaying XP beside them, which is how "completing a quest does nothing"
+gets reported about an economy that is working correctly. When you touch a
+balance, check what every screen showing a total actually reads from.
+
 ### A mutation that does not apply is not a passing test (v47)
 
 Mutation testing is only evidence if the mutation landed. Two "green"

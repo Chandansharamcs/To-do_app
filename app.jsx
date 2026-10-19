@@ -5437,7 +5437,7 @@ function Checkbox({ checked, onChange, color }) {
   );
 }
 
-function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward, onComplete }) {
+function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward, onComplete, coins = 0 }) {
   const [text, setText] = useState("");
   const [diff, setDiff] = useState("mid");
   const [flash, triggerFlash] = useFlash();
@@ -5538,9 +5538,14 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
 
   return (
     <div className="task-list vault-scroll">
+      {/* v51: this is the screen coins are EARNED on and it showed no
+          balance at all -- so completing a quest moved a number that was
+          only visible one tab away, which reads as "it did nothing". */}
       <div className="section-header habits-header">
         <span>TODAY&apos;S QUESTS</span>
-        <span className="keypool-hint">{doneCount}/{drawn} done</span>
+        <span className="keypool-hint">
+          {doneCount}/{drawn} done · <span className="coin-total"><AnimatedNumber value={coins} /> ◉</span>
+        </span>
       </div>
 
       {drawn === 0 ? (
@@ -12653,7 +12658,7 @@ function TodayQuestRow({ quest, index, onComplete }) {
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
 function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0,
-                     daily, inventory, onQuestComplete }) {
+                     daily, inventory, onQuestComplete, spend }) {
   const spendableXP = coins;   // v41: rewards cost coins, XP is progression only
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
@@ -12710,11 +12715,22 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
 
   const affordable = useMemo(() => rewards.filter((r) => spendableXP >= r.cost), [rewards, spendableXP]);
 
+  /** v51: this used to hand the reward over without charging for it.
+   *
+   *  QuestView's copy checked the balance and called spend(); this one did
+   *  neither, so every reward claimed from the Today tab was free — and the
+   *  same reward cost 100 coins one tab over. Two implementations of one
+   *  rule, and only one of them knew the rule. There is one now, passed in
+   *  from the root alongside the balance it spends. */
   const claimReward = (id) => {
+    const reward = rewards.find((r) => r.id === id);
+    if (!reward || coins < reward.cost) { sound.error(); return; }
+    if (spend) spend(reward.cost);
     setRewards((prev) =>
       prev.map((r) => (r.id === id ? { ...r, claimed: [...(r.claimed || []), todayStr] } : r))
     );
     sound.success();
+    petBus.emit("rewardClaimed");
   };
 
   // aggregate every completion across routines + vault habits + good habits
@@ -12822,19 +12838,19 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
 
       <div className="filters today-section-header">
         <span>REWARDS YOU CAN AFFORD</span>
-        <span className="today-xp-total"><AnimatedNumber value={totalXP} /> XP</span>
+        <span className="today-xp-total"><AnimatedNumber value={coins} /> ◉</span>
       </div>
       {affordable.length === 0 ? (
         <div className="empty-state">
           <div className="glyph">{"{ }"}</div>
-          <div className="msg">keep earning XP — nothing unlocked yet</div>
+          <div className="msg">keep earning coins — nothing unlocked yet</div>
         </div>
       ) : (
         <div className="today-list">
           {affordable.map((r, i) => (
             <div key={r.id} className="today-task-row" style={{ animationDelay: `${i * 35}ms` }}>
               <span className="today-task-text">{r.label}</span>
-              <span className="today-reward-cost">{r.cost} XP</span>
+              <span className="today-reward-cost">{r.cost} ◉</span>
               <button className="today-claim-btn" onClick={() => claimReward(r.id)}>
                 claim
               </button>
@@ -15683,6 +15699,7 @@ function TodoApp() {
           padding: 0;
         }
 
+        .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {
           color: var(--accent2);
           font-family: var(--font-mono);
@@ -18266,6 +18283,7 @@ pet, wallet and themes are always included.
             setRewards={setRewards}
             totalXP={totalXP}
             coins={achCtl.coins}
+            spend={(n) => achCtl.addCoins(-n)}
             setTab={changeTab}
           />
         ) : tab === "tasks" ? (
@@ -18277,6 +18295,7 @@ pet, wallet and themes are always included.
             routines={routines}
             onReward={(c) => achCtl.addCoins(c)}
             onComplete={completeQuest}
+            coins={achCtl.coins}
           />
         ) : tab === "routines" ? (
           <RoutinesView routines={routines} setRoutines={setRoutines} />

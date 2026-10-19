@@ -932,6 +932,149 @@ await test("the history popup closes and does not block the tab bar", async () =
   assert.ok((await page.locator("body").innerText()).length > 40);
   await ctx.close();
 });
+// ------------------------------------------------ v51: the economy ----
+//
+// Three currencies live in this app and they have been refactored twice:
+//   XP     progression only, earned from quest habits, drives level + pet
+//   coins  the spendable balance, earned from daily quests, pomodoro,
+//          achievements and level-ups, spent on rewards
+//   EP     rngdle's own wallet, deliberately sealed off from both
+//
+// Every bug below was a place where one screen disagreed with another about
+// which of those three it was dealing with.
+
+const ECON_SEED = {
+  "tasksh.inventory.v1": JSON.stringify([
+    { id: 901, text: "pullups", diff: "hard" },
+    { id: 902, text: "read", diff: "mid" },
+    { id: 903, text: "wash up", diff: "easy" },
+  ]),
+  "tasksh.wallet.v1": JSON.stringify({ coins: 500 }),
+  "tasksh.rewards.v1": JSON.stringify([{ id: 1, label: "Watch a movie", cost: 100, claimed: [] }]),
+};
+
+async function econ() {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctx.route("**/tasksh-notify.techcraftor.workers.dev/**", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  const page = await ctx.newPage();
+  await page.addInitScript((seed) => {
+    for (const [k, v] of Object.entries(seed)) localStorage.setItem(k, v);
+  }, ECON_SEED);
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const coins = () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.wallet.v1") || '{"coins":0}').coins);
+  return { ctx, page, coins };
+}
+
+await test("completing a daily quest pays coins", async () => {
+  const { ctx, page, coins } = await econ();
+  await gotoTab(page, "tasks");
+  const before = await coins();
+  await page.locator(".daily-card").first().click();
+  await page.waitForTimeout(400);
+  assert.ok(await coins() > before, "a completed quest paid nothing");
+  await ctx.close();
+});
+
+await test("the tab you earn coins on shows the balance", async () => {
+  // it showed none at all, so completing a quest moved a number that was
+  // only visible one tab away -- which reads as "it did nothing"
+  const { ctx, page } = await econ();
+  await gotoTab(page, "tasks");
+  assert.equal(await page.locator(".coin-total").count(), 1, "no balance on the quest board");
+  const before = await page.locator(".coin-total").innerText();
+  await page.locator(".daily-card").first().click();
+  await page.waitForTimeout(600);
+  assert.notEqual(await page.locator(".coin-total").innerText(), before,
+    "the balance on screen did not move when a quest was completed");
+  await ctx.close();
+});
+
+await test("Today prices rewards in coins, not XP", async () => {
+  // rewards have cost coins since v41; this screen still said XP, and the
+  // balance beside it was the habit XP total, which a daily quest never moves
+  const { ctx, page } = await econ();
+  await gotoTab(page, "today");
+  const txt = await page.locator(".today-view").innerText();
+  assert.ok(/REWARDS YOU CAN AFFORD/.test(txt));
+  assert.ok(!/\d+\s*XP/.test(txt.split("REWARDS YOU CAN AFFORD")[1] || ""),
+    "the reward section still talks in XP");
+  assert.match(await page.locator(".today-xp-total").innerText(), /◉/);
+  assert.match(await page.locator(".today-reward-cost").first().innerText(), /◉/);
+  await ctx.close();
+});
+
+await test("claiming a reward from Today costs the same as claiming it from Quest", async () => {
+  // it was free from Today and 100 coins from Quest: two implementations of
+  // one rule, and only one of them knew the rule
+  const a = await econ();
+  await gotoTab(a.page, "today");
+  const beforeA = await a.coins();
+  await a.page.locator(".today-claim-btn").first().click();
+  await a.page.waitForTimeout(400);
+  const spentFromToday = beforeA - (await a.coins());
+  await a.ctx.close();
+
+  const b = await econ();
+  await gotoTab(b.page, "quest");
+  const beforeB = await b.coins();
+  await b.page.locator(".reward-claim").first().click();
+  await b.page.waitForTimeout(400);
+  const spentFromQuest = beforeB - (await b.coins());
+  await b.ctx.close();
+
+  assert.equal(spentFromToday, 100, `Today charged ${spentFromToday}`);
+  assert.equal(spentFromToday, spentFromQuest, "the two screens charge different prices");
+});
+
+await test("a reward you cannot afford is not claimable from Today", async () => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctx.route("**/tasksh-notify.techcraftor.workers.dev/**", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    localStorage.setItem("tasksh.wallet.v1", JSON.stringify({ coins: 5 }));
+    localStorage.setItem("tasksh.rewards.v1", JSON.stringify([{ id: 1, label: "Big thing", cost: 1000, claimed: [] }]));
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "today");
+  assert.ok(!/Big thing/.test(await page.locator(".today-view").innerText()),
+    "an unaffordable reward was offered");
+  await ctx.close();
+});
+
+await test("coins can never go negative", async () => {
+  const { ctx, page, coins } = await econ();
+  await page.evaluate(() => localStorage.setItem("tasksh.wallet.v1", JSON.stringify({ coins: 100 })));
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  for (let i = 0; i < 3; i++) {
+    const btn = page.locator(".reward-claim").first();
+    if (await btn.count() && !(await btn.isDisabled())) { await btn.click(); await page.waitForTimeout(300); }
+  }
+  assert.ok(await coins() >= 0, `balance went to ${await coins()}`);
+  await ctx.close();
+});
+
+await test("rngdle EP cannot reach the coin balance", async () => {
+  // the two economies are deliberately sealed: no amount of rolling may buy
+  // a real-world reward
+  const { ctx, page, coins } = await econ();
+  const before = await coins();
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".tool-card", { hasText: "rngdle" }).click();
+  await page.waitForTimeout(350);
+  await page.getByRole("button", { name: /GENERATE|ROLL AGAIN/ }).click();
+  await page.waitForTimeout(7400);
+  assert.equal(await coins(), before, "a roll moved the coin balance");
+  await ctx.close();
+});
+
 
 await browser.close();
 server.close();
