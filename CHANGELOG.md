@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v50`** | 2026-10-19 | The three rngdle screens the reveal pass did not touch |
 | **`v49`** | 2026-10-18 | RNGdle's real reveal choreography, and rarity you can see |
 | **`v48`** | 2026-10-18 | Named spending that accumulates, and a year view |
 | **`v47`** | 2026-10-18 | Sound: ambient beds, a richer palette, and a 10s ring you can silence |
@@ -219,6 +220,34 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-19 — `tasksh-v50`**
+
+v49 fixed the reveal and left everything around it alone. These are the
+screens you actually sit on between rolls.
+
+- **The idle box is the machine, idling.** Opening the tool used to show a
+  small infinity glyph and two lines of prose in a large empty rectangle —
+  dead, and the first thing you see. It is now the same seven slots churning,
+  waiting to be stopped. One interval, which pauses when the tab is hidden
+  and does not start at all under `prefers-reduced-motion`.
+
+- **The collection reads as a collection.** Locked cells keep their **tier
+  colour** at low opacity instead of going flat grey. Rendered grey the grid
+  looked broken rather than unfilled, and you could not see that the empty
+  rows are the rare ones — which is the only interesting thing a collection
+  screen has to say. Owned cells get an inset glow in their tier, and six
+  per-tier progress bars sit under the filters so "2 of 36 epic" is a shape
+  rather than a number you have to go looking for.
+
+- **The shop says what you can afford.** Items within reach take an accent
+  left border and an accent name, and each shelf's blurb carries a count.
+  Previously every card looked identical and you had to read nine prices
+  against a number at the top of the screen.
+
+- **Tests: 460 unit + 142 browser**, unchanged and still green — this was a
+  presentation pass, and none of it changed a rule. Worth stating plainly
+  rather than claiming credit for coverage I did not add.
 
 **2026-10-18 — `tasksh-v49`**
 

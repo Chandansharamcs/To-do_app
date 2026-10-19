@@ -10761,6 +10761,36 @@ function RngiBar({ frac, className = "" }) {
   );
 }
 
+/** The box before you have rolled anything.
+ *
+ *  It used to be a small infinity glyph and two lines of prose in a large
+ *  empty rectangle — the first thing you see on opening the tool, and
+ *  completely dead. Now it is the machine, idling: the same seven slots,
+ *  churning, waiting to be stopped. Costs one interval and stops itself when
+ *  the tab is hidden or the user has asked for less motion.
+ */
+function RngiIdleDigits({ aura }) {
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const glyphs = aura === "scramble" ? RNGI_SCRAMBLE_WILD : RNGI_SCRAMBLE_GLYPHS;
+  const [row, setRow] = useState(() => Array(7).fill("0"));
+  useEffect(() => {
+    if (reduced) return;
+    let alive = true;
+    const spin = () => setRow(Array.from({ length: 7 }, () => glyphs[Math.floor(Math.random() * glyphs.length)]));
+    const t = setInterval(() => { if (!document.hidden && alive) spin(); }, 110);
+    spin();
+    return () => { alive = false; clearInterval(t); };
+  }, [glyphs, reduced]);
+  return (
+    <div className="rngi-idle">
+      <div className="rngi-digits idling" aria-hidden="true">
+        {row.map((c, i) => <span key={i} className="rngi-digit scrambling">{c}</span>)}
+      </div>
+      <div className="rngi-idle-msg">0 to 1,000,000 · no limit, no seed, no picking</div>
+    </div>
+  );
+}
+
 /** A clock that only wakes React at the moments something changes.
  *
  *  The reveal has about 23 of them across its whole length. Re-rendering the
@@ -10997,10 +11027,7 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
             )}
           </>
         ) : (
-          <div className="rngi-idle">
-            <div className="rngi-idle-glyph">∞</div>
-            <div className="rngi-idle-msg">one number, 0 to 1,000,000.<br />no limit, no seed, no picking.</div>
-          </div>
+          <RngiIdleDigits aura={state.aura} />
         )}
       </div>
 
@@ -11191,7 +11218,13 @@ function RngiShop({ state, setState }) {
           </button>
         ))}
       </div>
-      <div className="rngi-shelf-blurb">{(RNGI_SHELVES.find((x) => x.id === shelf) || {}).blurb}</div>
+      <div className="rngi-shelf-blurb">
+        {(RNGI_SHELVES.find((x) => x.id === shelf) || {}).blurb}
+        {(() => {
+          const can = items.filter((i) => !i.owned && !i.locked && !i.free && state.ep >= i.price).length;
+          return can ? <span className="rngi-afford-count"> · {can} you can afford</span> : null;
+        })()}
+      </div>
       {shelf === "skills" && (
         <div className="rngi-shelf-blurb dim">
           three on sale at a time · the stall rotates every 5 minutes
@@ -11203,7 +11236,8 @@ function RngiShop({ state, setState }) {
         {items.map((it) => {
           const affordable = state.ep >= it.price;
           return (
-            <div key={it.id} className={`rngi-item ${it.owned ? "owned" : ""} ${it.locked ? "locked" : ""}`}>
+            <div key={it.id}
+                 className={`rngi-item ${it.owned ? "owned" : ""} ${it.locked ? "locked" : ""} ${!it.owned && !it.locked && affordable ? "afford" : ""}`}>
               <div className="rngi-item-top">
                 <span className="rngi-item-name">{it.name}</span>
                 {it.owned
@@ -11267,14 +11301,25 @@ function RngiBadges({ state }) {
           );
         })}
       </div>
+      <div className="rngi-tierbars">
+        {RNG_TIER_ORDER.map((t) => {
+          const all = RNGI_ALL_BADGES.filter((b) => b.tier === t);
+          const have = all.filter((b) => seen[b.id]).length;
+          return (
+            <div key={t} className={`rngi-tierbar ${RNG_TIER_CLASS[t]}`} title={`${RNG_TIER_NAMES[t]}: ${have}/${all.length}`}>
+              <span style={{ width: `${(have / Math.max(1, all.length)) * 100}%` }} />
+            </div>
+          );
+        })}
+      </div>
       <div className="rngi-grid">
         {list.map((b) => {
           const n = seen[b.id] || 0;
           return (
             <div key={b.id} className={`rngi-cell ${RNG_TIER_CLASS[b.tier]} ${n ? "got" : "locked"}`}
                  title={`${b.label} — ${b.desc} (${rngGroup(b.count)} of 1,000,001)`}>
-              <span className="rngi-cell-ico">{n ? b.emoji : "·"}</span>
-              <span className="rngi-cell-name">{n ? b.label : "???"}</span>
+              <span className="rngi-cell-ico">{n ? b.emoji : "◌"}</span>
+              <span className="rngi-cell-name">{n ? b.label : "locked"}</span>
               {n > 1 && <span className="rngi-cell-n">×{n > 999 ? "999+" : n}</span>}
             </div>
           );
@@ -16607,8 +16652,8 @@ function TodoApp() {
         .rngi-draws, .rngi-drop { margin-top: 6px; font-size: 8.5px; color: var(--muted); }
         .rngi-drop { color: var(--accent); }
 
-        .rngi-idle-glyph { font-size: 34px; color: var(--accent); line-height: 1; }
-        .rngi-idle-msg { margin-top: 10px; font-size: 9.5px; color: var(--muted); line-height: 1.7; }
+        .rngi-digits.idling .rngi-digit { opacity: 0.3; font-size: 30px; }
+        .rngi-idle-msg { margin-top: 12px; font-size: 9px; color: var(--muted); line-height: 1.7; }
 
         .band-trash    { color: #6B7280; }
         .band-common   { color: #9AA4B2; }
@@ -16796,6 +16841,9 @@ function TodoApp() {
           border: var(--border-w) solid var(--border);
         }
         .rngi-item.owned { border-left: 2px solid var(--accent); }
+        .rngi-item.afford { border-left: 2px solid var(--accent); }
+        .rngi-item.afford .rngi-item-name { color: var(--accent); }
+        .rngi-afford-count { color: var(--accent); }
         .rngi-item.locked { opacity: 0.45; }
         .rngi-item-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
         .rngi-item-name { font-size: 11px; color: var(--text); }
@@ -16815,6 +16863,12 @@ function TodoApp() {
           font-family: var(--font-mono); font-size: 8px; color: var(--muted);
         }
         .rngi-filters button.on { border-color: currentColor; }
+        .rngi-tierbars { display: flex; gap: 3px; margin: 0 0 9px; }
+        .rngi-tierbar { flex: 1; height: 3px; border-radius: 2px; overflow: hidden; background: var(--track); }
+        .rngi-tierbar > span {
+          display: block; height: 100%; background: currentColor;
+          transition: width 600ms cubic-bezier(0.22,1,0.36,1);
+        }
         .rngi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
         .rngi-cell {
           display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -16828,13 +16882,19 @@ function TodoApp() {
            the grid look broken rather than unfinished, and --track is too
            dark to be a visible edge, so the border stays --border and only
            turns dashed. */
+        /* A locked cell keeps its TIER colour at low opacity. Rendered flat
+           grey the grid read as broken rather than unfilled, and you could
+           not see that the rare rows are the empty ones. */
         .rngi-cell.locked {
-          opacity: 0.75; color: var(--muted);
-          border-style: dashed;
+          opacity: 0.5; border-style: dashed; border-color: currentColor;
+          background: rgba(255,255,255,0.012);
         }
-        .rngi-cell.locked .rngi-cell-ico { opacity: 0.4; }
-        .rngi-cell.locked .rngi-cell-name { opacity: 0.6; }
-        .rngi-cell.got { border-color: currentColor; }
+        .rngi-cell.locked .rngi-cell-ico { opacity: 0.4; font-size: 11px; }
+        .rngi-cell.locked .rngi-cell-name { opacity: 0.6; letter-spacing: 0.04em; }
+        .rngi-cell.got {
+          border-color: currentColor;
+          box-shadow: inset 0 0 14px -8px currentColor;
+        }
         .rngi-cell-ico { font-size: 15px; line-height: 1; }
         .rngi-cell-name {
           font-size: 7.5px; text-align: center; line-height: 1.3; color: var(--muted);
