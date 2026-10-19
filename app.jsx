@@ -10601,6 +10601,98 @@ function rngiDuration(ms) {
   return s >= 10 ? `${Math.round(s)}s` : `${s}s`;
 }
 
+// ---- the reveal choreography (v49) -----------------------------------------
+//
+// Ported from RNGdle Infinite's roll-timeline.js, which in turn implements the
+// observable timing spec from the rngdle-ep-calculator README. The shape is
+// theirs; only the total duration differs, because this build's clock runs
+// 15x faster.
+//
+// The reference choreography is: digits land one at a time and ACCELERATING
+// (the gap between them grows as the square of how far through you are, so
+// the last digits feel like they are being dragged out), then the number
+// collapses, then badges arrive in groups, then the EP total, then the
+// rarity band slams in, then the stats. Every stage is then scaled to fit
+// whatever reveal length the player has bought.
+//
+// Pure and exported so the pacing can be asserted instead of eyeballed.
+
+const RNGI_SCRAMBLE_MS = 100;
+const RNGI_SETTLE_MS = 400;
+const RNGI_PULSE_MS = 700;
+
+function rngiReferenceTimeline(digitCount, badgeGroupCount) {
+  const slots = Math.max(6, digitCount);
+  const digitTimes = [2000];
+  for (let i = 1; i < slots; i++) {
+    digitTimes.push(digitTimes[i - 1] + 1000 + 1000 * Math.pow((i - 1) / (slots - 1), 2));
+  }
+  const collapse = digitTimes[digitTimes.length - 1];
+  let time = collapse + 1000;
+  const badgeTimes = [];
+  const groups = Math.max(1, badgeGroupCount);
+  for (let i = 0; i < groups; i++) {
+    badgeTimes.push(time);
+    if (i < groups - 1) time += 500 + 1000 * Math.pow(i / (groups - 1), 1.5);
+  }
+  const summary = time + 1500;
+  const rarity = summary + 1000;
+  const stats = rarity + 250;
+  const end = stats + 1000;
+  return { slots, digitTimes, collapse, badgeTimes, summary, rarity, stats, end };
+}
+
+/** The reference choreography, squeezed into the duration actually bought. */
+function rngiTimeline(digitCount, badgeGroupCount, duration) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : RNGI_BASE_REVEAL_MS;
+  const ref = rngiReferenceTimeline(digitCount, badgeGroupCount);
+  const scale = total / ref.end;
+  const out = {};
+  for (const [k, v] of Object.entries(ref)) {
+    out[k] = k === "slots" ? v : Array.isArray(v) ? v.map((t) => t * scale) : v * scale;
+  }
+  return {
+    ...out,
+    end: total,
+    scale,
+    settleMS: RNGI_SETTLE_MS * scale,
+    pulseMS: RNGI_PULSE_MS * scale,
+    scrambleMS: Math.max(40, RNGI_SCRAMBLE_MS * scale),
+  };
+}
+
+/** The only moments the reveal needs React to wake up for. Digit scrambling
+ *  runs on its own interval; a 40Hz re-render of the whole tool for four
+ *  seconds is how an animation becomes a battery complaint. */
+function rngiCueTimes(t) {
+  const cues = [
+    ...t.digitTimes,
+    ...t.digitTimes.map((x) => x + t.settleMS),
+    t.collapse + t.pulseMS,
+    ...t.badgeTimes,
+    t.summary, t.rarity, t.rarity + t.pulseMS, t.stats, t.end,
+  ];
+  return [...new Set(cues.map((x) => Math.round(x)))].filter((x) => x >= 0).sort((a, b) => a - b);
+}
+
+/** Which stage the reveal is in at `elapsed`. One function, so the UI and the
+ *  tests agree about what "the badges are showing" means. */
+function rngiRevealState(t, elapsed) {
+  const landed = t.digitTimes.filter((x) => elapsed >= x).length;
+  return {
+    landed,
+    spinning: landed < t.slots,
+    badgeGroups: t.badgeTimes.filter((x) => elapsed >= x).length,
+    showSummary: elapsed >= t.summary,
+    showRarity: elapsed >= t.rarity,
+    showStats: elapsed >= t.stats,
+    done: elapsed >= t.end,
+    collapsing: elapsed >= t.collapse && elapsed < t.collapse + t.pulseMS,
+    popping: elapsed >= t.rarity && elapsed < t.rarity + t.pulseMS,
+  };
+}
+
+
 const STORAGE_KEY_RNGI = "tasksh.rngdle.v2";
 
 const RNGI_BLANK = {
@@ -10669,29 +10761,82 @@ function RngiBar({ frac, className = "" }) {
   );
 }
 
-/** The number. During the reveal the digits churn and settle left to right;
- *  the Scramble aura keeps unresolved digits cycling through glyphs, which is
- *  the one place a skin changes anything you can see move. */
-function RngiNumber({ value, revealFrac, aura }) {
-  const text = rngGroup(value);
+/** A clock that only wakes React at the moments something changes.
+ *
+ *  The reveal has about 23 of them across its whole length. Re-rendering the
+ *  tool at 40Hz for four seconds instead is how an animation turns into a
+ *  battery complaint — and on a phone it is also how it starts dropping
+ *  frames. Digit scrambling runs on its own interval inside the digit row.
+ */
+function useRevealClock(timeline, startedAt, active) {
+  const [elapsed, setElapsed] = useState(() => (startedAt ? Date.now() - startedAt : 0));
+  useEffect(() => {
+    if (!active || !timeline || !startedAt) return;
+    const cues = rngiCueTimes(timeline);
+    const timers = cues.map((at) => {
+      const wait = startedAt + at - Date.now();
+      if (wait < -2000) return null;
+      return setTimeout(() => setElapsed(Date.now() - startedAt), Math.max(0, wait));
+    }).filter(Boolean);
+    setElapsed(Date.now() - startedAt);
+    return () => timers.forEach(clearTimeout);
+  }, [timeline, startedAt, active]);
+  return elapsed;
+}
+
+const RNGI_SCRAMBLE_GLYPHS = "0123456789";
+const RNGI_SCRAMBLE_WILD = "0123456789#%&@$?*/\\";
+
+/** The number, revealed one digit at a time.
+ *
+ *  Seven fixed slots, right-aligned, with the leading ones blanked for a
+ *  short number — so 777 lands in the same place every roll and the box does
+ *  not jump about between rolls. A slot that has not landed is scrambling; a
+ *  slot that just landed plays `digit-land` for settleMS.
+ */
+function RngiDigits({ value, timeline, elapsed, aura, tier }) {
+  const target = String(value);
+  const slots = timeline ? timeline.slots : 7;
+  const pad = slots - target.length;
+  const st = timeline ? rngiRevealState(timeline, elapsed) : { landed: slots, spinning: false };
   const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const settled = reduced ? text.length : Math.floor(revealFrac * text.length + 0.0001);
-  const glyphs = aura === "scramble" ? "0123456789#%&@$?" : "0123456789";
-  const churn = (i) => glyphs[(i * 7 + Math.floor(Date.now() / 55)) % glyphs.length];
+  const done = reduced ? slots : st.landed;
+
+  const [scramble, setScramble] = useState(() => Array(8).fill("?"));
+  const glyphs = aura === "scramble" ? RNGI_SCRAMBLE_WILD : RNGI_SCRAMBLE_GLYPHS;
+  useEffect(() => {
+    if (!st.spinning || reduced) return;
+    const every = Math.max(40, timeline ? timeline.scrambleMS : 100);
+    const t = setInterval(
+      () => setScramble(Array.from({ length: 8 }, () => glyphs[Math.floor(Math.random() * glyphs.length)])),
+      every
+    );
+    return () => clearInterval(t);
+  }, [st.spinning, timeline, glyphs, reduced]);
+
   return (
-    <div className={`rngi-number ${settled >= text.length ? "settled" : "rolling"}`} aria-label={text}>
-      {[...text].map((ch, i) => (
-        <span key={i} className={ch === "," ? "sep" : i < settled ? "on" : "off"}>
-          {ch === "," ? "," : i < settled ? ch : churn(i)}
-        </span>
-      ))}
+    <div className={`rngi-digits ${st.spinning ? "spinning" : "settled"} ${st.collapsing ? "collapse" : ""} t-${tier || "none"}`}
+         aria-label={rngGroup(value)}>
+      {Array.from({ length: slots }, (_, i) => {
+        const landed = i < done;
+        const blank = landed && i < pad;
+        const settling = landed && !blank && timeline &&
+          elapsed < timeline.digitTimes[i] + timeline.settleMS;
+        return (
+          <span key={i}
+                className={`rngi-digit ${blank ? "blank" : ""} ${!landed ? "scrambling" : ""} ${settling ? "settling" : ""}`}>
+            {blank ? "\u00a0" : landed ? target[i - pad] : scramble[i]}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function RngiBadgeChip({ badge, dim, note }) {
+function RngiBadgeChip({ badge, dim, note, drop, index = 0 }) {
   return (
-    <div className={`rngi-chip ${RNG_TIER_CLASS[badge.tier]} ${dim ? "dim" : ""}`}>
+    <div className={`rngi-chip ${RNG_TIER_CLASS[badge.tier]} ${dim ? "dim" : ""} ${drop ? "drop" : ""}`}
+         style={drop ? { animationDelay: `${Math.min(index, 8) * 45}ms` } : undefined}>
       <span className="rngi-chip-ico">{badge.emoji}</span>
       <span className="rngi-chip-body">
         <span className="rngi-chip-name">{badge.label}</span>
@@ -10760,7 +10905,24 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   const mult = rngiWalletMult(state);
   const fly = rngiFlywheel(state.owned, state.streak);
   const result = outcome && outcome.result;
-  const showBadges = result && (!revealing || revealFrac > 0.55);
+
+  // The reveal is choreographed, not faded in: digits land one at a time and
+  // accelerating, then the badges arrive in groups, then the EP, then the
+  // rarity band slams in. rngiTimeline owns the pacing; this just reads it.
+  const timeline = useMemo(
+    () => (outcome ? rngiTimeline(String(outcome.result.n).length,
+                                  Math.max(1, Math.min(6, outcome.result.paid.length)),
+                                  outcome.revealMS) : null),
+    [outcome]
+  );
+  const startedAt = state.lastRollAt || 0;
+  const elapsed = useRevealClock(timeline, startedAt, !!outcome && revealing);
+  const rv = timeline ? rngiRevealState(timeline, revealing ? elapsed : timeline.end + 1)
+                      : { landed: 9, spinning: false, badgeGroups: 9, showSummary: true,
+                          showRarity: true, showStats: true, done: true, popping: false };
+  const tierIdx = result
+    ? Math.max(0, ["trash","common","uncommon","rare","epic","anomaly","mythic"].indexOf(result.band.key) - 1)
+    : 0;
 
   const claim = () => {
     setState((s) => rngiClaimOffline(s, offline, Date.now()));
@@ -10786,31 +10948,52 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
         {state.aura && <span className="rngi-aura-layer" aria-hidden="true" />}
         {result ? (
           <>
-            <RngiNumber value={result.n} revealFrac={revealFrac} aura={state.aura} />
-            <div className="rngi-verdict">
-              <span className={`rngi-band band-${result.band.key}`}>{result.band.label}</span>
-              <span className="rngi-rank">
-                {result.percentile >= 50
-                  ? `top ${(100 - result.percentile).toFixed(result.percentile > 99 ? 3 : 1)}%`
-                  : `bottom ${result.percentile.toFixed(1)}%`}
-              </span>
-            </div>
-            <div className="rngi-scored">{rngGroup(result.ep)} EP scored</div>
-            <div className="rngi-banked">
-              <span className="rngi-banked-v">+{rngiEP(outcome.banked)}</span>
-              <span className="rngi-banked-l">banked</span>
-              {mult.total * outcome.fx.wallet > 1.001 && (
-                <span className="rngi-banked-m">×{(mult.total * outcome.fx.wallet).toFixed(2)}</span>
+            <RngiDigits
+              value={result.n}
+              timeline={timeline}
+              elapsed={revealing ? elapsed : (timeline ? timeline.end + 1 : 0)}
+              aura={state.aura}
+              tier={rv.showRarity ? result.band.key : null}
+            />
+            <div className={`rngi-verdict ${rv.showRarity ? "in" : "pending"}`}>
+              {rv.showRarity ? (
+                <>
+                  <span className={`rngi-band band-${result.band.key} ${rv.popping ? "slam" : ""}`}>
+                    {result.band.label}
+                  </span>
+                  <span className="rngi-rank">
+                    {result.percentile >= 50
+                      ? `top ${(100 - result.percentile).toFixed(result.percentile > 99 ? 3 : 1)}%`
+                      : `bottom ${result.percentile.toFixed(1)}%`}
+                  </span>
+                </>
+              ) : (
+                <span className="rngi-band pending-band">— — —</span>
               )}
             </div>
-            {outcome.draws.length > 1 && (
-              <div className="rngi-draws">
+            {rv.showSummary && (
+              <>
+                <div className="rngi-scored rise">{rngGroup(result.ep)} EP scored</div>
+                <div className="rngi-banked rise">
+                  <span className="rngi-banked-v">+{rngiEP(outcome.banked)}</span>
+                  <span className="rngi-banked-l">banked</span>
+                  {mult.total * outcome.fx.wallet > 1.001 && (
+                    <span className="rngi-banked-m">×{(mult.total * outcome.fx.wallet).toFixed(2)}</span>
+                  )}
+                  <span className="rngi-ep-float" key={`${result.n}-${startedAt}`}>
+                    +{rngiEP(outcome.banked)}
+                  </span>
+                </div>
+              </>
+            )}
+            {rv.showStats && outcome.draws.length > 1 && (
+              <div className="rngi-draws rise">
                 kept the best of {outcome.draws.length}
                 {outcome.winner ? ` · ${RNGI_SKILL_BY_ID[outcome.winner].name}` : " · the plain draw won"}
               </div>
             )}
-            {outcome.drop && (
-              <div className="rngi-drop">a friend turned up: {RNGI_PET_BY_ID[outcome.drop].name}</div>
+            {rv.showStats && outcome.drop && (
+              <div className="rngi-drop rise">a friend turned up: {RNGI_PET_BY_ID[outcome.drop].name}</div>
             )}
           </>
         ) : (
@@ -10855,18 +11038,27 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
 
       <RngiRack state={state} setState={setState} />
 
-      {showBadges && (
+      {result && rv.badgeGroups > 0 && (
         <>
           <div className="rngi-section">
             <span>PAID · {result.paid.length}</span>
             <span className="rngi-section-note">{result.earned.length} earned</span>
           </div>
           <div className="rngi-chips">
-            {result.paid.map((b) => (
-              <RngiBadgeChip key={b.id} badge={b} note={outcome.fresh.includes(b.id) ? "NEW — first time seen" : null} />
-            ))}
+            {result.paid
+              .slice(0, rv.done ? result.paid.length
+                                : Math.ceil((rv.badgeGroups / Math.max(1, timeline.badgeTimes.length)) * result.paid.length))
+              .map((b, i) => (
+                <RngiBadgeChip
+                  key={b.id}
+                  badge={b}
+                  drop={!rv.done}
+                  index={i}
+                  note={outcome.fresh.includes(b.id) ? "NEW — first time seen" : null}
+                />
+              ))}
           </div>
-          {result.outranked.length > 0 && (
+          {rv.done && result.outranked.length > 0 && (
             <>
               <div className="rngi-section">
                 <span>OUTRANKED · {result.outranked.length}</span>
@@ -16353,16 +16545,56 @@ function TodoApp() {
         }
         .rngi-stage.band-epic, .rngi-stage.band-anomaly, .rngi-stage.band-mythic { border-color: currentColor; }
 
-        .rngi-number {
-          font-family: var(--font-mono); font-size: 31px; letter-spacing: 0.02em;
-          line-height: 1.1; font-variant-numeric: tabular-nums;
-          display: flex; justify-content: center; flex-wrap: wrap;
+        /* ---- the digit stage (v49) ----
+           Seven fixed slots, right-aligned, so 777 and 1,000,000 land in the
+           same place and the box never jumps between rolls. Ported from
+           RNGdle Infinite's choreography; the palette is this app's, because
+           their pastel gradients are the one thing that would not survive
+           contact with a terminal theme. */
+        .rngi-digits {
+          display: flex; justify-content: center; align-items: baseline;
+          gap: 1px; font-family: var(--font-mono); line-height: 1.05;
+          font-variant-numeric: tabular-nums;
         }
-        .rngi-number .on { color: var(--text); }
-        .rngi-number .off { color: var(--muted); opacity: 0.45; }
-        .rngi-number .sep { color: var(--muted); }
-        .rngi-number.rolling .off { animation: rngiChurn 90ms steps(1) infinite; }
-        @keyframes rngiChurn { 50% { opacity: 0.22; } }
+        .rngi-digit {
+          display: inline-block; width: 0.62em; text-align: center;
+          font-size: 34px; color: var(--text);
+          transition: color 160ms ease;
+        }
+        .rngi-digit.blank { opacity: 0; }
+        .rngi-digit.scrambling { color: var(--muted); opacity: 0.5; }
+        .rngi-digit.settling { animation: rngiDigitLand 320ms cubic-bezier(.2,1.3,.4,1); }
+        @keyframes rngiDigitLand {
+          from { transform: scale(1.55); text-shadow: 0 0 14px currentColor; }
+          to   { transform: scale(1);    text-shadow: 0 0 0 transparent; }
+        }
+        .rngi-digits.collapse { animation: rngiCollapse 420ms ease; }
+        @keyframes rngiCollapse {
+          0%   { transform: scale(1); }
+          30%  { transform: scale(1.06); }
+          100% { transform: scale(1); }
+        }
+
+        /* Rarity is legible from the number itself before you read the word.
+           Terminal grammar: phosphor glow intensity, not gradients. */
+        .rngi-digits.t-uncommon .rngi-digit { color: #5EEAD4; text-shadow: 0 0 6px rgba(94,234,212,0.30); }
+        .rngi-digits.t-rare     .rngi-digit { color: #60A5FA; text-shadow: 0 0 8px rgba(96,165,250,0.38); }
+        .rngi-digits.t-epic     .rngi-digit { color: #C084FC; text-shadow: 0 0 11px rgba(192,132,252,0.45); }
+        .rngi-digits.t-anomaly  .rngi-digit {
+          color: #FBBF24; text-shadow: 0 0 14px rgba(251,191,36,0.55);
+          animation: rngiAnomaly 2.4s ease-in-out infinite;
+        }
+        .rngi-digits.t-mythic   .rngi-digit {
+          color: #FB7185; text-shadow: 0 0 18px rgba(251,113,133,0.65);
+          animation: rngiMythic 1.6s steps(1) infinite;
+        }
+        @keyframes rngiAnomaly { 50% { text-shadow: 0 0 22px rgba(251,191,36,0.85); } }
+        @keyframes rngiMythic {
+          0%, 88%, 100% { transform: none; }
+          90% { transform: translateX(-1.5px) skewX(-7deg); }
+          93% { transform: translateX(2px); }
+          96% { transform: translateX(-1px) skewX(4deg); }
+        }
 
         .rngi-verdict { margin-top: 9px; display: flex; gap: 8px; justify-content: center; align-items: baseline; }
         .rngi-band { font-size: 11px; letter-spacing: 0.16em; }
@@ -16399,7 +16631,7 @@ function TodoApp() {
             repeating-linear-gradient(to right, rgba(96,165,250,0.09) 0 1px, transparent 1px 14px),
             repeating-linear-gradient(to bottom, rgba(96,165,250,0.09) 0 1px, transparent 1px 14px);
         }
-        .aura-glitch .rngi-number { animation: rngiTear 3.2s steps(1) infinite; }
+        .aura-glitch .rngi-digits { animation: rngiTear 3.2s steps(1) infinite; }
         @keyframes rngiTear {
           0%, 92%, 100% { transform: none; }
           93% { transform: translateX(-2px) skewX(-6deg); }
@@ -16417,6 +16649,55 @@ function TodoApp() {
           position: absolute; left: 8px; bottom: 6px; opacity: 0.18;
           font-size: 7px; letter-spacing: 0.1em; color: var(--muted);
         }
+
+        /* ---- staged reveal (v49) ---- */
+        .rngi-verdict.pending { opacity: 0.45; }
+        .pending-band { color: var(--muted); letter-spacing: 0.3em; }
+        .rngi-band.slam { animation: rngiSlam 560ms cubic-bezier(.17,.89,.32,1.28); }
+        @keyframes rngiSlam {
+          0%   { transform: scale(2.1); opacity: 0; letter-spacing: 0.5em; }
+          55%  { transform: scale(0.94); opacity: 1; letter-spacing: 0.1em; }
+          100% { transform: scale(1); letter-spacing: 0.16em; }
+        }
+        .rise { animation: rngiRise 320ms ease backwards; }
+        @keyframes rngiRise {
+          from { opacity: 0; transform: translateY(9px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .rngi-chip.drop { animation: rngiBadgeDrop 300ms cubic-bezier(.2,1.1,.4,1) backwards; }
+        @keyframes rngiBadgeDrop {
+          from { opacity: 0; transform: translateY(-16px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .rngi-banked { position: relative; }
+        /* The float rises up the RIGHT EDGE, not the centre. Centred, it
+           drifted straight across "MYTHIC · top 0.002%" and the scored-EP
+           line and made both unreadable for a second and a half. */
+        .rngi-ep-float {
+          position: absolute; right: 2px; bottom: 100%; pointer-events: none;
+          font-size: 11px; color: var(--accent); white-space: nowrap;
+          text-shadow: 0 0 8px rgba(94,234,212,0.5);
+          animation: rngiEpFloat 1400ms ease-out forwards;
+        }
+        @keyframes rngiEpFloat {
+          0%   { opacity: 0; transform: translateY(6px) scale(0.85); }
+          16%  { opacity: 1; transform: translateY(0) scale(1.05); }
+          70%  { opacity: 0.85; }
+          100% { opacity: 0; transform: translateY(-26px) scale(0.95); }
+        }
+        .rngi-stage.band-anomaly, .rngi-stage.band-mythic { animation: rngiStageBreathe 3s ease-in-out infinite; }
+        @keyframes rngiStageBreathe { 50% { transform: scale(1.008); } }
+
+        @media (prefers-reduced-motion: reduce) {
+          .rngi-digit.settling, .rngi-digits.collapse, .rngi-digits.t-anomaly .rngi-digit,
+          .rngi-digits.t-mythic .rngi-digit, .rngi-band.slam, .rise, .rngi-chip.drop,
+          .rngi-ep-float, .rngi-stage.band-anomaly, .rngi-stage.band-mythic {
+            animation: none !important;
+          }
+          .rngi-ep-float { display: none; }
+        }
+
+        @media (max-width: 340px) { .rngi-digit { font-size: 27px; } }
 
         /* ---- controls ---- */
         .rngi-controls { text-align: center; margin-bottom: 4px; }
@@ -16613,7 +16894,6 @@ function TodoApp() {
         }
 
         @media (max-width: 340px) {
-          .rngi-number { font-size: 25px; }
           .rngi-grid { grid-template-columns: repeat(2, 1fr); }
           .rngi-rack { grid-template-columns: 1fr; }
         }

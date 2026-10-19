@@ -692,7 +692,7 @@ await test("a roll produces a number, a band, badges and banked EP", async () =>
   await page.goto(BASE, { waitUntil: "networkidle" });
   await openRngdle(page);
   await rollOnce(page);
-  const num = (await page.locator(".rngi-number").innerText()).replace(/\s/g, "");
+  const num = (await page.locator(".rngi-digits").innerText()).replace(/\s/g, "");
   assert.match(num, /^[\d,]+$/, `number looked wrong: ${num}`);
   assert.equal(await page.locator(".rngi-band").count(), 1);
   assert.ok(await page.locator(".rngi-chip").count() > 0, "no badges rendered");

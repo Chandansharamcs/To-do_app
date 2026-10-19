@@ -41,6 +41,7 @@ const EXPORTS = [
   "rngiDraw", "rngiPlanDraws", "rngiRunDraws", "rngiSkillEffects", "rngiPetDrop",
   "rngiRoll", "rngiChargeTick", "rngiSkillReady", "rngiOwnedSkills", "rngiRackSize",
   "rngiOfflineGains", "rngiClaimOffline", "rngiDiscovered", "rngiResetGate",
+  "rngiTimeline", "rngiReferenceTimeline", "rngiCueTimes", "rngiRevealState",
   "rngiSurplus", "rngiReset", "rngiEP", "rngiDuration",
 ];
 const M = new Function(`${CODE}\nreturn {${EXPORTS.join(",")}};`)();
@@ -663,6 +664,141 @@ T("durations read as seconds", () => {
   assert.equal(M.rngiDuration(120), "0.1s");
   assert.equal(M.rngiDuration(45000), "45s");
 });
+
+// ---- the reveal choreography (v49) -----------------------------------------
+//
+// Ported from RNGdle Infinite's roll-timeline.js. The shape is theirs: digits
+// land one at a time and ACCELERATING, then the number collapses, then badges
+// arrive in groups, then EP, then the rarity band. The whole thing is then
+// scaled to whatever reveal length the player has bought, so a 0.6s reveal
+// still plays every beat in the same order.
+
+T("the reveal ends exactly when the reveal is supposed to end", () => {
+  for (const ms of [600, 1000, 3000, 45000]) {
+    const t = M.rngiTimeline(6, 5, ms);
+    assert.equal(t.end, ms, `a ${ms}ms reveal ends at ${t.end}`);
+    assert.ok(t.stats <= t.end, "the stats stage runs past the end");
+    assert.ok(t.digitTimes[t.digitTimes.length - 1] <= t.end);
+  }
+});
+
+T("digits land in order and never before the reveal starts", () => {
+  const t = M.rngiTimeline(6, 4, 3000);
+  assert.equal(t.digitTimes.length, t.slots);
+  for (let i = 0; i < t.digitTimes.length; i++) {
+    assert.ok(t.digitTimes[i] > 0, `digit ${i} lands at ${t.digitTimes[i]}`);
+    if (i) assert.ok(t.digitTimes[i] > t.digitTimes[i - 1], `digit ${i} lands before ${i - 1}`);
+  }
+});
+
+T("the gaps between digits GROW -- the last ones are dragged out", () => {
+  // this is the whole character of the reveal; evenly spaced digits feel
+  // like a progress bar rather than a slot machine
+  const t = M.rngiTimeline(6, 4, 3000);
+  const gaps = t.digitTimes.slice(1).map((x, i) => x - t.digitTimes[i]);
+  for (let i = 1; i < gaps.length; i++) {
+    assert.ok(gaps[i] > gaps[i - 1], `gap ${i} (${gaps[i].toFixed(0)}) is not longer than ${gaps[i - 1].toFixed(0)}`);
+  }
+});
+
+T("the stages happen in the right order", () => {
+  const t = M.rngiTimeline(7, 5, 3000);
+  const order = [
+    ["last digit", t.collapse],
+    ["first badge", t.badgeTimes[0]],
+    ["last badge", t.badgeTimes[t.badgeTimes.length - 1]],
+    ["summary", t.summary],
+    ["rarity", t.rarity],
+    ["stats", t.stats],
+    ["end", t.end],
+  ];
+  for (let i = 1; i < order.length; i++) {
+    assert.ok(order[i][1] >= order[i - 1][1],
+      `${order[i][0]} (${order[i][1].toFixed(0)}) comes before ${order[i - 1][0]} (${order[i - 1][1].toFixed(0)})`);
+  }
+});
+
+T("there are always at least six slots, so short numbers do not jump about", () => {
+  assert.equal(M.rngiTimeline(1, 3, 3000).slots, 6, "a single digit still gets six slots");
+  assert.equal(M.rngiTimeline(7, 3, 3000).slots, 7, "one million needs seven");
+});
+
+T("one badge group does not divide by zero", () => {
+  const t = M.rngiTimeline(6, 1, 3000);
+  assert.equal(t.badgeTimes.length, 1);
+  assert.ok(Number.isFinite(t.badgeTimes[0]));
+  const z = M.rngiTimeline(6, 0, 3000);
+  assert.ok(z.badgeTimes.length >= 1 && Number.isFinite(z.badgeTimes[0]));
+});
+
+T("an absurd duration falls back rather than producing NaN", () => {
+  for (const bad of [0, -5, NaN, undefined, "fast"]) {
+    const t = M.rngiTimeline(6, 4, bad);
+    assert.ok(Number.isFinite(t.end) && t.end > 0, `duration ${bad} gave end=${t.end}`);
+    assert.ok(t.digitTimes.every(Number.isFinite));
+  }
+});
+
+T("the state machine agrees with the timeline at every stage", () => {
+  const t = M.rngiTimeline(6, 4, 3000);
+  const at0 = M.rngiRevealState(t, 0);
+  assert.equal(at0.landed, 0);
+  assert.ok(at0.spinning);
+  assert.ok(!at0.showRarity && !at0.showSummary && !at0.done);
+
+  const mid = M.rngiRevealState(t, t.digitTimes[2] + 1);
+  assert.equal(mid.landed, 3, "three digits should be down");
+  assert.ok(mid.spinning);
+
+  const after = M.rngiRevealState(t, t.end);
+  assert.equal(after.landed, t.slots);
+  assert.ok(!after.spinning);
+  assert.ok(after.showSummary && after.showRarity && after.showStats && after.done);
+});
+
+T("the rarity is not given away before its moment", () => {
+  const t = M.rngiTimeline(6, 4, 3000);
+  assert.ok(!M.rngiRevealState(t, t.rarity - 1).showRarity);
+  assert.ok(M.rngiRevealState(t, t.rarity).showRarity);
+  assert.ok(t.rarity > t.collapse, "the band must not land before the number does");
+});
+
+T("badges arrive in groups rather than all at once", () => {
+  const t = M.rngiTimeline(6, 5, 3000);
+  const seen = new Set();
+  for (let ms = 0; ms <= t.end; ms += 5) seen.add(M.rngiRevealState(t, ms).badgeGroups);
+  assert.ok(seen.size >= 5, `badges appeared in ${seen.size} steps, not a cascade`);
+});
+
+T("the cue list wakes React a handful of times, not forty a second", () => {
+  const t = M.rngiTimeline(7, 6, 3000);
+  const cues = M.rngiCueTimes(t);
+  assert.ok(cues.length > 10, "too few cues to animate the stages");
+  assert.ok(cues.length < 60, `${cues.length} cues for a 3s reveal is a render loop in disguise`);
+  for (let i = 1; i < cues.length; i++) assert.ok(cues[i] >= cues[i - 1], "cues are not sorted");
+  assert.equal(new Set(cues).size, cues.length, "duplicate cues would double-render");
+  assert.ok(cues.every((c) => c >= 0 && c <= t.end + t.pulseMS + 1));
+});
+
+T("a fast reveal still plays every beat", () => {
+  // the ladder ends at 0.6s; every stage must still be distinguishable
+  const t = M.rngiTimeline(7, 5, 600);
+  assert.ok(t.digitTimes[0] > 0);
+  assert.ok(t.collapse < t.badgeTimes[0]);
+  assert.ok(t.badgeTimes[0] < t.summary);
+  assert.ok(t.summary < t.rarity);
+  assert.ok(t.rarity <= t.end);
+});
+
+T("scaling is proportional, so the shape is the same at any speed", () => {
+  const slow = M.rngiTimeline(6, 4, 3000);
+  const fast = M.rngiTimeline(6, 4, 600);
+  const ratio = (a, b) => a / b;
+  assert.ok(Math.abs(ratio(slow.rarity, slow.end) - ratio(fast.rarity, fast.end)) < 1e-9,
+    "the rarity beat sits at a different point in the reveal at different speeds");
+  assert.ok(Math.abs(ratio(slow.collapse, slow.end) - ratio(fast.collapse, fast.end)) < 1e-9);
+});
+
 
 for (const [name, fn] of tests) {
   try { fn(); pass++; }

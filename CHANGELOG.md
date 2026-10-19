@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v49`** | 2026-10-18 | RNGdle's real reveal choreography, and rarity you can see |
 | **`v48`** | 2026-10-18 | Named spending that accumulates, and a year view |
 | **`v47`** | 2026-10-18 | Sound: ambient beds, a richer palette, and a 10s ring you can silence |
 | **`v46`** | 2026-10-18 | Expense tracker, and the KV quota bug that was breaking cloud backup |
@@ -218,6 +219,58 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-18 — `tasksh-v49`**
+
+The rngdle reveal was a fade. Now it is the original's actual choreography.
+
+- **Ported `roll-timeline.js` from RNGdle Infinite properly.** v45 shipped a
+  linear digit wipe because I had not read their timing code. The real thing
+  is a staged sequence, and the staging is most of why the game feels good:
+
+  1. digits land **one at a time and accelerating** — the gap between them
+     grows as the square of how far through you are, so the last two feel
+     dragged out of the machine. Unlanded slots scramble; a slot that just
+     landed plays a 320ms overshoot.
+  2. the number collapses with a pulse
+  3. badges **cascade in groups**, not all at once
+  4. the EP total rises
+  5. the rarity band **slams in** — and not a frame before. The verdict reads
+     `— — —` until its moment, because knowing you rolled a Mythic while the
+     digits are still spinning spoils the only suspense the game has.
+
+  The whole sequence is then scaled to whatever reveal length you have
+  bought, so the 0.6s end of the upgrade ladder still plays every beat in the
+  same order and at the same proportions. Tested: a 600ms reveal and a 3000ms
+  reveal put the rarity beat at the same fraction of the way through.
+
+- **Rarity is visible in the number itself.** Uncommon through Mythic each
+  get their own phosphor treatment — glow intensity, then a slow breathe at
+  Anomaly, then a periodic tear at Mythic — and the stage border takes the
+  band colour. Done in the terminal palette rather than importing their
+  pastel gradients, which are the one part of the original that would not
+  survive contact with a Conky theme.
+
+- **Fixed while looking at it: the floating `+EP` crossed the verdict.**
+  Centred and rising, it drifted straight over `MYTHIC · top 0.002%` and the
+  scored-EP line and made both unreadable for a second and a half. It rises
+  up the right edge now. Found by screenshotting a forced Mythic roll rather
+  than by a test — worth saying, because no assertion I would have thought to
+  write would have caught two legible things overlapping.
+
+- **Seven fixed digit slots.** Short numbers are blank-padded instead of
+  centred, so 777 and 1,000,000 occupy the same place and the box stops
+  jumping between rolls.
+
+- **The reveal does not run a render loop.** React is woken at the ~23 moments
+  something actually changes, not at 40Hz for the length of the reveal;
+  digit scrambling runs on its own interval inside the digit row. A test
+  fails if the cue count ever creeps past 60.
+
+- **Tests: 460 unit + 142 browser** (was 447 + 142). Five mutations — even
+  digit gaps, the rarity beat moved before the summary, slots following the
+  number, the duration guard removed, and unsorted duplicate cues. All five
+  went red.
 
 **2026-10-18 — `tasksh-v48`**
 

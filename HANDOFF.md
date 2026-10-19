@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v48   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v49   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-10-18
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -486,6 +486,13 @@ by days *elapsed* in the current month, not days in the month; the
 month-on-month comparison trims last month to the same day count. Both are
 tested, because both are wrong in the flattering direction if you get them
 backwards.
+
+**The reveal (v49).** `rngiTimeline(digits, badgeGroups, duration)` is a port
+of their `roll-timeline.js`: digit times with accelerating gaps, then
+collapse, badge groups, summary, rarity, stats — all scaled to the bought
+duration. `rngiCueTimes` lists the ~23 moments React must wake for, so the
+reveal is not a render loop. `rngiRevealState(t, elapsed)` is the single
+answer to "what is on screen now", shared by the UI and the tests.
 
 **RNGdle Infinite (v45).** Ported from
 [jaime-gaming/RNGdle-Infinite](https://github.com/jaime-gaming/RNGdle-Infinite),
