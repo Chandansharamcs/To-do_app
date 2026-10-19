@@ -11451,6 +11451,170 @@ function expensesToCSV(items, cats) {
   return "\ufeff" + rows.join("\n");
 }
 
+// ---- named items (v48) -----------------------------------------------------
+//
+// An entry's `note` has always been free text. v48 makes it the entry's NAME
+// and treats the set of names you have used as a library: type "sweets" once
+// and it offers itself forever after, carrying the category and the amount
+// you usually pay with it.
+//
+// Deliberately NOT a managed list of items you have to set up first. The
+// research on this was unambiguous: every setup step between you and logging
+// a purchase is where the habit dies. A typo just makes a new name, which is
+// a smaller problem than not recording the spend at all.
+//
+// The storage shape is unchanged — still `note` on each entry — so this needs
+// no migration and an old backup restores into it untouched.
+
+/** Case- and space-insensitive key, so "Sweets", "sweets " and "SWEETS" are
+ *  one item. The display form is whichever spelling you used most recently. */
+function expenseNameKey(name) {
+  return String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** The library: every name ever used, with what it usually costs.
+ *
+ *  `cat` and `lastAmt` are what make a suggestion worth tapping — picking
+ *  "sweets" should fill in the category and the price you normally pay, not
+ *  just the word.
+ */
+function expenseNameIndex(items) {
+  const map = new Map();
+  for (const e of items || []) {
+    const key = expenseNameKey(e.note);
+    if (!key) continue;
+    const at = Number.isFinite(e.at) ? e.at : 0;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, {
+        key, name: String(e.note).trim(), count: 1, total: e.amt,
+        lastAt: at, lastD: e.d, cat: e.cat, lastAmt: e.amt,
+      });
+      continue;
+    }
+    prev.count += 1;
+    prev.total += e.amt;
+    // the most recent entry decides the spelling, the category and the price
+    if (at >= prev.lastAt) {
+      prev.lastAt = at; prev.lastD = e.d; prev.cat = e.cat;
+      prev.lastAmt = e.amt; prev.name = String(e.note).trim();
+    }
+  }
+  return [...map.values()].map((x) => ({ ...x, avg: Math.round(x.total / x.count) }));
+}
+
+/** What to offer while they type.
+ *
+ *  Ranking: things that start with what you typed beat things that merely
+ *  contain it, then how often you buy them. An empty query offers your most
+ *  frequent names, which is the one-tap case for a daily chai.
+ */
+function suggestNames(index, query, limit = 6) {
+  const q = expenseNameKey(query);
+  const scored = [];
+  for (const it of index) {
+    if (!q) { scored.push({ it, rank: 2 }); continue; }
+    const k = it.key;
+    if (k === q) continue;                      // already typed exactly
+    if (k.startsWith(q)) scored.push({ it, rank: 0 });
+    else if (k.includes(q)) scored.push({ it, rank: 1 });
+  }
+  scored.sort((a, b) => a.rank - b.rank || b.it.count - a.it.count || b.it.lastAt - a.it.lastAt);
+  return scored.slice(0, limit).map((s) => s.it);
+}
+
+/** Spend per named item over a set of entries, biggest first. Unnamed
+ *  entries are grouped under their category rather than silently dropped. */
+function summariseByName(items, catLabel) {
+  const map = new Map();
+  for (const e of items || []) {
+    const key = expenseNameKey(e.note) || `~${e.cat}`;
+    const label = expenseNameKey(e.note)
+      ? String(e.note).trim()
+      : `(unnamed ${catLabel ? catLabel(e.cat) : e.cat})`;
+    const prev = map.get(key);
+    if (prev) { prev.total += e.amt; prev.count += 1; }
+    else map.set(key, { key, label, total: e.amt, count: 1, cat: e.cat });
+  }
+  return [...map.values()]
+    .map((x) => ({ ...x, avg: Math.round(x.total / x.count) }))
+    .sort((a, b) => b.total - a.total);
+}
+
+// ---- the year (v48) --------------------------------------------------------
+
+/** Twelve months, zeros included.
+ *
+ *  `today` decides how far "so far" goes: dividing a year's spending by 12 in
+ *  February is the same mistake as dividing a month's by 31 on the 3rd, and
+ *  it is wrong in the same flattering direction.
+ */
+function summariseYear(items, year, today) {
+  const prefix = `${year}-`;
+  const mine = (items || []).filter((e) => String(e.d).startsWith(prefix));
+  const total = mine.reduce((s, e) => s + e.amt, 0);
+
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const key = `${year}-${String(m).padStart(2, "0")}`;
+    months.push({ key, m, label: MONTH_NAMES[m - 1], amt: 0 });
+  }
+  const byCat = {};
+  for (const e of mine) {
+    const m = Number(String(e.d).slice(5, 7));
+    if (m >= 1 && m <= 12) months[m - 1].amt += e.amt;
+    byCat[e.cat] = (byCat[e.cat] || 0) + e.amt;
+  }
+
+  const thisYear = String(today).slice(0, 4) === String(year);
+  const elapsed = thisYear ? Math.max(1, Number(String(today).slice(5, 7))) : 12;
+  const active = months.filter((x) => x.amt > 0).length;
+  const biggest = months.reduce((b, x) => (!b || x.amt > b.amt ? x : b), null);
+
+  const cats = Object.entries(byCat)
+    .map(([key, amt]) => ({ key, amt, share: total ? amt / total : 0 }))
+    .sort((a, b) => b.amt - a.amt);
+
+  return {
+    year, total, count: mine.length, months, cats, biggest,
+    elapsed, activeMonths: active, isCurrent: thisYear,
+    perMonth: Math.round(total / elapsed),
+    projected: thisYear ? Math.round((total / elapsed) * 12) : total,
+    items: mine,
+  };
+}
+
+/** Every year that has something in it, newest first, current year always
+ *  present so a fresh install has somewhere to stand. */
+function expenseYears(items, today) {
+  const set = new Set((items || []).map((e) => String(e.d).slice(0, 4)).filter((y) => /^\d{4}$/.test(y)));
+  set.add(String(today).slice(0, 4));
+  return [...set].sort().reverse();
+}
+
+/** A contiguous month-by-month series from the first entry to today, with no
+ *  holes. A line chart that skips empty months draws a slope between
+ *  January and April and calls it a trend. */
+function expenseAllTimeSeries(items, today) {
+  const withDates = (items || []).filter((e) => typeof e.d === "string" && e.d.length >= 7);
+  if (!withDates.length) return [];
+  const keys = withDates.map((e) => e.d.slice(0, 7)).sort();
+  let cursor = keys[0];
+  const end = String(today).slice(0, 7);
+  const totals = {};
+  for (const e of withDates) {
+    const k = e.d.slice(0, 7);
+    totals[k] = (totals[k] || 0) + e.amt;
+  }
+  const out = [];
+  let guard = 0;
+  while (cursor <= end && guard++ < 600) {
+    out.push({ key: cursor, amt: totals[cursor] || 0 });
+    cursor = shiftMonthKey(cursor, 1);
+  }
+  return out;
+}
+
 function loadExpenses() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY_EXPENSES) || "null");
@@ -11518,12 +11682,23 @@ function DayBars({ series, currency, max, onPick, picked, today }) {
  *  The keypad is here rather than relying on the phone keyboard because a
  *  numeric keyboard still costs a layout shift and half the screen, and this
  *  one can carry +, − and a decimal point that actually behave. */
-function ExpenseComposer({ cats, currency, onAdd, defaultCat }) {
+function ExpenseComposer({ cats, currency, onAdd, defaultCat, nameIndex = [] }) {
   const [text, setText] = useState("");
   const [cat, setCat] = useState(defaultCat || cats[0].key);
   const [note, setNote] = useState("");
   const [flash, triggerFlash] = useFlash();
   const parsed = parseAmount(text);
+
+  // Suggestions are the point of naming an entry: tapping one fills the
+  // name, the category AND the price you normally pay, so a repeat purchase
+  // is one tap rather than three fields.
+  const hints = useMemo(() => suggestNames(nameIndex, note, 5), [nameIndex, note]);
+  const useHint = (h) => {
+    setNote(h.name);
+    setCat(h.cat);
+    if (!text) setText(String(h.lastAmt / 100).replace(/\.00$/, ""));
+    sound.toggle();
+  };
 
   const key = (k) => {
     sound.tick();
@@ -11571,12 +11746,22 @@ function ExpenseComposer({ cats, currency, onAdd, defaultCat }) {
 
       <input
         className="xp-note"
-        placeholder="note (optional)"
+        placeholder="what was it? e.g. sweets"
         value={note}
         maxLength={120}
         onChange={(e) => setNote(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && commit()}
       />
+      {hints.length > 0 && (
+        <div className="xp-hints">
+          {hints.map((h) => (
+            <button key={h.key} className="xp-hint" onClick={() => useHint(h)}>
+              <span className="xp-hint-name">{h.name}</span>
+              <span className="xp-hint-amt">{formatMoney(h.lastAmt, currency, { compact: true })}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Four columns, operators down the right-hand edge where a thumb
           already is. DOM order IS the layout -- a grid that relies on
@@ -11630,6 +11815,100 @@ function ExpenseRow({ item, cat, currency, onDelete, onRepeat }) {
   );
 }
 
+/** Spend per named item. The point of naming an entry is being able to ask
+ *  "how much do I actually spend on sweets", and that question needs a
+ *  table, not a pie. */
+function ExpenseNameTable({ rows, currency, catOf, limit = 10 }) {
+  const [all, setAll] = useState(false);
+  if (!rows.length) {
+    return <div className="xp-empty-small">nothing named yet — give an entry a name and it shows up here</div>;
+  }
+  const peak = rows[0].total;
+  const shown = all ? rows : rows.slice(0, limit);
+  return (
+    <>
+      <div className="xp-names">
+        {shown.map((r) => (
+          <div key={r.key} className="xp-name-row">
+            <span className="xp-name-bar" style={{ width: `${Math.max(2, (r.total / peak) * 100)}%`, background: catOf(r.cat).color }} />
+            <span className="xp-name-label">{r.label}</span>
+            <span className="xp-name-n">×{r.count}</span>
+            <span className="xp-name-total">{formatMoney(r.total, currency, { compact: true })}</span>
+          </div>
+        ))}
+      </div>
+      {rows.length > limit && (
+        <button className="xp-more" onClick={() => { setAll(!all); sound.click(); }}>
+          {all ? "show less" : `+${rows.length - limit} more`}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** Every month you have ever logged, as one line. Contiguous by
+ *  construction: a line that skips empty months draws a slope between
+ *  January and April and calls it a trend. */
+function ExpenseLine({ series, currency, height = 76 }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+  if (series.length < 2) {
+    return <div className="xp-empty-small">one month of history so far — the line needs two</div>;
+  }
+  const W = 300, H = height, pad = 4;
+  const peak = Math.max(1, ...series.map((s) => s.amt));
+  const x = (i) => pad + (i / (series.length - 1)) * (W - pad * 2);
+  const y = (v) => H - pad - (v / peak) * (H - pad * 2);
+  const d = series.map((s, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(s.amt).toFixed(1)}`).join(" ");
+  const area = `${d} L${x(series.length - 1).toFixed(1)},${H - pad} L${x(0).toFixed(1)},${H - pad} Z`;
+  const last = series[series.length - 1];
+  return (
+    <div className="xp-line-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" className="xp-line">
+        <path d={area} className="xp-line-area" style={{ opacity: mounted ? 1 : 0 }} />
+        <path d={d} className="xp-line-path" style={{ opacity: mounted ? 1 : 0 }} />
+        <circle cx={x(series.length - 1)} cy={y(last.amt)} r="3" className="xp-line-dot" />
+      </svg>
+      <div className="xp-line-ends">
+        <span>{series[0].key}</span>
+        <span>peak {formatMoney(peak, currency, { compact: true })}</span>
+        <span>{last.key}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Twelve bars, one per month. Tap one to open that month. */
+function ExpenseYearBars({ months, currency, onPick, current }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+  const peak = Math.max(1, ...months.map((m) => m.amt));
+  return (
+    <div className="xp-year-bars">
+      {months.map((m) => (
+        <button
+          key={m.key}
+          className={`xp-year-bar ${m.amt ? "" : "empty"} ${m.key === current ? "on" : ""}`}
+          onClick={() => onPick(m)}
+          aria-label={`${m.label}: ${formatMoney(m.amt, currency)}`}
+          title={`${m.label} · ${formatMoney(m.amt, currency)}`}
+        >
+          <span className="xp-year-col">
+            <span style={{ height: `${mounted ? Math.max(m.amt ? 3 : 1, (m.amt / peak) * 100) : 0}%` }} />
+          </span>
+          <span className="xp-year-m">{m.label[0]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ExpensesTool() {
   const [state, setState] = useState(loadExpenses);
   const [month, setMonth] = useState(() => expenseMonthKey(getISTDateString(0)));
@@ -11646,6 +11925,19 @@ function ExpensesTool() {
   );
 
   const sum = useMemo(() => summariseExpenses(state.items, month, today), [state.items, month, today]);
+  const nameIndex = useMemo(() => expenseNameIndex(state.items), [state.items]);
+  const [year, setYear] = useState(() => String(getISTDateString(0)).slice(0, 4));
+  const yearSum = useMemo(() => summariseYear(state.items, year, today), [state.items, year, today]);
+  const allTime = useMemo(() => expenseAllTimeSeries(state.items, today), [state.items, today]);
+  const years = useMemo(() => expenseYears(state.items, today), [state.items, today]);
+  const monthNames = useMemo(
+    () => summariseByName(state.items.filter((e) => expenseMonthKey(e.d) === month), (c) => catOf(c).label),
+    [state.items, month, catOf]
+  );
+  const yearNames = useMemo(
+    () => summariseByName(yearSum.items, (c) => catOf(c).label),
+    [yearSum.items, catOf]
+  );
   const series = useMemo(() => expenseDailySeries(state.items, month), [state.items, month]);
   const days = useMemo(() => groupExpensesByDay(state.items, month), [state.items, month]);
   const vsPrev = useMemo(() => compareToPreviousMonth(state.items, month, today), [state.items, month, today]);
@@ -11708,7 +12000,7 @@ function ExpensesTool() {
       </div>
 
       <div className="xp-tabs">
-        {[["add", "add"], ["report", "report"], ["list", "history"]].map(([k, l]) => (
+        {[["add", "add"], ["report", "month"], ["year", "year"], ["list", "history"]].map(([k, l]) => (
           <button key={k} className={view === k ? "on" : ""} onClick={() => { setView(k); sound.whoosh(); }}>{l}</button>
         ))}
       </div>
@@ -11720,6 +12012,7 @@ function ExpensesTool() {
             currency={state.currency}
             onAdd={add}
             defaultCat={lastFew[0] ? lastFew[0].cat : undefined}
+            nameIndex={nameIndex}
           />
           {lastFew.length > 0 && (
             <>
@@ -11804,6 +12097,12 @@ function ExpensesTool() {
                 </div>
               </div>
 
+              <div className="xp-section">
+                <span>WHAT YOU BOUGHT</span>
+                <span className="xp-section-note">{monthNames.length} named</span>
+              </div>
+              <ExpenseNameTable rows={monthNames} currency={state.currency} catOf={catOf} />
+
               <div className="xp-section"><span>THE NUMBERS</span></div>
               <div className="xp-rows">
                 {[
@@ -11827,6 +12126,96 @@ function ExpensesTool() {
               )}
             </>
           )}
+        </>
+      )}
+
+      {view === "year" && (
+        <>
+          <div className="xp-years">
+            {years.map((y) => (
+              <button key={y} className={year === y ? "on" : ""}
+                      onClick={() => { setYear(y); sound.click(); }}>{y}</button>
+            ))}
+          </div>
+
+          {yearSum.count === 0 ? (
+            <div className="empty-state">
+              <div className="glyph">{"{ }"}</div>
+              <div className="msg">nothing logged in {year}</div>
+            </div>
+          ) : (
+            <>
+              <div className="xp-year-head">
+                <span className="xp-year-total">{formatMoney(yearSum.total, state.currency)}</span>
+                <span className="xp-year-sub">
+                  in {year} · {formatMoney(yearSum.perMonth, state.currency, { compact: true })} a month
+                  {yearSum.isCurrent ? ` over ${yearSum.elapsed} month${yearSum.elapsed === 1 ? "" : "s"}` : ""}
+                </span>
+              </div>
+
+              <div className="xp-section">
+                <span>BY MONTH</span>
+                <span className="xp-section-note">tap a bar to open it</span>
+              </div>
+              <ExpenseYearBars
+                months={yearSum.months}
+                currency={state.currency}
+                current={month}
+                onPick={(m) => {
+                  if (!m.amt) { sound.error(); return; }
+                  setMonth(m.key); setView("report"); setPickedDay(null); sound.whoosh();
+                }}
+              />
+
+              <div className="xp-section"><span>WHERE IT WENT</span></div>
+              <div className="xp-donut-card">
+                <DonutChart
+                  size={118}
+                  stroke={16}
+                  segments={yearSum.cats.map((c) => ({ key: c.key, value: c.amt, color: catOf(c.key).color }))}
+                  centerLabel={formatMoney(yearSum.total, state.currency, { compact: true })}
+                  centerSublabel={year}
+                />
+                <div className="xp-legend">
+                  {yearSum.cats.map((c) => (
+                    <div key={c.key} className="xp-legend-row">
+                      <span className="xp-row-dot" style={{ background: catOf(c.key).color }} />
+                      <span className="xp-legend-label">{catOf(c.key).label}</span>
+                      <span className="xp-legend-pct">{Math.round(c.share * 100)}%</span>
+                      <span className="xp-legend-amt">{formatMoney(c.amt, state.currency, { compact: true })}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="xp-section">
+                <span>WHAT YOU BOUGHT</span>
+                <span className="xp-section-note">all of {year}</span>
+              </div>
+              <ExpenseNameTable rows={yearNames} currency={state.currency} catOf={catOf} />
+
+              <div className="xp-section"><span>THE NUMBERS</span></div>
+              <div className="xp-rows">
+                {[
+                  ["spent in " + year, formatMoney(yearSum.total, state.currency)],
+                  [yearSum.isCurrent ? "a month so far" : "a month", formatMoney(yearSum.perMonth, state.currency)],
+                  ["months with spending", `${yearSum.activeMonths} of ${yearSum.elapsed}`],
+                  ["biggest month", yearSum.biggest && yearSum.biggest.amt
+                    ? `${yearSum.biggest.label} · ${formatMoney(yearSum.biggest.amt, state.currency)}` : "—"],
+                  ["entries", String(yearSum.count)],
+                  ...(yearSum.isCurrent ? [["on track for", formatMoney(yearSum.projected, state.currency)]] : []),
+                ].map(([k, v]) => (
+                  <div key={k} className="xp-rowline"><span>{k}</span><span className="xp-rowline-v">{v}</span></div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="xp-section">
+            <span>ALL TIME</span>
+            <span className="xp-section-note">{allTime.length} month{allTime.length === 1 ? "" : "s"}</span>
+          </div>
+          <ExpenseLine series={allTime} currency={state.currency} />
         </>
       )}
 
@@ -15562,6 +15951,100 @@ function TodoApp() {
         .qh-stat-n { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
         .qh-stat-l { font-size: 7.5px; color: var(--muted); text-align: center; line-height: 1.3; }
         .qh-all { margin-top: 9px; text-align: center; font-size: 8.5px; color: var(--muted); }
+
+        /* ---- named items + year view (v48) ---- */
+        .xp-hints { display: flex; gap: 4px; flex-wrap: wrap; margin: -4px 0 9px; }
+        .xp-hint {
+          display: flex; align-items: baseline; gap: 5px;
+          padding: 5px 8px; cursor: pointer; background: transparent;
+          border: var(--border-w) dashed var(--border); border-radius: var(--r-chip);
+          color: var(--text); font-family: var(--font-mono); font-size: 9px;
+        }
+        .xp-hint:active { border-style: solid; border-color: var(--accent); }
+        .xp-hint-amt { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+        .xp-names { display: flex; flex-direction: column; gap: 3px; }
+        .xp-name-row {
+          position: relative; display: flex; align-items: center; gap: 7px;
+          padding: 6px 9px; border-radius: var(--r-chip);
+          border: var(--border-w) solid var(--border);
+          font-size: 9.5px; font-variant-numeric: tabular-nums; overflow: hidden;
+        }
+        /* the bar is a background wash behind the text, not a separate column:
+           at 9px a label plus a bar plus two numbers does not fit on 360px */
+        .xp-name-bar {
+          position: absolute; left: 0; top: 0; bottom: 0;
+          opacity: 0.13; pointer-events: none;
+          transition: width 600ms cubic-bezier(0.22,1,0.36,1);
+        }
+        .xp-name-label {
+          position: relative; flex: 1; min-width: 0; color: var(--text);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .xp-name-n { position: relative; color: var(--muted); font-size: 8.5px; }
+        .xp-name-total { position: relative; color: var(--text); }
+        .xp-more {
+          margin-top: 6px; padding: 5px 10px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 8.5px;
+        }
+        .xp-empty-small { font-size: 8.5px; color: var(--muted); line-height: 1.6; padding: 6px 0; }
+
+        .xp-years { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+        .xp-years button {
+          padding: 6px 11px; cursor: pointer; background: transparent;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-chip);
+          color: var(--muted); font-family: var(--font-mono); font-size: 10px;
+          font-variant-numeric: tabular-nums;
+        }
+        .xp-years button.on { color: var(--accent); border-color: var(--accent); }
+
+        .xp-year-head {
+          display: flex; flex-direction: column; align-items: center; gap: 2px;
+          padding: 12px 10px; margin-bottom: 4px;
+          border: var(--border-w) solid var(--border); border-radius: var(--r-card);
+          background: var(--panel);
+        }
+        .xp-year-total { font-size: 24px; color: var(--accent); font-variant-numeric: tabular-nums; }
+        .xp-year-sub { font-size: 8.5px; color: var(--muted); text-align: center; }
+
+        .xp-year-bars {
+          display: flex; align-items: flex-end; gap: 3px; height: 104px;
+          padding: 7px 7px 4px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--border);
+        }
+        .xp-year-bar {
+          flex: 1 1 0; min-width: 0; height: 100%; padding: 0; cursor: pointer;
+          background: transparent; border: none;
+          display: flex; flex-direction: column; align-items: stretch; gap: 3px;
+        }
+        .xp-year-col { flex: 1; display: flex; align-items: flex-end; }
+        .xp-year-col > span {
+          display: block; width: 100%; background: var(--accent);
+          border-radius: 2px 2px 0 0;
+          transition: height 650ms cubic-bezier(0.22,1,0.36,1);
+        }
+        .xp-year-bar.empty .xp-year-col > span { background: var(--track); min-height: 2px; }
+        .xp-year-bar.on .xp-year-col > span { background: #FBBF24; }
+        .xp-year-m { font-size: 7px; color: var(--muted); text-align: center; }
+        .xp-year-bar.on .xp-year-m { color: #FBBF24; }
+
+        .xp-line-wrap {
+          padding: 7px; border-radius: var(--r-card);
+          border: var(--border-w) solid var(--border);
+        }
+        .xp-line { display: block; }
+        .xp-line-path {
+          fill: none; stroke: var(--accent); stroke-width: 1.6;
+          vector-effect: non-scaling-stroke; transition: opacity 500ms ease;
+        }
+        .xp-line-area { fill: var(--accent); opacity: 0.1; transition: opacity 500ms ease; }
+        .xp-line-dot { fill: var(--accent); }
+        .xp-line-ends {
+          display: flex; justify-content: space-between; gap: 8px;
+          margin-top: 5px; font-size: 7.5px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
+        }
 
         /* ---- sound (v47) ---- */
         .snd { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 9px; }

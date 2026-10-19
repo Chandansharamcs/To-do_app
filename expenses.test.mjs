@@ -49,6 +49,8 @@ const EXPORTS = [
   "summariseExpenses", "expenseDailySeries", "expenseMonths", "shiftMonthKey",
   "groupExpensesByDay", "compareToPreviousMonth", "expensesToCSV",
   "loadExpenses", "saveExpenses",
+  "expenseNameKey", "expenseNameIndex", "suggestNames", "summariseByName",
+  "summariseYear", "expenseYears", "expenseAllTimeSeries",
 ];
 const M = new Function(`${STUBS}\n${CODE}\nreturn {${EXPORTS.join(",")}, localStorage};`)();
 
@@ -369,6 +371,188 @@ T("a save round-trips unchanged", () => {
   assert.equal(after.items[0].note, "chai");
   assert.equal(after.currency, "$");
 });
+
+// ---- named items (v48) -----------------------------------------------------
+
+const named = (d, amt, cat, note, at) => ({ id: `${d}-${amt}-${note}`, d, amt, cat, note, at });
+
+T("the same name in different cases and spacing is one item", () => {
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 5000, "food", "sweets", 10),
+    named("2026-10-05", 6000, "food", "Sweets ", 20),
+    named("2026-10-06", 1000, "food", "  SWEETS", 30),
+  ]);
+  assert.equal(idx.length, 1, "three spellings should be one item");
+  assert.equal(idx[0].count, 3);
+  assert.equal(idx[0].total, 12000);
+});
+
+T("the display spelling is the most recent one used", () => {
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 5000, "food", "sweets", 10),
+    named("2026-10-05", 6000, "food", "Sweets", 20),
+  ]);
+  assert.equal(idx[0].name, "Sweets");
+});
+
+T("a suggestion carries the category and price you last paid", () => {
+  // this is the whole point of tapping one: three fields filled, not one
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 5000, "fun", "sweets", 10),
+    named("2026-10-05", 7500, "food", "sweets", 20),
+  ]);
+  assert.equal(idx[0].cat, "food", "the newest entry decides the category");
+  assert.equal(idx[0].lastAmt, 7500);
+  assert.equal(idx[0].avg, 6250);
+});
+
+T("unnamed entries never enter the name library", () => {
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 5000, "food", ""),
+    named("2026-10-02", 5000, "food", "   "),
+    named("2026-10-03", 5000, "food", "chai"),
+  ]);
+  assert.deepEqual(idx.map((x) => x.name), ["chai"]);
+});
+
+T("suggestions prefer what you are typing the start of", () => {
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 100, "food", "chai", 1),
+    named("2026-10-02", 100, "food", "masala chai", 2),
+    named("2026-10-03", 100, "food", "chapati", 3),
+  ]);
+  const out = M.suggestNames(idx, "cha").map((x) => x.name);
+  assert.ok(out.indexOf("masala chai") > out.indexOf("chai"), "a prefix match must beat a substring match");
+  assert.ok(out.includes("chapati"));
+});
+
+T("the thing you buy most often is suggested first when the box is empty", () => {
+  const idx = M.expenseNameIndex([
+    named("2026-10-01", 100, "food", "chai", 1),
+    named("2026-10-02", 100, "food", "chai", 2),
+    named("2026-10-03", 100, "food", "chai", 3),
+    named("2026-10-04", 900, "fun", "cinema", 4),
+  ]);
+  assert.equal(M.suggestNames(idx, "")[0].name, "chai");
+});
+
+T("an exact match is not offered back to you", () => {
+  const idx = M.expenseNameIndex([named("2026-10-01", 100, "food", "chai", 1)]);
+  assert.deepEqual(M.suggestNames(idx, "chai"), []);
+  assert.deepEqual(M.suggestNames(idx, "CHAI "), [], "and casing does not sneak it back in");
+});
+
+T("suggestions are capped", () => {
+  const items = [];
+  for (let i = 0; i < 40; i++) items.push(named("2026-10-01", 100, "food", `thing ${i}`, i));
+  assert.ok(M.suggestNames(M.expenseNameIndex(items), "thing", 5).length === 5);
+});
+
+T("spend per name adds up, biggest first, and keeps the unnamed", () => {
+  const rows = M.summariseByName([
+    named("2026-10-01", 5000, "food", "sweets"),
+    named("2026-10-05", 6000, "food", "sweets"),
+    named("2026-10-02", 20000, "bills", ""),
+    named("2026-10-03", 900, "food", "chai"),
+  ], (c) => c);
+  assert.equal(rows[0].label, "(unnamed bills)");
+  assert.equal(rows[1].label, "sweets");
+  assert.equal(rows[1].total, 11000);
+  assert.equal(rows[1].count, 2);
+  assert.equal(rows[1].avg, 5500);
+  assert.equal(rows.reduce((a, r) => a + r.total, 0), 31900, "nothing may be dropped");
+});
+
+// ---- the year (v48) --------------------------------------------------------
+
+const YEAR = [
+  named("2026-01-05", 10000, "food", "a"),
+  named("2026-01-20", 5000, "fun", "b"),
+  named("2026-03-02", 20000, "bills", "c"),
+  named("2026-10-09", 7000, "food", "a"),
+  named("2025-12-31", 99000, "food", "old"),
+];
+
+T("a year counts only that year", () => {
+  const y = M.summariseYear(YEAR, "2026", "2026-10-18");
+  assert.equal(y.total, 42000);
+  assert.equal(y.count, 4);
+});
+
+T("there are always twelve months, including the empty ones", () => {
+  const y = M.summariseYear(YEAR, "2026", "2026-10-18");
+  assert.equal(y.months.length, 12);
+  assert.equal(y.months[0].amt, 15000, "january");
+  assert.equal(y.months[1].amt, 0, "february must exist and be zero");
+  assert.equal(y.months[2].amt, 20000);
+  assert.equal(y.months.reduce((a, m) => a + m.amt, 0), y.total);
+});
+
+T("the monthly average divides by months ELAPSED in the current year", () => {
+  // dividing by 12 in February is the same mistake as dividing a month by 31
+  // on the 3rd, and it is wrong in the same flattering direction
+  const y = M.summariseYear(YEAR, "2026", "2026-10-18");
+  assert.equal(y.elapsed, 10);
+  assert.equal(y.perMonth, 4200);
+  const past = M.summariseYear(YEAR, "2026", "2027-05-01");
+  assert.equal(past.elapsed, 12);
+  assert.equal(past.perMonth, 3500);
+});
+
+T("a finished year is not forecast", () => {
+  const past = M.summariseYear(YEAR, "2026", "2027-05-01");
+  assert.equal(past.projected, past.total);
+  const live = M.summariseYear(YEAR, "2026", "2026-10-18");
+  assert.equal(live.projected, Math.round((42000 / 10) * 12));
+});
+
+T("the biggest month is found and empty months do not win it", () => {
+  const y = M.summariseYear(YEAR, "2026", "2026-10-18");
+  assert.equal(y.biggest.label, "mar");
+  assert.equal(y.activeMonths, 3);
+});
+
+T("an empty year is zeros, not NaN", () => {
+  const y = M.summariseYear([], "2024", "2026-10-18");
+  assert.deepEqual([y.total, y.count, y.perMonth, y.activeMonths], [0, 0, 0, 0]);
+  assert.equal(y.months.length, 12);
+});
+
+T("the year list is newest first and always contains this year", () => {
+  assert.deepEqual(M.expenseYears(YEAR, "2026-10-18"), ["2026", "2025"]);
+  assert.deepEqual(M.expenseYears([], "2026-10-18"), ["2026"]);
+});
+
+// ---- the all-time line -----------------------------------------------------
+
+T("the all-time series has no holes", () => {
+  // a line that skips empty months draws a slope from january to april and
+  // calls it a trend
+  const s = M.expenseAllTimeSeries(YEAR, "2026-10-18");
+  assert.equal(s[0].key, "2025-12");
+  assert.equal(s[s.length - 1].key, "2026-10");
+  assert.equal(s.length, 11, "dec through oct inclusive");
+  for (let i = 1; i < s.length; i++) {
+    assert.equal(s[i].key, M.shiftMonthKey(s[i - 1].key, 1), `gap before ${s[i].key}`);
+  }
+});
+
+T("the series totals match the entries", () => {
+  const s = M.expenseAllTimeSeries(YEAR, "2026-10-18");
+  assert.equal(s.reduce((a, x) => a + x.amt, 0), 141000);
+  assert.equal(s.find((x) => x.key === "2026-02").amt, 0);
+});
+
+T("no entries means no line rather than a crash", () => {
+  assert.deepEqual(M.expenseAllTimeSeries([], "2026-10-18"), []);
+});
+
+T("a decade of history does not run away", () => {
+  const s = M.expenseAllTimeSeries([named("2016-01-01", 100, "food", "x")], "2026-10-18");
+  assert.ok(s.length > 100 && s.length < 600, `series length ${s.length}`);
+  assert.equal(s[s.length - 1].key, "2026-10");
+});
+
 
 for (const [name, fn] of tests) {
   try { fn(); pass++; }

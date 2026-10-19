@@ -13,7 +13,7 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v47   (service worker cache tag, see sw.js)
+  CURRENT VERSION   tasksh-v48   (service worker cache tag, see sw.js)
   LAST UPDATED      2026-10-18
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
@@ -471,7 +471,15 @@ load-bearing: the ambient bed defaults to **off** and stops on
 pomodoro surfaces as a `■ silence` button. `buildAlarmPattern(seconds)` is
 pure and tested — it must end within 50ms of the length it claims.
 
-**Expenses (v46).** `tasksh.expenses.v1`. Amounts are stored as whole minor
+**Expenses (v46, extended in v48).** Named entries are the organising idea:
+`note` is the name, `expenseNameIndex` turns the history into a library of
+names with the category and price each one usually carries, and
+`suggestNames` ranks prefix matches above substring matches above frequency.
+Names are keyed case- and space-insensitively so `Sweets ` and `sweets` are
+one item. Year view is `summariseYear` (twelve months, zeros included) and
+`expenseAllTimeSeries` (contiguous month list, no holes).
+
+ `tasksh.expenses.v1`. Amounts are stored as whole minor
 units (paise/cents) and only ever divided for display — floats and a hundred
 entries a month is a rounding error you can see. The per-day average divides
 by days *elapsed* in the current month, not days in the month; the

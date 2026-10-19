@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v48`** | 2026-10-18 | Named spending that accumulates, and a year view |
 | **`v47`** | 2026-10-18 | Sound: ambient beds, a richer palette, and a 10s ring you can silence |
 | **`v46`** | 2026-10-18 | Expense tracker, and the KV quota bug that was breaking cloud backup |
 | **`v45`** | 2026-10-18 | RNGdle Infinite, swipe to complete or fail, quests on Today, tap-a-dot stats, per-quest calendar |
@@ -217,6 +218,54 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-18 — `tasksh-v48`**
+
+Two things the expense tracker was missing: names that add up, and a view
+longer than a month.
+
+- **Entries have names, and the names remember themselves.** The note field
+  became the entry's name. Type "sweets" once and from then on it suggests
+  itself — and tapping the suggestion fills the **name, the category and the
+  price you usually pay**, so a repeat purchase is one tap rather than three
+  fields.
+
+  Deliberately *not* a managed item list you set up first. Every step between
+  you and logging a purchase is where the habit dies; a typo making a second
+  name is a smaller problem than the spend not being recorded at all. Names
+  are matched case- and space-insensitively, so `sweets`, `Sweets ` and
+  `SWEETS` are one item, and the spelling shown is whichever you used last.
+
+  The storage shape is unchanged — still `note` on each entry — so there is
+  no migration and an old backup restores into this untouched.
+
+- **"What you bought".** Spend per named item, biggest first, on both the
+  month and the year, with a proportional wash behind each row. Unnamed
+  entries are grouped as "(unnamed bills)" rather than quietly dropped — a
+  table that does not add up to the total is worse than no table.
+
+- **A year view.** Twelve bars, Jan–Dec, empty months included; tap one to
+  open that month. Plus the year total, per-category donut, the item table,
+  biggest month, months with spending, and what the year is on track for.
+
+- **An all-time line** underneath it: every month you have ever logged, on
+  one line. Contiguous by construction — a line that skips empty months
+  draws a slope from January to April and calls it a trend.
+
+- **The same arithmetic trap, caught in the new place.** The yearly average
+  divides by months **elapsed**, not by 12. Dividing a year's spending by 12
+  in February is the same mistake the daily average would have made on the
+  3rd of the month, and it is wrong in the same flattering direction. Tested
+  both ways; reverting it turns two tests red.
+
+- **Tests: 447 unit + 142 browser** (was 427 + 133). Six mutations against
+  the new code — the case-insensitive name key, the elapsed-month divisor,
+  prefix-beats-substring ranking, holes in the all-time series, and the
+  newest-entry-wins rule for a suggestion's category and price. Five went
+  red; the sixth turned out not to have applied at all (wrong indentation in
+  my search string, the second time that has happened), and the correctly
+  indented version of it did go red. The rule in AGENTS.md about verifying a
+  mutation landed earned its place twice in two versions.
 
 **2026-10-18 — `tasksh-v47`**
 

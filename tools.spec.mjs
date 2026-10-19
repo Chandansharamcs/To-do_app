@@ -1047,7 +1047,7 @@ await test("the report draws a bar for every day of the month", async () => {
   const { ctx, page, errors } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
   await page.goto(BASE, { waitUntil: "networkidle" });
   await openExpenses(page);
-  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.locator(".xp-tabs button", { hasText: "month" }).click();
   await page.waitForTimeout(600);
 
   const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -1068,7 +1068,7 @@ await test("tapping a bar opens that day's entries", async () => {
   const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_SEED(y, m) });
   await page.goto(BASE, { waitUntil: "networkidle" });
   await openExpenses(page);
-  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.locator(".xp-tabs button", { hasText: "month" }).click();
   await page.waitForTimeout(600);
   await page.locator(".xp-bar").first().click();
   await page.waitForTimeout(300);
@@ -1134,7 +1134,7 @@ await test("an empty month says so rather than drawing an empty chart", async ()
   await openExpenses(page);
   await page.locator(".xp-month button").first().click();   // last month
   await page.waitForTimeout(300);
-  await page.locator(".xp-tabs button", { hasText: "report" }).click();
+  await page.locator(".xp-tabs button", { hasText: "month" }).click();
   await page.waitForTimeout(300);
   assert.equal(await page.locator(".xp-bars").count(), 0);
   assert.match(await page.locator(".empty-state").innerText(), /nothing logged/);
@@ -1269,6 +1269,175 @@ await test("unmuted, tapping about actually makes sound", async () => {
   await page.waitForTimeout(400);
   assert.ok(await page.evaluate(() => window.__osc) > 0, "the app made no sound at all");
   await ctxx.close();
+});
+
+// ------------------------------------------- v48: named items + year ----
+
+/** A seed with real history: two years, repeated names, several categories. */
+const XP_HISTORY = (y) => JSON.stringify({
+  currency: "₹",
+  items: [
+    { id: "n1", d: `${y}-01-05`, amt: 4000, cat: "food", note: "sweets", at: 101 },
+    { id: "n2", d: `${y}-01-20`, amt: 6000, cat: "food", note: "Sweets ", at: 102 },
+    { id: "n3", d: `${y}-03-02`, amt: 20000, cat: "bills", note: "wifi", at: 103 },
+    { id: "n4", d: `${y}-03-11`, amt: 2500, cat: "transport", note: "auto", at: 104 },
+    { id: "n5", d: `${y - 1}-11-09`, amt: 9000, cat: "food", note: "groceries", at: 105 },
+  ],
+});
+
+const thisYear = async () => {
+  const { page, ctx } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  const d = await page.evaluate(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()));
+  await ctx.close();
+  return Number(d.slice(0, 4));
+};
+
+await test("a name you have used before is offered back as you type", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "4", "0");
+  await page.locator(".xp-note").fill("sweets");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(350);
+
+  await page.locator(".xp-note").fill("sw");
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".xp-hint").count(), 1, "no suggestion after using a name once");
+  assert.match(await page.locator(".xp-hint-name").innerText(), /sweets/i);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("tapping a suggestion fills the name, the category and the price", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  // log "petrol" as transport at 1100
+  await page.locator(".xp-cat", { hasText: "transport" }).click();
+  await tap(page, "1", "1", "0", "0");
+  await page.locator(".xp-note").fill("petrol");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(350);
+
+  // now start a fresh one under a different category
+  await page.locator(".xp-cat", { hasText: "food" }).click();
+  await page.locator(".xp-note").fill("pet");
+  await page.waitForTimeout(250);
+  await page.locator(".xp-hint").first().click();
+  await page.waitForTimeout(250);
+
+  assert.equal(await page.locator(".xp-note").inputValue(), "petrol");
+  // the button renders a glyph alongside the label, so match rather than equal
+  assert.match(await page.locator(".xp-cat.on").innerText(), /transport/,
+    "the suggestion did not carry its category back");
+  assert.match(await page.locator(".xp-amount").innerText(), /1100/, "the usual price was not filled in");
+  await ctx.close();
+});
+
+await test("the same name in different cases is one item, not two", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  for (const [amt, name] of [["40", "sweets"], ["60", "Sweets"]]) {
+    await tap(page, ...amt.split(""));
+    await page.locator(".xp-note").fill(name);
+    await page.locator(".xp-key.add").click();
+    await page.waitForTimeout(300);
+  }
+  await page.locator(".xp-tabs button", { hasText: "month" }).click();
+  await page.waitForTimeout(500);
+  const rows = await page.locator(".xp-name-row").allInnerTexts();
+  assert.equal(rows.length, 1, `"sweets" and "Sweets" rendered as ${rows.length} items`);
+  assert.match(rows[0], /×2/);
+  await ctx.close();
+});
+
+await test("the year view draws twelve bars whatever is in it", async () => {
+  const y = await thisYear();
+  const { ctx, page, errors } = await phone({ "tasksh.expenses.v1": XP_HISTORY(y) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "year" }).click();
+  await page.waitForTimeout(700);
+  assert.equal(await page.locator(".xp-year-bar").count(), 12, "a missing month reads as a gap");
+  assert.match(await page.locator(".xp-year-total").innerText(), /^₹/);
+  assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
+  await ctx.close();
+});
+
+await test("both years are offered and switching changes the total", async () => {
+  const y = await thisYear();
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_HISTORY(y) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "year" }).click();
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator(".xp-years button").count(), 2);
+  const a = await page.locator(".xp-year-total").innerText();
+  await page.locator(".xp-years button", { hasText: String(y - 1) }).click();
+  await page.waitForTimeout(500);
+  assert.notEqual(await page.locator(".xp-year-total").innerText(), a);
+  await ctx.close();
+});
+
+await test("tapping a month bar opens that month", async () => {
+  const y = await thisYear();
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_HISTORY(y) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "year" }).click();
+  await page.waitForTimeout(600);
+  await page.locator(".xp-year-bar").nth(2).click();      // march, which has data
+  await page.waitForTimeout(600);
+  assert.match(await page.locator(".xp-month-label").innerText(), /mar/);
+  assert.equal(await page.locator(".xp-bars").count(), 1, "it did not land on the month report");
+  await ctx.close();
+});
+
+await test("an empty month bar does not navigate anywhere", async () => {
+  const y = await thisYear();
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_HISTORY(y) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "year" }).click();
+  await page.waitForTimeout(600);
+  await page.locator(".xp-year-bar").nth(1).click();      // february, empty
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".xp-year-bars").count(), 1, "an empty month navigated away");
+  await ctx.close();
+});
+
+await test("the all-time line appears once there are two months", async () => {
+  const y = await thisYear();
+  const { ctx, page } = await phone({ "tasksh.expenses.v1": XP_HISTORY(y) });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "year" }).click();
+  await page.waitForTimeout(700);
+  assert.equal(await page.locator(".xp-line").count(), 1, "no all-time line");
+  const ends = await page.locator(".xp-line-ends span").allInnerTexts();
+  assert.equal(ends.length, 3);
+  assert.match(ends[0], /^\d{4}-\d{2}$/);
+  await ctx.close();
+});
+
+await test("named spending survives a reload", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openExpenses(page);
+  await tap(page, "7", "5");
+  await page.locator(".xp-note").fill("sweets");
+  await page.locator(".xp-key.add").click();
+  await page.waitForTimeout(350);
+  await page.reload({ waitUntil: "networkidle" });
+  await openExpenses(page);
+  await page.locator(".xp-tabs button", { hasText: "month" }).click();
+  await page.waitForTimeout(500);
+  assert.match((await page.locator(".xp-names").innerText()), /sweets/i);
+  await ctx.close();
 });
 
 console.log(results.join("\n"));
