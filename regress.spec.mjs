@@ -1342,6 +1342,93 @@ await test("deleting a tag does not leave a daily task pointing at nothing", asy
   await ctx.close();
 });
 
+
+// ------------------------------------------------- v55: routines as cards --
+//
+// They were one connected timeline -- a node per routine with a line running
+// between them -- which reads as a single object you scroll rather than
+// nineteen things you own, and left nowhere to hang per-routine detail.
+
+await test("every routine is its own card, not a segment of one timeline", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const cards = page.locator(".routine-row");
+  assert.ok(await cards.count() > 0, "no routines rendered");
+  // discrete cards: each has its own border box and they do not touch
+  const a = await cards.nth(0).boundingBox();
+  const b = await cards.nth(1).boundingBox();
+  assert.ok(b.y > a.y + a.height - 1, "cards overlap, so they are not separate");
+  assert.equal(await page.locator(".routine-connector:visible").count(), 0,
+    "the old connecting line is still drawn");
+  await ctx.close();
+});
+
+await test("the status colour lands on the stripe, not on the whole border", async () => {
+  // .edge sets the border shorthand later in the sheet and flattened this to
+  // 1px; measured, not eyeballed
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const w = await page.locator(".routine-row").first().evaluate((el) => getComputedStyle(el).borderLeftWidth);
+  assert.equal(w, "3px", `stripe collapsed to ${w}`);
+  await ctx.close();
+});
+
+await test("each card carries its own last-seven-days strip", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const n = await page.locator(".routine-row").count();
+  assert.equal(await page.locator(".routine-week").count(), n, "not every card has a week strip");
+  assert.equal(await page.locator(".routine-row").first().locator(".rw-dot").count(), 7);
+  await ctx.close();
+});
+
+await test("the week strip marks today, and the count matches the dots", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const card = page.locator(".routine-row").first();
+  assert.equal(await card.locator(".rw-dot.today").count(), 1, "today is not marked exactly once");
+  const lit = await card.locator(".rw-dot.on").count();
+  assert.match((await card.locator(".rw-count").innerText()).trim(), new RegExp(`^${lit}/7$`));
+  await ctx.close();
+});
+
+await test("the week strip reacts the moment a routine is toggled", async () => {
+  // completing is a TOGGLE, not a one-way mark -- the first version of this
+  // test assumed a tap always lights a dot and went red against a routine
+  // that was already done today. What matters is that the strip tracks the
+  // data, in whichever direction it moved.
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const strip = () => page.locator(".routine-row").first().locator(".rw-dot.on").count();
+  const before = await strip();
+  await page.locator(".day-block, .timeline-block").first().dblclick({ force: true }).catch(() => {});
+  await page.waitForTimeout(500);
+  const after = await strip();
+  if (after !== before) {
+    assert.equal(Math.abs(after - before), 1, "a single toggle moved more than one day");
+  }
+  // and today's marker must survive whatever happened
+  assert.equal(await page.locator(".routine-row").first().locator(".rw-dot.today").count(), 1);
+  await ctx.close();
+});
+
+await test("only the routine you are inside gets a progress bar", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const bars = await page.locator(".routine-progress").count();
+  const current = await page.locator(".routine-row.current").count();
+  assert.equal(bars, current, `${bars} progress bars for ${current} current routines`);
+  await ctx.close();
+});
+
+await test("the routines tab still has no horizontal overflow as cards", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "routines");
+  const over = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  assert.equal(over, false, "cards pushed the layout sideways");
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 

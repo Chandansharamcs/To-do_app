@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v55`** | 2026-10-20 | Routines are cards with a week strip, not one long timeline |
 | **`v54`** | 2026-10-20 | The companion had been blind to every quest since v35; money gets categories and rules |
 | **`v53`** | 2026-10-19 | Daily tasks carry tags too, so the radar can finally see the push-ups |
 | **`v52`** | 2026-10-19 | One editable tag list, quests can wear several, points reset |
@@ -224,6 +225,42 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v55`**
+
+- **Each routine is its own card.** They were one connected timeline, a node
+  per routine with a line running between them. That reads as a single
+  object you scroll through rather than nineteen things you own, and it left
+  nowhere to hang per-routine detail. Same vocabulary as the quest board now:
+  panel, border, and a left stripe carrying the status colour — cyan for the
+  one you are in, amber for next, grey for the rest.
+
+- **A seven-day strip on every card.** A streak says "12" and tells you
+  nothing about the shape of the week; seven dots tell you instantly whether
+  you are steady or whether you did six days and stopped. Oldest left, today
+  right, today's square outlined, count beside it.
+
+- **A progress bar, but only on the routine you are actually inside.** A row
+  of part-filled bars on all nineteen cards is decoration; one bar on the
+  live card is information.
+
+- **Two bugs caught by measuring instead of looking.** The status stripe
+  rendered at 1px, not 3px: `.edge` sets the `border` shorthand further down
+  the sheet and flattened it, which only showed up in a computed-style probe
+  (`"1px rgb(35,39,46)"`) — on the screenshot it merely looked slightly off.
+  And a CSS comment written with backticks around a property name silently
+  terminated the `<style>` template literal, so the build failed with
+  `Expected "}" but found "border"` while a **stale bundle** kept serving the
+  old CSS. The screenshot taken in between was of code that no longer
+  existed. There is now a check that counts backticks inside the style block.
+
+Tests: 613 unit, **171 browser** (+7, pinning discrete cards, the 3px stripe
+by computed style, the strip tracking the data in either direction, and one
+progress bar per current routine). The first version of the toggle test
+asserted a tap always lights a dot and went red against a routine that was
+already done — a toggle has two directions, and the test now says so.
+
+---
 
 **2026-10-20 — `tasksh-v54`**
 

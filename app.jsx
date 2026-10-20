@@ -2589,11 +2589,29 @@ function useRoutineStatus(routines, nowMinutes) {
 
 // compact 7-day dot strip, oldest -> newest (today last)
 
-function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday, onSave }) {
+function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelete, onToggleToday, onSave }) {
   const startMin = timeToMinutes(routine.time);
   const endMin = startMin + routine.duration;
+  const progressPct = routine.duration > 0
+    ? Math.max(0, Math.min(100, ((nowMinutes - startMin) / routine.duration) * 100))
+    : 0;
   const { streak, freezeUsed } = streakFreezeInfo(routine.history);
   const doneToday = (routine.history || []).includes(getISTDateString(0));
+
+  /** v55: the last seven days as seven dots.
+   *
+   *  A streak number says "12" and tells you nothing about the shape of the
+   *  week; seven dots tell you instantly whether you are steady or whether
+   *  you did six days and stopped. Oldest on the left, today on the right,
+   *  which is the direction a week is read in. */
+  const week = useMemo(() => {
+    const set = new Set(routine.history || []);
+    return Array.from({ length: 7 }, (_, i) => {
+      const off = i - 6;
+      const d = getISTDateString(off);
+      return { d, on: set.has(d), today: off === 0 };
+    });
+  }, [routine.history]);
 
   const [dragX, setDragX] = useState(0);
   const draggingRef = useRef(false);
@@ -2699,7 +2717,6 @@ function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday
       >
         <div className="routine-line">
           <span className={`routine-node ${doneToday ? "quest-done" : ""}`} />
-          <span className="routine-connector" />
         </div>
 
         {editing ? (
@@ -2781,6 +2798,27 @@ function RoutineRow({ routine, status, index, total = 1, onDelete, onToggleToday
             <span className="routine-span">
               {minutesToLabel(startMin)} – {minutesToLabel(endMin)} · {formatDuration(routine.duration)}
             </span>
+
+            {/* v55: the week, at a glance. Seven dots cost one line and say
+                more than the streak number above them. */}
+            <div className="routine-week" aria-label={`${week.filter((w) => w.on).length} of the last 7 days`}>
+              {week.map((w) => (
+                <span
+                  key={w.d}
+                  className={`rw-dot ${w.on ? "on" : ""} ${w.today ? "today" : ""}`}
+                  title={w.d}
+                />
+              ))}
+              <span className="rw-count">{week.filter((w) => w.on).length}/7</span>
+            </div>
+
+            {/* only the routine you are actually inside gets a progress bar --
+                a row of full/empty bars on every card is decoration, not data */}
+            {status === "current" && (
+              <div className="routine-progress">
+                <span className="rp-fill" style={{ width: `${Math.round(progressPct)}%` }} />
+              </div>
+            )}
           </div>
         )}
 
@@ -2994,6 +3032,7 @@ function RoutinesView({ routines, setRoutines }) {
             index={i}
             total={sorted.length}
             status={r.id === currentId ? "current" : r.id === nextId ? "next" : "idle"}
+            nowMinutes={nowMinutes}
             onDelete={deleteRoutine}
             onToggleToday={toggleToday}
             onSave={saveRoutine}
@@ -14710,16 +14749,68 @@ function TodoApp() {
           padding-right: 18px;
         }
 
+        /* ---- routines as cards (v55) ----
+           They were a connected timeline: one node per routine with a line
+           running between them. That reads as a single object you scroll
+           through rather than nineteen things you own, and there was nowhere
+           to hang per-routine detail. Each is its own card now, same
+           vocabulary as the quest board -- panel, border, a left stripe that
+           carries the status colour. */
         .routine-row {
-          position: relative;
           position: relative;
           display: flex;
           align-items: flex-start;
-          gap: 12px;
-          padding: 2px 8px;
+          gap: 11px;
+          padding: 11px 12px;
           background: var(--panel);
+          border: var(--border-w) solid var(--border);
+          border-left: 3px solid var(--rc, var(--border));
+          border-radius: var(--r-card);
+          box-shadow: var(--shadow-card, none);
           touch-action: pan-y;
           user-select: none;
+          transition: border-color 160ms ease, transform 220ms cubic-bezier(.65,0,.35,1);
+        }
+        .routine-row-wrap { margin-bottom: 8px; }
+        .routine-row.current { --rc: var(--accent); }
+        .routine-row.next    { --rc: var(--accent2); }
+        .routine-row.idle    { --rc: #2A2F37; }
+        .routine-connector   { display: none; }
+        /* .edge sets the border SHORTHAND further down the sheet, which
+           flattens this stripe back to 1px. Measured, not assumed: computed
+           border-left came back "1px rgb(35,39,46)". Two classes outrank
+           one, so this wins wherever it sits in the file. */
+        .routine-row.edge {
+          border-left-width: 3px;
+          border-left-style: solid;
+          border-left-color: var(--rc, var(--border));
+        }
+
+        /* the week strip */
+        .routine-week {
+          display: flex; align-items: center; gap: 4px; margin-top: 7px;
+        }
+        .rw-dot {
+          width: 7px; height: 7px; border-radius: 2px;
+          background: var(--track); border: 1px solid transparent;
+          transition: background 180ms ease;
+        }
+        .rw-dot.on { background: var(--rc, var(--accent)); }
+        .rw-dot.today { border-color: var(--muted); }
+        .rw-dot.on.today { border-color: var(--text); }
+        .rw-count {
+          font-family: var(--font-mono); font-size: 8px; color: var(--muted);
+          margin-left: 4px; font-variant-numeric: tabular-nums;
+        }
+
+        /* how far through the routine you actually are */
+        .routine-progress {
+          height: 2px; background: var(--track); border-radius: 2px;
+          margin-top: 7px; overflow: hidden;
+        }
+        .rp-fill {
+          display: block; height: 100%; background: var(--accent);
+          border-radius: 2px; transition: width 800ms linear;
         }
 
         .routine-line {
@@ -14728,6 +14819,7 @@ function TodoApp() {
           align-items: center;
           width: 12px;
           flex-shrink: 0;
+          padding-top: 2px;
         }
 
         .routine-node {
