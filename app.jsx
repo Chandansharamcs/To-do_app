@@ -4670,6 +4670,35 @@ function QuestHistory({ habit, onClose }) {
 // habit with penalty 0 behaves exactly like a v34 good habit; one with xp 0
 // behaves exactly like a v34 bad habit. The old split was never a difference
 // in kind, only in which list a row happened to live in.
+/** A habit's last seven days, in three states rather than two.
+ *
+ *  Routines can only be done or not, so their strip is binary. A quest can
+ *  also SLIP, and the difference between "did not do it" and "did the
+ *  opposite" is the whole point of a paired quest -- so a slipped day is red
+ *  here, not an empty square. Today is ringed so the strip is never ambiguous
+ *  about which end is now.
+ */
+function HabitWeek({ habit }) {
+  const map = useMemo(() => {
+    const m = {};
+    for (const e of normaliseHistory(habit.history)) m[e.d] = e.t;
+    return m;
+  }, [habit.history]);
+  const days = last7Days(Object.keys(map)).map((d) => ({ ...d, t: map[d.d] || null }));
+  const done = days.filter((d) => d.t === "done").length;
+  const slips = days.filter((d) => d.t === "slip").length;
+  return (
+    <div className="habit-week" aria-label={`${done} of the last 7 days done, ${slips} slipped`}>
+      {days.map((d) => (
+        <span key={d.d} className={`hw-dot ${d.t || ""} ${d.today ? "today" : ""}`} title={`${d.d}${d.t ? ` — ${d.t}` : ""}`} />
+      ))}
+      <span className="hw-count">
+        {done}/7{slips > 0 ? ` · ${slips}✗` : ""}
+      </span>
+    </div>
+  );
+}
+
 function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelete, onSave, onHistory,
                     reorder = false, onMove, canUp = false, canDown = false,
                     index = 0, total = 1 }) {
@@ -4874,9 +4903,15 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
           {tagObjs.map((t) => (
             <span key={t.key} className="quest-tag-pip" style={{ color: t.color }}> · {t.label}</span>
           ))}
-          {streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
+          {/* the streak and its freeze are one token: they used to split
+              across two lines when the tag label was long, leaving a lone
+              snowflake on the next row */}
+          {streak > 0 && (
+            <span className="quest-streak"> · 🔥{streak}{freezeUsed ? " ❄️" : ""}</span>
+          )}
         </span>
         {habit.desc && <span className="quest-habit-desc">{habit.desc}</span>}
+        <HabitWeek habit={habit} />
       </div>
       <button
         className="hist-btn"
@@ -5227,6 +5262,23 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     daily: (inventory || []).filter((x) => dailyTags(x, tags).includes(t.key)),
   })), [tags, habits, inventory]);
 
+  /** Which axis is carrying the week and which one is being neglected.
+   *
+   *  The polygon answers "what shape am I" but never in words, and reading a
+   *  radar precisely is hard at 12 axes on a phone. Naming the two extremes
+   *  costs one line and is the thing you would otherwise have to work out.
+   *  Only shown when the axes actually differ -- on a fresh profile every
+   *  axis is zero and a split of "strongest work, weakest body" would be a
+   *  lie dressed as insight. */
+  const radarSplit = useMemo(() => {
+    if (areaAxes.length < 2) return null;
+    const vals = areaAxes.map((a) => a.value);
+    if (Math.max(...vals) === Math.min(...vals)) return null;
+    const strong = areaAxes.reduce((a, b) => (b.value > a.value ? b : a));
+    const weak = areaAxes.reduce((a, b) => (b.value < a.value ? b : a));
+    return { strong, weak };
+  }, [areaAxes]);
+
   // A fixed ceiling, so growth pushes the polygon outward instead of
   // flattening its neighbours.
   const radarMax = useMemo(() => {
@@ -5255,6 +5307,9 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
                  + computeDailyTotalXP(inventory);
   const lostXP = habits.reduce((s, h) => s + habitPenalty(h) * countHist(h, "slip"), 0);
   const spentXP = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
+  const todayStr = getISTDateString(0);
+  const habitsDoneToday = habits.filter((h) => habitDoneOn(h, todayStr)).length;
+  const habitsSlippedToday = habits.filter((h) => habitSlipOn(h, todayStr)).length;
 
   return (
     <div className="task-list vault-scroll">
@@ -5304,6 +5359,18 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
         )}
         {!pickedAxis && (
           <div className="radar-hint">tap a dot for its exact points</div>
+        )}
+        {!pickedAxis && areaAxes.length > 1 && radarSplit && (
+          <div className="radar-split">
+            <span className="rs-strong">
+              <span className="rs-dot" style={{ background: radarSplit.strong.color }} />
+              strongest {radarSplit.strong.label} · {radarSplit.strong.value}
+            </span>
+            <span className="rs-weak">
+              <span className="rs-dot" style={{ background: radarSplit.weak.color }} />
+              weakest {radarSplit.weak.label} · {radarSplit.weak.value}
+            </span>
+          </div>
         )}
         {doubleTagged > 0 && (
           <div className="radar-note">
@@ -5409,6 +5476,10 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
 
       <div className="section-header habits-header">
         <span>HABITS</span>
+        <span className="habits-today">
+          {habitsDoneToday} of {habits.length} done today
+          {habitsSlippedToday > 0 ? ` · ${habitsSlippedToday} slipped` : ""}
+        </span>
         <button
           className={`radar-edit ${reorderMode ? "on" : ""}`}
           onClick={() => { setReorderMode((v) => !v); sound.click(); }}
@@ -17283,6 +17354,57 @@ function TodoApp() {
           font-variant-numeric: tabular-nums;
         }
 
+        /* ---- a quest's last seven days (v59) ----
+           Three states, not two: done is cyan, a slip is red, a day with
+           nothing is an empty track. A paired quest's whole point is the
+           difference between "did not" and "did the opposite", so those two
+           must not look the same. */
+        .quest-streak { white-space: nowrap; }
+
+        .habit-week {
+          display: flex; align-items: center; gap: 3px; margin-top: 7px;
+        }
+        .hw-dot {
+          width: 7px; height: 7px; border-radius: 2px;
+          background: var(--track);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.045);
+          transition: background 180ms ease;
+        }
+        .hw-dot.done { background: var(--accent); }
+        .hw-dot.slip { background: var(--danger); }
+        .hw-dot.today { outline: 1px solid var(--muted); outline-offset: 1px; }
+        .hw-dot.done.today { outline-color: var(--text); }
+        .hw-count {
+          margin-left: 4px;
+          font-family: var(--font-mono);
+          font-size: 8px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
+        }
+
+        /* ---- the two ends of the radar, in words (v59) ---- */
+        .radar-split {
+          display: flex; flex-wrap: wrap; justify-content: center;
+          gap: 4px 14px; margin-top: 4px;
+        }
+        .rs-strong, .rs-weak {
+          display: inline-flex; align-items: center; gap: 5px;
+          font-family: var(--font-mono);
+          font-size: 9px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
+        }
+        .rs-weak { opacity: 0.85; }
+        .rs-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+
+        .habits-today {
+          margin-left: 8px;
+          font-family: var(--font-mono);
+          font-size: 9px; font-weight: 400;
+          letter-spacing: 0;
+          color: var(--muted);
+          text-transform: none;
+          font-variant-numeric: tabular-nums;
+        }
+
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {
           color: var(--accent2);
@@ -19160,7 +19282,11 @@ function TodoApp() {
         }
         .quest-habit-card.drawn { border-left: 2px solid var(--accent); }
 
-        .habits-header { display: flex; align-items: center; justify-content: space-between; }
+        /* three children now: HABITS, the today line, and the reorder button.
+           The today line takes the space, so the button stays pinned right. */
+        .habits-header { display: flex; align-items: center; gap: 8px; }
+        .habits-header .habits-today { flex: 1 1 auto; margin-left: 0; }
+        .habits-header .radar-edit { flex: 0 0 auto; }
         .radar-edit.on { border-color: var(--accent); color: var(--accent); }
         .quest-habit-card.reordering { border-style: dashed; }
 

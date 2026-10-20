@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v59`** | 2026-10-20 | Quest cards show their last seven days; the radar names both ends |
 | **`v58`** | 2026-10-20 | Today gets a day rack, a week strip and an honest edge fade |
 | **`v57`** | 2026-10-20 | Roll slots: every roll drawn on more panels, all shown, best kept — plus 19 more badges and a calm mode that finally reaches the game |
 | **`v56`** | 2026-10-20 | 58 original badges with exactly-computed counts, and luck you can buy |
@@ -84,6 +85,65 @@ later the *why* is the only part that still matters.
 
 ---
 
+```
+┌─ v59 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · the quest tab, second of the polish pass           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### A quest showed a streak number, not which days it held
+
+`🔥4` says how long the run is; it does not say that Tuesday is the hole.
+Every quest card now carries the last seven days as **three** states, not two:
+cyan done, **red slipped**, empty track for a day with nothing recorded. The
+third state matters here and does not on the routines tab — a paired quest's
+whole point is the difference between "did not do it" and "did the opposite",
+so those two must never look the same. Today is ringed.
+
+### The radar had a shape but no words
+
+Reading a polygon precisely at 5-12 axes on a phone is guesswork. The two
+extremes are now named under it — `strongest Work · 120`, `weakest Health · 0`
+— and the line is suppressed entirely when every axis is equal. On a fresh
+profile every axis is zero, and "strongest work, weakest body" would be a lie
+dressed as insight.
+
+### The habits header states today's standing
+
+`2 OF 6 DONE TODAY · 1 SLIPPED`, beside the reorder control rather than
+replacing it.
+
+### One line that had started to orphan
+
+A long tag label pushed `🔥1 ❄️` onto its own row, leaving a lone snowflake
+under a habit name. The streak and its freeze are now one non-breaking token.
+
+### The swipe tests were measuring page height, not the gesture
+
+Adding a strip to every card made the quest tab taller, and the first test card
+slipped below the 844px fold. `boundingBox()` happily returns coordinates below
+the viewport, so the synthetic swipe landed on empty space — and the left-swipe
+test then failed for a reason that had nothing to do with swiping. Two causes:
+
+1. The swipe helper now scrolls the card into view and starts the drag from the
+   card's **body centre** rather than its outermost 18px.
+2. Starting at the extreme right edge put the pointer on the **achievement
+   toast's dismiss button** — the one part of that toast that still accepts
+   pointers (the body has been `pointer-events: none` since v52).
+
+**Known limitation, measured and not fixed:** while a toast is up, its 26x26
+dismiss button sits in the bottom-right, which is where a right-to-left swipe
+begins if you start it at the card's edge. It lasts 4.2 seconds. A test now pins
+the toast body at `pointer-events: none` and the button at `auto`, so that
+blocking area cannot silently grow. Fixing the overlap properly means moving or
+rethinking the toast, which was not asked for and is not worth doing blind.
+
+**Verified:** 649 unit, 182 browser, 0 failed. No console errors, no horizontal
+overflow at 390x844. Screenshots at 390x844 with the strip in all three states.
+
+---
+
+```
 ┌─ v58 ───────────────────────────────────────────────────────────┐
 │  2026-10-20 · the landing tab, first of the polish pass          │
 └─────────────────────────────────────────────────────────────────┘

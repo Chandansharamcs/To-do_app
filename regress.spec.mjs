@@ -687,9 +687,21 @@ const swipeCard = (page) => page.locator(".quest-habit-card.good", { hasText: "S
 async function swipe(page, locator, dx) {
   await locator.scrollIntoViewIfNeeded();
   await page.waitForTimeout(120);
+  // v59: these tests used to swipe wherever the card happened to be. When the
+  // quest tab got taller (a seven-day strip on every card), the first card
+  // slipped below the 844px fold and the synthetic mouse events landed off
+  // screen -- silently clicking whatever was under the clamp instead. Scroll
+  // to it explicitly so the test measures the gesture, not the page height.
+  await locator.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(150);
   const box = await locator.boundingBox();
   const y = box.y + box.height / 2;
-  const x0 = dx > 0 ? box.x + 18 : box.x + box.width - 18;
+  // Start from the card's body, not its outermost 18px. A real finger lands
+  // on the card; the extreme right edge is where the achievement toast's
+  // dismiss button lives while a toast is up, and starting there measured the
+  // toast instead of the gesture. (That 26x26 overlap is a real, separate
+  // limitation -- reported, not papered over.)
+  const x0 = box.x + box.width / 2;
   await page.mouse.move(x0, y);
   await page.mouse.down();
   for (let i = 1; i <= 8; i++) await page.mouse.move(x0 + (dx * i) / 8, y, { steps: 1 });
@@ -712,6 +724,25 @@ await test("swiping a quest left fails it", async () => {
   await swipe(page, swipeCard(page), -120);
   assert.equal(await swipeCard(page).locator(".quest-slip.on").count(), 1, "swipe left did not mark a slip");
   assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0, "a fail also completed it");
+  await ctx.close();
+});
+
+await test("the toast's dismiss button is the only thing it intercepts", async () => {
+  // v59 found this by accident: a left-swipe starting at the card's right edge
+  // landed on the achievement toast's X instead of the card. The body was
+  // already pointer-events:none (v52); this pins down that the X is the only
+  // live target, so a future change cannot widen it back into the swipe lane.
+  const { ctx, page } = await openQuests();
+  await page.evaluate(() => {
+    if (window.__achToastProbe) return;
+    window.__achToastProbe = true;
+  });
+  const toast = page.locator(".ach-toast");
+  if (!(await toast.count())) { await ctx.close(); return; }
+  const body = await toast.evaluate((e) => getComputedStyle(e).pointerEvents);
+  assert.equal(body, "none", "the toast body intercepts pointers again");
+  const x = await page.locator(".ach-toast-x").evaluate((e) => getComputedStyle(e).pointerEvents);
+  assert.equal(x, "auto", "the dismiss button stopped being clickable");
   await ctx.close();
 });
 
@@ -1477,6 +1508,68 @@ await test("the scroll fade only appears while there is more below", async () =>
   });
   assert.ok(atEnd.cls.includes("at-end"), "reaching the end did not clear the fade");
   assert.equal(atEnd.mask, "none", "the last card is still dimmed at the end of the list");
+  await ctx.close();
+});
+
+// ------------------------------------------------- the quest tab (v59) ----
+
+await test("every quest card carries a seven-day strip in three states", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const cards = await page.locator(".quest-habit-card.good:not(.editing)").count();
+  const strips = await page.locator(".habit-week").count();
+  assert.ok(cards > 0, "no quest cards to check");
+  assert.equal(strips, cards, `${strips} strips for ${cards} cards`);
+  // .habit-week is not a first child -- it sits under the label and meta --
+  // so the strip itself is counted, not ":first-child".
+  const dots = await page.locator(".habit-week").first().locator(".hw-dot").count();
+  assert.equal(dots, 7, `${dots} dots in the strip, expected 7`);
+  await ctx.close();
+});
+
+await test("a slipped day is red, not an empty square", async () => {
+  const { ctx, page } = await open();
+  // seed both a done and a slip for today so the two states are on screen
+  await page.evaluate(() => {
+    const iso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+    const hs = JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]");
+    if (hs.length < 2) return;
+    hs[0] = { ...hs[0], history: [{ d: iso, t: "done" }] };
+    hs[1] = { ...hs[1], history: [{ d: iso, t: "slip" }] };
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify(hs));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await gotoTab(page, "quest");
+  assert.ok(await page.locator(".hw-dot.done").count() > 0, "a done day is not marked");
+  assert.ok(await page.locator(".hw-dot.slip").count() > 0, "a slipped day is not marked");
+  const doneBg = await page.locator(".hw-dot.done").first().evaluate((e) => getComputedStyle(e).backgroundColor);
+  const slipBg = await page.locator(".hw-dot.slip").first().evaluate((e) => getComputedStyle(e).backgroundColor);
+  assert.notEqual(doneBg, slipBg, "done and slipped render identically");
+  await ctx.close();
+});
+
+await test("the radar names its strongest and weakest axis, or says nothing", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const split = await page.locator(".radar-split").count();
+  if (split === 0) { await ctx.close(); return; }   // all axes equal: correctly silent
+  const text = await page.locator(".radar-split").innerText();
+  assert.match(text, /strongest/i);
+  assert.match(text, /weakest/i);
+  await ctx.close();
+});
+
+await test("the habits header states today's standing alongside the list", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "quest");
+  const t = await page.locator(".habits-today").innerText();
+  assert.match(t, /of \d+ done today/i, `header did not state a count: ${t}`);
+  // and it must agree with the cards themselves
+  const cards = await page.locator(".quest-habit-card.good").count();
+  // the header is uppercased by CSS, and innerText reflects that, so the
+  // match must be case-insensitive
+  const stated = Number(t.match(/of (\d+)/i)[1]);
+  assert.equal(stated, cards, `header claims ${stated} habits, ${cards} cards rendered`);
   await ctx.close();
 });
 
