@@ -3840,12 +3840,87 @@ function SoundRow() {
   );
 }
 
+/** How much of this device's storage the app is actually using.
+ *
+ *  localStorage is a hard ~5MB and the app writes to it constantly: routines,
+ *  quests, thirty-odd daily items, expenses, and a whole game save with a roll
+ *  history. When writes start failing the app degrades silently (every write
+ *  is wrapped in try/catch, on purpose), so the one screen where you would
+ *  look for the problem had nothing to show. This reads, totals and ranks the
+ *  keys -- it never writes.
+ */
+function useStoreBreakdown() {
+  const [state, setState] = useState(() => readStore());
+  useEffect(() => {
+    // recompute when the tab is shown, and again whenever the page regains
+    // focus -- that is when data has usually changed
+    setState(readStore());
+    const onShow = () => setState(readStore());
+    window.addEventListener("focus", onShow);
+    return () => window.removeEventListener("focus", onShow);
+  }, []);
+  return state;
+}
+
+function readStore() {
+  const entries = [];
+  let total = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("tasksh.")) continue;
+      const v = localStorage.getItem(k) || "";
+      // UTF-16: roughly two bytes per character, which is what a browser quota
+      // counts. Close enough to be useful, and said to be an estimate.
+      const bytes = (k.length + v.length) * 2;
+      entries.push({ key: k, bytes, chars: v.length });
+      total += bytes;
+    }
+  } catch { /* storage disabled entirely: report nothing rather than throw */ }
+  entries.sort((a, b) => b.bytes - a.bytes);
+  return { entries, total, count: entries.length };
+}
+
+const STORE_QUOTA_BYTES = 5 * 1024 * 1024;
+
+function StoreRow() {
+  const { entries, total, count } = useStoreBreakdown();
+  const frac = Math.min(1, total / STORE_QUOTA_BYTES);
+  const kb = (b) => (b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`);
+  return (
+    <details className="store-row">
+      <summary>
+        <span className="store-head">
+          <span className="store-title">STORAGE</span>
+          <span className="store-total">{kb(total)} · {count} key{count === 1 ? "" : "s"}</span>
+        </span>
+        <span className="store-bar"><i style={{ width: `${Math.max(2, frac * 100)}%` }} /></span>
+        <span className="store-sub">
+          {frac > 0 && frac < 0.01 ? "under 1%" : `about ${Math.round(frac * 100)}%`} of the ~5 MB a browser gives one site
+        </span>
+      </summary>
+      <div className="store-list">
+        {entries.length === 0 && <div className="store-empty">nothing stored on this device yet</div>}
+        {entries.map((e) => (
+          <div className="store-line" key={e.key}>
+            <span className="store-key">{e.key.replace(/^tasksh\./, "")}</span>
+            <span className="store-size">{kb(e.bytes)}</span>
+            <span className="store-share">{total ? Math.round((e.bytes / total) * 100) : 0}%</span>
+          </div>
+        ))}
+      </div>
+      <div className="store-foot">estimate: two bytes a character, which is what a quota counts</div>
+    </details>
+  );
+}
+
 function VaultView() {
   return (
     <div className="task-list vault-scroll">
       <CloudBackupRow />
       <AppUpdateRow />
       <SoundRow />
+      <StoreRow />
       <pre className="cap-note">
         habits, projects and notes moved out of here in v44. nothing was
         deleted — they are still in your backups.
@@ -4303,6 +4378,40 @@ function dailyValue(item) {
 /** How many times it has ever been completed. */
 function dailyDoneCount(item) {
   return Array.isArray(item && item.history) ? item.history.length : 0;
+}
+
+/** How many days since a daily task was last completed, and a phrase for it.
+ *
+ *  The inventory row already said how many times an item had been done and
+ *  what it had earned. It never said WHEN -- so an item done twice in 2024
+ *  looked identical to one done twice last week, and the list could not be
+ *  pruned on evidence. Dates are IST calendar days compared as strings, so
+ *  nothing here re-derives a timezone.
+ */
+function dailyLastDone(item) {
+  const hist = (item && item.history) || [];
+  if (!hist.length) return null;
+  const last = hist.reduce((a, b) => (String(b) > String(a) ? String(b) : String(a)));
+  const days = istDaysBetween(last, getISTDateString(0));
+  if (days === null) return null;
+  return { date: last, days };
+}
+
+/** Whole IST calendar days from `from` to `to`. Both are YYYY-MM-DD. */
+function istDaysBetween(from, to) {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/** "today", "yesterday", "9d ago", "3mo ago". Quiet, not cute. */
+function daysAgoLabel(days) {
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 /** Lifetime points from one daily task. */
@@ -5806,6 +5915,25 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
     list.includes(key) ? list.filter((k) => k !== key) : list.length >= 2 ? list : [...list, key];
   useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
 
+  /** What today's board still owes, in the currency it actually pays.
+   *  Three cards are drawn; without this the tab could not say whether any of
+   *  them were left without reading all three. */
+  const board = useMemo(() => {
+    const picks = (daily && daily.picks) || {};
+    const doneToday = (daily && daily.done) || [];
+    const cards = DIFFICULTIES.map((d) => {
+      const id = picks[d.key];
+      const item = id ? (inventory || []).find((t) => t.id === id) : null;
+      return item ? { item, diff: d, done: doneToday.includes(item.id) } : null;
+    }).filter(Boolean);
+    const claimed = cards.filter((c) => c.done).length;
+    const left = cards.filter((c) => !c.done).reduce((n, c) => n + c.diff.coins, 0);
+    return { cards, claimed, total: cards.length, left };
+  }, [daily, inventory]);
+  const boardClaimed = board.claimed;
+  const boardTotal = board.total;
+  const boardLeft = board.left;
+
   /** An item leaving a difficulty it was drawn under leaves a hole in today's
    *  board. Fill it from the rest of that difficulty rather than letting the
    *  slot vanish, which reads as "the app ate my quest". */
@@ -5957,6 +6085,15 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
         </div>
       )}
 
+      {(boardClaimed > 0 || boardTotal > 0) && (
+        <div className="daily-standing">
+          <span className="ds-count">{boardClaimed} of {boardTotal} claimed today</span>
+          <span className="ds-left">
+            {boardLeft > 0 ? `${boardLeft} ◉ still on the board` : "board clear"}
+          </span>
+        </div>
+      )}
+
       <div className="daily-note">
         new draw when your first routine starts
         {routines?.length ? ` (${[...routines].map((r) => r.time).sort()[0]})` : ""}
@@ -6018,6 +6155,7 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
             const isToday = Object.values(daily.picks || {}).includes(t.id);
             const mine = dailyTags(t, tags);
             const times = dailyDoneCount(t);
+            const last = dailyLastDone(t);
             return (
               <div className={`quest-habit-card good ${isToday ? "drawn" : ""}`} key={t.id}>
                 {editId === t.id ? (
@@ -6070,6 +6208,7 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
                         {d.label} · +{d.coins} ◉
                         {mine.length ? ` → ${mine.map((k) => (tagMeta(k) || {}).label).join(" + ")}` : " · untagged"}
                         {times ? ` · ${times}× = ${dailyItemXP(t)} pts` : ""}
+                        {last ? ` · ${daysAgoLabel(last.days)}` : " · never done"}
                         {isToday ? " · drawn" : ""}
                       </span>
                     </button>
@@ -17404,6 +17543,67 @@ function TodoApp() {
           text-transform: none;
           font-variant-numeric: tabular-nums;
         }
+
+        /* ---- what is left on today's board (v60) ---- */
+        .daily-standing {
+          display: flex; align-items: baseline; justify-content: space-between;
+          gap: 8px; margin: 10px 18px 0;
+          font-family: var(--font-mono);
+          font-size: 9.5px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
+        }
+        .daily-standing .ds-left { color: var(--accent2); }
+
+        /* ---- storage, at a glance (v60) ---- */
+        .store-row {
+          margin: 0 16px 14px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-card);
+          background: var(--panel);
+          padding: 11px 13px;
+        }
+        .store-row > summary {
+          list-style: none; cursor: pointer;
+          display: flex; flex-direction: column; gap: 6px;
+        }
+        .store-row > summary::-webkit-details-marker { display: none; }
+        .store-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .store-title {
+          font-family: var(--font-mono);
+          font-size: 9.5px; letter-spacing: 0.14em; color: var(--muted);
+        }
+        .store-total {
+          font-family: var(--font-mono);
+          font-size: 10px; color: var(--text);
+          font-variant-numeric: tabular-nums;
+        }
+        .store-bar {
+          display: block; height: 3px; border-radius: 2px;
+          background: var(--track); overflow: hidden;
+        }
+        .store-bar i {
+          display: block; height: 100%; background: var(--accent);
+          border-radius: 2px; transition: width 400ms ease;
+        }
+        .store-sub {
+          font-family: var(--font-mono);
+          font-size: 8.5px; color: var(--muted);
+        }
+        .store-list { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
+        .store-line {
+          display: grid; grid-template-columns: 1fr auto 34px;
+          align-items: baseline; gap: 8px;
+          font-family: var(--font-mono); font-size: 9.5px;
+          font-variant-numeric: tabular-nums;
+        }
+        .store-key { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .store-size { color: var(--muted); }
+        .store-share { color: var(--muted); text-align: right; }
+        .store-empty, .store-foot {
+          font-family: var(--font-mono);
+          font-size: 8.5px; color: var(--muted);
+        }
+        .store-foot { margin-top: 7px; opacity: 0.75; }
 
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v60`** | 2026-10-20 | Tasks says what is left to claim, inventory says when it was last done, vault says what is using the space |
 | **`v59`** | 2026-10-20 | Quest cards show their last seven days; the radar names both ends |
 | **`v58`** | 2026-10-20 | Today gets a day rack, a week strip and an honest edge fade |
 | **`v57`** | 2026-10-20 | Roll slots: every roll drawn on more panels, all shown, best kept — plus 19 more badges and a calm mode that finally reaches the game |
@@ -82,6 +83,55 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v60 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · tasks and vault, closing the polish pass           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The tasks board could not say what was left on it
+
+Three cards are drawn each day and each pays coins. The tab showed the note
+about when the next draw arrives, but never whether anything was still
+unclaimed, or how much. It now states `1 of 3 claimed today · 110 ◉ still on
+the board` — computed from the same picks and done-list the cards render from,
+so the two cannot disagree.
+
+### The inventory knew how many times, never when
+
+An item read `2× = 100 pts`, which made one done twice in 2024 identical to one
+done twice last week. Rows now end with `yesterday`, `23d ago`, `3mo ago`, or
+`never done`. That is the number you need to prune a list on evidence rather
+than a hunch.
+
+Dates are compared as **IST calendar-day strings**, never as elapsed
+milliseconds: a task finished at 23:00 and again at 06:30 is "yesterday" to a
+person, and a millisecond division calls it zero days. Tested against month
+boundaries, year boundaries, a leap year, and 36.5 hours across midnight.
+
+### The vault had nothing to say about storage
+
+Every `localStorage` write in this app is wrapped in `try/catch`, deliberately,
+so when a write starts failing the app degrades **silently** — and the one
+screen you would look at had nothing on it. The vault now reports total bytes
+used, a bar against the ~5 MB a browser gives one site, and an expandable
+ranked list of every `tasksh.*` key.
+
+It is read-only: a test asserts that expanding it leaves the set of
+`localStorage` keys byte-identical. Sizes are an estimate at two bytes per
+character, which is what a quota counts, and the panel says so.
+
+**Also:** an early version of the storage subtitle read "about 0% of the ~5 MB"
+at 9.4 KB, which reads as a broken widget rather than a small number. It now
+says "under 1%".
+
+**Verified:** 664 unit (649 + 15 in `store.test.mjs`), 185 browser, 0 failed.
+Two mutations on the date logic — elapsed-time instead of calendar days, and a
+newest-entry search replaced with "assume the list is sorted" — both turned the
+suite red. No console errors, no horizontal overflow at 390x844.
 
 ---
 

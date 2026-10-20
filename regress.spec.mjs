@@ -1573,6 +1573,52 @@ await test("the habits header states today's standing alongside the list", async
   await ctx.close();
 });
 
+// ------------------------------------------------ tasks + vault (v60) ----
+
+await test("the tasks board states what is still claimed and what is left", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "tasks");
+  const line = page.locator(".daily-standing");
+  if (!(await line.count())) { await ctx.close(); return; }  // no draw yet today
+  const text = await line.innerText();
+  const m = text.match(/(\d+) of (\d+) claimed/i);
+  assert.ok(m, `the board did not state a count: ${text}`);
+  const cards = await page.locator(".daily-card").count();
+  assert.equal(Number(m[2]), cards, `claims ${m[2]} cards, ${cards} drawn`);
+  assert.ok(Number(m[1]) <= Number(m[2]), "more claimed than drawn");
+  await ctx.close();
+});
+
+await test("an inventory row says when it was last done, or that it never was", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "tasks");
+  const metas = await page.locator(".inv-tap .quest-habit-meta").allInnerTexts();
+  assert.ok(metas.length > 0, "no inventory rows");
+  for (const m of metas) {
+    assert.match(m, /(never done|today|yesterday|\d+(d|mo|y) ago)/,
+      `no last-done phrase in: ${m}`);
+  }
+  await ctx.close();
+});
+
+await test("the vault reports storage without writing to it", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "vault");
+  const row = page.locator(".store-row");
+  assert.equal(await row.count(), 1, "no storage row in the vault");
+  const before = await page.evaluate(() => Object.keys(localStorage).sort().join(","));
+  await page.locator(".store-row > summary").click();
+  await page.waitForTimeout(300);
+  const lines = await page.locator(".store-line").count();
+  assert.ok(lines > 0, "storage expanded to nothing");
+  // every listed key is a real tasksh key
+  const keys = await page.locator(".store-key").allInnerTexts();
+  for (const k of keys) assert.ok(k && !k.includes(" "), `odd key shown: ${k}`);
+  const after = await page.evaluate(() => Object.keys(localStorage).sort().join(","));
+  assert.equal(after, before, "opening the storage panel wrote to localStorage");
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 
