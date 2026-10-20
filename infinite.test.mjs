@@ -93,8 +93,8 @@ T("the catalogue came across whole", () => {
   assert.equal(M.RNGI_PETS.length, 13, "companions");
   assert.equal(M.RNGI_SKILLS.length, 28, "skills");
   assert.ok(M.RNGI_PRODUCTS.length >= 23, `only ${M.RNGI_PRODUCTS.length} products`);
-  assert.equal(M.RNGI_BADGE_TOTAL, 293,
-    "233 upstream + 2 Infinite + 58 tasks.sh originals (v56)");
+  assert.equal(M.RNGI_BADGE_TOTAL, 233 + 2 + 77,
+    "233 upstream + 2 Infinite + 77 tasks.sh originals (v57)");
   assert.equal(M.RNG_BADGES.length, 233, "the verified upstream catalogue must never change size");
 });
 
@@ -187,8 +187,13 @@ T("the worked example still scores exactly what it always did", () => {
 // wrong, its EP is wrong, every roll that earns it is wrong, and the shop
 // prices stop meaning anything.
 
-T("there are 58 tasks.sh badges and they are well formed", () => {
-  assert.equal(M.RNGT_BADGES.length, 58);
+// v57 added 19 more originals. Derived from a constant rather than a literal,
+// because this literal has broken three times as the catalogue grew -- see the
+// test-engineering lesson in DECISIONS_AND_LESSONS.
+const RNGT_EXPECTED = 77;
+
+T(`there are ${RNGT_EXPECTED} tasks.sh badges and they are well formed`, () => {
+  assert.equal(M.RNGT_BADGES.length, RNGT_EXPECTED);
   const ids = new Set();
   for (const b of M.RNGT_BADGES) {
     assert.ok(/^T_[A-Z0-9_]+$/.test(b.id), `odd id: ${b.id}`);
@@ -699,6 +704,9 @@ T("the offline multiplier ignores the flywheel", () => {
 // ---- the reset ladder ------------------------------------------------------
 
 const seenCount = (n) => Object.fromEntries(M.RNGI_ALL_BADGES.slice(0, n).map((b) => [b.id, 1]));
+/** The first rebirth asks for a fifth of the catalogue. Derived, so a bigger
+ *  catalogue cannot silently make these three tests unreachable. */
+const GATE1 = Math.ceil(M.RNGI_BADGE_TOTAL * 0.2);
 
 T("the ladder runs rebirth x6, then prestige x3, then rollback forever", () => {
   const kind = (rebirths, prestiges) => M.rngiResetGate(blank({ rebirths, prestiges })).kind;
@@ -739,13 +747,13 @@ T("a reset that is not earned does nothing at all", () => {
 
 T("a rebirth keeps the collection, the friends and the bonuses", () => {
   const s = blank({
-    seen: seenCount(60), earned: 5000000, ep: 400000, rolls: 300,
+    seen: seenCount(GATE1), earned: 5000000, ep: 400000, rolls: 300,
     owned: ["quickwind-1", "clockwork-1"], pets: ["pebble", "moth"], wearing: "moth",
     lifetime: 5000000, totalRolls: 300,
   });
   assert.ok(M.rngiResetGate(s).ready);
   const after = M.rngiReset(s, 1000);
-  assert.equal(Object.keys(after.seen).length, 60, "the collection was wiped");
+  assert.equal(Object.keys(after.seen).length, GATE1, "the collection was wiped");
   assert.deepEqual(after.pets, ["pebble", "moth"], "the friends were wiped");
   assert.equal(after.wearing, "moth");
   assert.equal(after.lifetime, 5000000, "lifetime EP is not a cycle figure");
@@ -755,7 +763,7 @@ T("a rebirth keeps the collection, the friends and the bonuses", () => {
 
 T("a rebirth resets the cycle: EP, shop, rack and streak", () => {
   const s = blank({
-    seen: seenCount(60), earned: 5000000, rolls: 300, streak: 40,
+    seen: seenCount(GATE1), earned: 5000000, rolls: 300, streak: 40,
     owned: ["quickwind-1"], armed: ["surge"], skills: ["surge"], charges: { surge: 5 },
   });
   const after = M.rngiReset(s, 1000);
@@ -767,7 +775,7 @@ T("a rebirth resets the cycle: EP, shop, rack and streak", () => {
 });
 
 T("a rebirth pays a starting sum so the new cycle is not stranded", () => {
-  const s = blank({ seen: seenCount(60), earned: 1000000 });
+  const s = blank({ seen: seenCount(GATE1), earned: 1000000 });
   const after = M.rngiReset(s, 0);
   assert.ok(after.ep > 0, "a fresh cycle with nothing and 3s rolls is a dead end");
   assert.equal(after.ep, 250000 * 4 * 1 + M.rngiSurplus(1000000, 1000000).starter);

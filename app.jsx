@@ -10524,6 +10524,25 @@ const RNGI_PRODUCT_ROWS = [
   ["fourleaf-3", "luck", "Fourleaf III", 2600000,  75, 0, "fourleaf-2", "three rolls in four get a second draw."],
   ["fourleaf-4", "luck", "Fourleaf IV",  6500000, 100, 0, "fourleaf-3", "every roll is drawn twice. the better one is always the one that counts."],
   ["fourleaf-5", "luck", "Fourleaf V",  15000000, 175, 0, "fourleaf-4", "always twice, and three times on three rolls in four."],
+
+  // ---- roll slots (v57) ----
+  // A slot is a SECOND PANEL on the roll screen, permanently. Every slot draws
+  // its own ordinary number and all of them are shown; only the highest-EP one
+  // is the roll and only that one is paid -- the same best-of rule the armed
+  // skills already use, made permanent and visible. Each individual draw stays
+  // a flat 1-in-1,000,001, so the badge counts and every EP figure derived
+  // from them stay true.
+  //
+  // Prices are measured, not felt. Expected EP per roll was swept across all
+  // 1,000,001 numbers: 27,348 for one slot, 47,861 for two, 66,779 for three,
+  // 84,751 for four, 102,050 for five, 118,834 for six. Each rung is priced at
+  // about 59 rolls of the income it buys you, so payback is flat up the ladder
+  // instead of the last rung being a wall.
+  ["slot-2", "draw-slot", "Second Slot", 2800000, 2, 0, "", "the roll is drawn on two panels at once. both numbers show, the better one is kept and paid."],
+  ["slot-3", "draw-slot", "Third Slot",  4000000, 3, 0, "slot-2", "a third panel. three ordinary draws, one winner."],
+  ["slot-4", "draw-slot", "Fourth Slot", 5000000, 4, 0, "slot-3", "four panels across the stage. the spread is starting to show."],
+  ["slot-5", "draw-slot", "Fifth Slot",  6000000, 5, 0, "slot-4", "five. at this width the losing panels are worth reading too."],
+  ["slot-6", "draw-slot", "Sixth Slot",  7000000, 6, 0, "slot-5", "the widest rack the mechanism takes. six draws, one number kept."],
 ];
 
 const RNGI_PET_ROWS = [
@@ -10603,6 +10622,11 @@ const RNGI_BASE_OFFLINE_MS = 120000;     // one offline roll every two minutes
 const RNGI_BASE_OFFLINE_CAP = 144;       // ...up to this many while away
 const RNGI_PET_DROP_CHANCE = 0.004;      // 1 in 250 rolls
 const RNGI_SKILL_MAX_DRAWS = 6;
+/** The widest the roll stage goes: one panel plus five bought slots. Kept
+ *  separate from RNGI_SKILL_MAX_DRAWS so a permanent purchase is never eaten
+ *  by the armed-skill budget. Measured cost of the full ladder: 4.35x EP per
+ *  roll (27,348 -> 118,834), which is why the last rung is not cheap. */
+const RNGI_MAX_SLOTS = 6;
 const RNGI_SKILL_STOCK_MS = 300000;      // the skill shelf rotates every 5 min
 const RNGI_SKILL_STOCK_SIZE = 3;
 const RNGI_HISTORY_MAX = 40;
@@ -10715,6 +10739,30 @@ const RNGT_BADGE_ROWS = [
   ["T_NONASC","Staircase Down","🛝","r",12510,7993,"never increases from one digit to the next",(n,s)=>s.length>1&&rngDigs(s).every((d,i,a)=>i===0||d<=a[i-1])],
   ["T_TWIN","Twin Prime","👬","r",12241,8169,"prime, and so is the number two above it",(n)=>rngMath().isPrime(n)&&rngMath().isPrime(n+2)],
   ["T_SUM13","Unlucky Sum","🐈‍⬛","r",12147,8232,"digits add up to 13",(n,s)=>rngSum(rngDigs(s))===13],
+  // ---- v57: three more families, every count swept over all 1,000,001 rolls ----
+  // Same rule as v56: a count is never guessed. Each of these was produced by
+  // running its predicate against every possible roll, and infinite.test.mjs
+  // re-runs that sweep, so a rule that drifts fails the suite instead of
+  // quietly making the catalogue wrong.
+  ["T_ODD_ONLY","Odd Only","🕯️","u",5120,19530,"every digit is odd",(n,s)=>rngDigs(s).every((d)=>d%2===1)],
+  ["T_EVEN_ONLY","Even Only","🫧","u",6400,15625,"every digit is even",(n,s)=>rngDigs(s).every((d)=>d%2===0)],
+  ["T_FIB_DIGITS","Fibonacci Digits","🌀","u",2143,46657,"every digit is a fibonacci digit: 0 1 2 3 5 8",(n,s)=>rngDigs(s).every((d)=>"012358".includes(String(d)))],
+  ["T_TWO_EACH","Two Each","🎴","r",10288,9720,"three different digits, each appearing exactly twice",(n,s)=>rngDistinct(s)===3 && Object.values(rngTally(s)).every((v)=>v===2)],
+  ["T_THRICE","Thrice","🔱","u",724,138033,"some digit appears exactly three times",(n,s)=>Object.values(rngTally(s)).some((v)=>v===3)],
+  ["T_SUM_21","Sum Of Twenty-One","🃏","u",2521,39662,"digits add up to 21",(n,s)=>rngSum(rngDigs(s))===21],
+  ["T_SUM_36","Full House Sum","🎳","u",3856,25927,"digits add up to 36",(n,s)=>rngSum(rngDigs(s))===36],
+  ["T_PROD_12","Dozen Product","🥚","e",408163,245,"digits multiply to 12",(n,s)=>rngDigs(s).reduce((a,b)=>a*b,1)===12],
+  ["T_ZERO_HEAVY","Zero Heavy","⚫","r",12427,8047,"at least three zeros",(n,s)=>(rngTally(s)["0"]||0)>=3],
+  ["T_NINE_HEAVY","Nine Heavy","9️⃣","r",78740,1270,"at least four nines",(n,s)=>(rngTally(s)["9"]||0)>=4],
+  ["T_ASC_SIX","Six Stairs","🪜","a",1190477,84,"six digits, each one higher than the last",(n,s)=>s.length===6 && rngUp(rngDigs(s))],
+  ["T_SANDWICH","Sandwich","🥪","u",1505,66420,"first and last digit match, the middle does not",(n,s)=>s.length>=3 && s[0]===s[s.length-1] && [...s.slice(1,-1)].every((c)=>c!==s[0])],
+  ["T_TWO_PAIR_RUNS","Double Decker","🍔","u",2154,46413,"exactly two adjacent equal pairs",(n,s)=>{let r=0;for(let i=1;i<s.length;i++)if(s[i]===s[i-1]&&(i<2||s[i-2]!==s[i]))r++;return r===2;}],
+  ["T_STEP_TWO","Two Step","👟","e",334448,299,"every neighbouring digit differs by exactly 2",(n,s)=>{const d=rngDigs(s);return d.length>1&&d.every((v,i,a)=>i===0||Math.abs(v-a[i-1])===2);}],
+  ["T_ZERO_TWICE","Zero Pair","0️⃣","u",1423,70236,"exactly two zeros",(n,s)=>rngTally(s)["0"]===2],
+  ["T_CONTAINS_420","Four Twenty","🌿","r",25006,3999,"contains 420",(n,s)=>rngHas("420")(n,s)],
+  ["T_ENDS_77","Double Seven End","🎰","r",10000,10000,"ends in 77",(n,s)=>rngEnds("77")(n,s)],
+  ["T_PRIME_SUM","Prime Sum","🧮","u",400,249389,"the digits add up to a prime",(n,s)=>rngPrimes(rngSum(rngDigs(s)))],
+  ["T_SQUARE_SUM","Square Sum","🔲","u",1008,99154,"the digits add up to a perfect square",(n,s)=>Number.isInteger(Math.sqrt(rngSum(rngDigs(s))))],
   ["T_ROUNDC","Round Hundred","💯","r",11111,9000,"a whole number of hundreds but not of thousands",(n)=>n>0&&n%100===0&&n%1000!==0],
   ["T_SELFDIV","Self-Dividing","➗","r",11063,9039,"divisible by every one of its own digits",(n,s)=>!s.includes("0")&&rngDigs(s).every((d)=>n%d===0)],
   ["T_EMIRP","Emirp","🪞","r",8941,11184,"prime, and its reverse is a different prime",(n,s)=>rngMath().isPrime(n)&&s.length>1&&!s.endsWith("0")&&rngRev(s)!==s&&rngMath().isPrime(+rngRev(s))],
@@ -10781,6 +10829,7 @@ const RNGI_SHELVES = [
   { id: "pets", label: "friends", blurb: "wallet multipliers, one worn at a time", kinds: ["companion"] },
   { id: "offline", label: "offline", blurb: "earn while the app is shut", kinds: ["offline", "offline-cap", "offline-roller"] },
   { id: "luck", label: "luck", blurb: "extra draws, never a thumb on the scale", kinds: ["luck"] },
+  { id: "slots", label: "slots", blurb: "more panels on every roll, best one kept", kinds: ["draw-slot"] },
   { id: "tools", label: "tools", blurb: "automation and the archive", kinds: ["utility"] },
   { id: "auras", label: "skins", blurb: "cosmetic only, never odds", kinds: ["aura"] },
 ];
@@ -10799,12 +10848,26 @@ function rngiRollSettings(owned = []) {
   return { revealMS, cooldownMS };
 }
 
+/** How many panels a roll is drawn on: one, plus one per slot owned.
+ *
+ *  A slot is a permanent best-of draw, so this is the floor the armed skills
+ *  and luck then compete against. Capped by RNGI_MAX_SLOTS because the reveal
+ *  has to stay readable on a 390px phone -- six panels is already two rows.
+ */
+function rngiSlotCount(owned = []) {
+  let n = 1;
+  for (const id of owned || []) {
+    const p = RNGI_PRODUCT_BY_ID[id];
+    if (p && p.kind === "draw-slot") n = Math.max(n, p.value || 1);
+  }
+  return Math.max(1, Math.min(RNGI_MAX_SLOTS, n));
+}
+
 /** Permanent luck, as a percentage of an extra draw.
  *
  *  "Highest owned wins" rather than additive, so buying the ladder out of
  *  order (or a save that lists them oddly) can never read as 250%. */
-function rngiLuck(owned = []) {
-  let pct = 0;
+function rngiLuck(owned = []) {  let pct = 0;
   for (const id of owned || []) {
     const p = RNGI_PRODUCT_BY_ID[id];
     if (p && p.kind === "luck") pct = Math.max(pct, p.value || 0);
@@ -10984,8 +11047,10 @@ function rngiPlanDraws(armed, luckPct = 0, rand = null) {
   return picks;
 }
 
-function rngiRunDraws(picks, rand) {
+function rngiRunDraws(picks, rand, slotCount = 1) {
   const draws = [];
+  const all = [];
+  const slots = [];
   let best = null, winner = null;
   for (const pick of picks) {
     const budget = Math.min(pick.attempts, RNGI_SKILL_MAX_DRAWS - draws.length);
@@ -10994,18 +11059,27 @@ function rngiRunDraws(picks, rand) {
       const n = rngiDraw(rand);
       draws.push(n);
       const scored = rngiScore(n);
+      all.push({ ...scored, from: pick.id });
       if (!bestHere || scored.ep > bestHere.ep) bestHere = scored;
       if (pick.floor > 0 && scored.ep >= pick.floor) break;
     }
     if (!bestHere) continue;
     if (!best || bestHere.ep > best.ep) { best = bestHere; winner = pick.id; }
   }
-  // the roll always makes one ordinary draw of its own, after the skills'
-  const n = rngiDraw(rand);
-  draws.push(n);
-  const plain = rngiScore(n);
-  if (!best || plain.ep > best.ep) { best = plain; winner = null; }   // ties keep the skill's number
-  return { draws, result: best, winner };
+  // The slots draw last and are the only draws the user sees. Each one is an
+  // ordinary, independent draw; the highest-EP of them is the roll and the
+  // only one paid for. Strictly greater, so a tie keeps the skill's number --
+  // the same rule the single plain draw used before slots existed.
+  const panels = Math.max(1, Math.min(RNGI_MAX_SLOTS, slotCount || 1));
+  for (let s = 0; s < panels; s++) {
+    const n = rngiDraw(rand);
+    draws.push(n);
+    const scored = rngiScore(n);
+    slots.push(scored);
+    all.push({ ...scored, from: "slot" });
+    if (!best || scored.ep > best.ep) { best = scored; winner = null; }
+  }
+  return { draws, result: best, winner, slots, all };
 }
 
 /** Which armed skills do what to the banked total, and to the cooldown. */
@@ -11045,7 +11119,9 @@ function rngiRoll(state, now = Date.now(), rand = null) {
   const armed = (state.armed || []).filter((id) => RNGI_SKILL_BY_ID[id]);
   const fx = rngiSkillEffects(armed);
   const luckPct = rngiLuck(state.owned);
-  const { draws, result, winner } = rngiRunDraws(rngiPlanDraws(armed, luckPct, rand), rand);
+  const slots = rngiSlotCount(state.owned);
+  const run = rngiRunDraws(rngiPlanDraws(armed, luckPct, rand), rand, slots);
+  const { draws, result, winner } = run;
 
   const mult = rngiWalletMult(state);
   const banked = Math.round(result.ep * mult.total * fx.wallet);
@@ -11081,7 +11157,22 @@ function rngiRoll(state, now = Date.now(), rand = null) {
     cooldownUntil: now + revealMS + (fx.waive ? 0 : cooldownMS),
     lastRollAt: now,
   };
-  return { state: next, outcome: { result, banked, mult, fx, draws, winner, drop, fresh, revealMS, cooldownMS: fx.waive ? 0 : cooldownMS } };
+  // The slot panels and the luck race are presentation only: they describe
+  // draws that already happened and were already scored. Nothing downstream
+  // may read `slots` or `race` to decide a number, a badge, an EP or a band.
+  const panels = run.slots;
+  const race = run.all.filter((d) => d.from !== "slot" && d.from !== "luck")
+    .concat(run.all.filter((d) => d.from === "luck"));
+  return {
+    state: next,
+    outcome: {
+      result, banked, mult, fx, draws, winner, drop, fresh, revealMS,
+      cooldownMS: fx.waive ? 0 : cooldownMS,
+      panels,
+      race,
+      keptIndex: panels.findIndex((p) => p.n === result.n && p.ep === result.ep),
+    },
+  };
 }
 
 /** A skill is consumed by firing. Charges are per skill and refill by rolling
@@ -11556,6 +11647,39 @@ function RngiBadgeChip({ badge, dim, note, drop, index = 0 }) {
   );
 }
 
+/** One panel of a multi-slot roll.
+ *
+ *  Every panel draws its own number and every panel is shown. The one that
+ *  scored highest is the roll; the rest are still readable, because a losing
+ *  panel is the only proof that the slot actually did something. Scrambling
+ *  runs on this component's own interval, like RngiDigits, so a six-panel
+ *  roll does not re-render the whole tool five times a second.
+ */
+function RngiSlotPanel({ slot, index, kept, elapsed, revealing, reduced }) {
+  const landAt = 260 + index * 150;
+  const landed = reduced || !revealing || elapsed >= landAt;
+  const [scramble, setScramble] = useState(() => "??????");
+  useEffect(() => {
+    if (landed || reduced) return;
+    const t = setInterval(
+      () => setScramble(Array.from({ length: 6 }, () => RNGI_SCRAMBLE_GLYPHS[Math.floor(Math.random() * 10)]).join("")),
+      90
+    );
+    return () => clearInterval(t);
+  }, [landed, reduced]);
+  return (
+    <div
+      className={`rngi-slot ${kept ? "kept" : "spare"} t-${slot.band.key} ${landed ? "landed" : "spinning"}`}
+      style={{ animationDelay: `${index * 70}ms` }}
+      aria-label={`slot ${index + 1}: ${slot.n}, ${slot.ep} EP${kept ? ", kept" : ""}`}
+    >
+      <span className="rngi-slot-n">{landed ? slot.n : scramble}</span>
+      <span className="rngi-slot-ep">{landed ? `${rngiEP(slot.ep)} EP` : "· · ·"}</span>
+      <span className="rngi-slot-tag">{kept ? "KEPT" : landed ? "dropped" : ""}</span>
+    </div>
+  );
+}
+
 // ---- the roll screen -------------------------------------------------------
 
 function RngiRoll({ state, setState, outcome, setOutcome }) {
@@ -11632,6 +11756,7 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   const tierIdx = result
     ? Math.max(0, ["trash","common","uncommon","rare","epic","anomaly","mythic"].indexOf(result.band.key) - 1)
     : 0;
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const claim = () => {
     setState((s) => rngiClaimOffline(s, offline, Date.now()));
@@ -11664,6 +11789,21 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
               aura={state.aura}
               tier={rv.showRarity ? result.band.key : null}
             />
+            {outcome.panels && outcome.panels.length > 1 && (
+              <div className={`rngi-slots ${outcome.panels.length > 3 ? "dense" : outcome.panels.length === 3 ? "three" : ""}`}>
+                {outcome.panels.map((slot, i) => (
+                  <RngiSlotPanel
+                    key={i}
+                    slot={slot}
+                    index={i}
+                    kept={i === outcome.keptIndex}
+                    elapsed={revealing ? elapsed : (timeline ? timeline.end + 1 : 0)}
+                    revealing={revealing}
+                    reduced={reduced}
+                  />
+                ))}
+              </div>
+            )}
             <div className={`rngi-verdict ${rv.showRarity ? "in" : "pending"}`}>
               {rv.showRarity ? (
                 <>
@@ -11698,7 +11838,36 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
             {rv.showStats && outcome.draws.length > 1 && (
               <div className="rngi-draws rise">
                 kept the best of {outcome.draws.length}
-                {outcome.winner ? ` · ${RNGI_SKILL_BY_ID[outcome.winner].name}` : " · the plain draw won"}
+                {outcome.winner
+                  ? ` · ${RNGI_SKILL_BY_ID[outcome.winner].name}`
+                  : outcome.panels && outcome.panels.length > 1
+                    ? outcome.keptIndex >= 0
+                      ? ` · slot ${outcome.keptIndex + 1} of ${outcome.panels.length}`
+                      : " · a hidden draw beat every slot"
+                    : " · the plain draw won"}
+              </div>
+            )}
+            {rv.showStats && outcome.race && outcome.race.length > 0 && (
+              <div className="rngi-race rise" aria-label="hidden draws">
+                <span className="rngi-race-head">
+                  {outcome.race.length} hidden draw{outcome.race.length === 1 ? "" : "s"}
+                </span>
+                <div className="rngi-race-row">
+                  {outcome.race.map((d, i) => {
+                    const won = d.n === result.n && d.ep === result.ep;
+                    return (
+                      <span
+                        key={i}
+                        className={`rngi-race-draw ${won ? "won" : ""} t-${d.band.key}`}
+                        style={{ animationDelay: `${i * 80}ms` }}
+                        title={`${d.from} draw: ${rngiEP(d.ep)} EP`}
+                      >
+                        {d.n}
+                        {won && <span className="rngi-race-tag">kept</span>}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {rv.showStats && outcome.drop && (
@@ -11868,7 +12037,8 @@ function RngiShop({ state, setState }) {
         requires: p.requires,
         owned: (state.owned || []).includes(p.id),
         locked: p.requires && !(state.owned || []).includes(p.requires),
-        extra: p.kind === "roll" ? `reveal ${rngiDuration(p.from)} → ${rngiDuration(p.value)}`
+        extra: p.kind === "draw-slot" ? `${p.value} panels, best one kept`
+             : p.kind === "roll" ? `reveal ${rngiDuration(p.from)} → ${rngiDuration(p.value)}`
              : p.kind === "cooldown" ? `cooldown ${rngiDuration(p.from)} → ${rngiDuration(p.value)}`
              : p.kind === "offline" ? `one offline roll every ${rngiDuration(p.value)}`
              : p.kind === "offline-cap" ? `store up to ${p.value} offline rolls`
@@ -13609,7 +13779,7 @@ const TOOLS = [
     id: "rngdle",
     glyph: "∞",
     name: "rngdle ∞",
-    desc: "roll numbers, collect 235 badges, buy your way faster",
+    desc: `roll numbers, collect ${RNGI_BADGE_TOTAL} badges, buy your way faster`,
     Component: RngdleTool,
   },
   {
@@ -16441,6 +16611,28 @@ function TodoApp() {
           filter: saturate(0.85) brightness(0.96);
           transition: filter 900ms ease;
         }
+        /* v57: calm mode now actually reaches the game.
+           Measured before this rule: --calm was set on the root and read by
+           nothing, and --motion-scale appeared in six places, all of them the
+           pet. So "calm must still mute it" was a promise the app was not
+           keeping for the roll reveal. Everything below is presentation, so
+           muting it cannot change a number, a badge, an EP or a band.
+           No backticks in here: the stylesheet is a template literal and one
+           would end it -- that is bug B6. */
+        .calm-mode .rngi-chip.drop,
+        .calm-mode .rngi-slot,
+        .calm-mode .rngi-slot.kept,
+        .calm-mode .rngi-race-draw,
+        .calm-mode .rngi-band.slam,
+        .calm-mode .rise,
+        .calm-mode .rngi-ep-float {
+          animation: none !important;
+        }
+        .calm-mode .rngi-stage.band-anomaly,
+        .calm-mode .rngi-stage.band-mythic {
+          animation: none !important;
+        }
+        .calm-mode .rngi-ep-float { display: none; }
 
         @media (prefers-reduced-motion: reduce) {
           .radar-fill, .timeline-block, .heatmap-cell, .task-list,
@@ -18028,6 +18220,118 @@ function TodoApp() {
           from { opacity: 0; transform: translateY(-16px) scale(0.97); }
           to   { opacity: 1; transform: translateY(0) scale(1); }
         }
+
+        /* ---- per-tier landing (v57) ----
+           Presentation only. The tier, the EP, the badges and the band are all
+           decided before anything here runs; this just decides how loudly each
+           chip arrives. Six tiers, six treatments, quietest first: a common
+           chip barely moves, a mythic one flashes the panel edge. */
+        .rngi-chip.drop.t-uncommon { animation: rngiBadgeDrop 280ms cubic-bezier(.2,1.1,.4,1) backwards; }
+        .rngi-chip.drop.t-rare {
+          animation: rngiBadgeDrop 320ms cubic-bezier(.2,1.1,.4,1) backwards,
+                     rngiChipGlint 620ms ease-out 120ms backwards;
+        }
+        .rngi-chip.drop.t-epic {
+          animation: rngiBadgeDrop 340ms cubic-bezier(.2,1.1,.4,1) backwards,
+                     rngiChipGlint 700ms ease-out 120ms backwards;
+        }
+        .rngi-chip.drop.t-anomaly {
+          animation: rngiBadgeDrop 340ms cubic-bezier(.2,1.1,.4,1) backwards,
+                     rngiChipTear 420ms steps(2) 180ms 1 backwards;
+        }
+        .rngi-chip.drop.t-mythic {
+          animation: rngiBadgeDrop 380ms cubic-bezier(.2,1.1,.4,1) backwards,
+                     rngiChipMythic 900ms ease-out 120ms backwards;
+          border-color: color-mix(in srgb, #FB7185 55%, var(--border));
+        }
+        @keyframes rngiChipGlint {
+          from { box-shadow: 0 0 0 0 rgba(94,234,212,0); }
+          40%  { box-shadow: 0 0 0 2px rgba(94,234,212,0.16); }
+          to   { box-shadow: 0 0 0 0 rgba(94,234,212,0); }
+        }
+        @keyframes rngiChipTear {
+          0%, 100% { transform: none; }
+          35% { transform: translateX(-1.5px); }
+          70% { transform: translateX(1.5px); }
+        }
+        @keyframes rngiChipMythic {
+          0%   { box-shadow: 0 0 0 0 rgba(251,113,133,0); }
+          30%  { box-shadow: 0 0 0 3px rgba(251,113,133,0.22), 0 0 14px rgba(251,113,133,0.18); }
+          100% { box-shadow: 0 0 0 0 rgba(251,113,133,0); }
+        }
+
+        /* ---- roll slots (v57) ---- */
+        /* A grid, not a wrap: six panels used to fall 5 + 1, and a lone
+           orphan panel at the bottom read as a mistake. Two panels sit side
+           by side, three and up sit in a block of at most three columns. */
+        .rngi-slots {
+          display: grid; gap: 6px; margin: 8px 0 2px;
+          width: 100%; max-width: 330px;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .rngi-slots.three { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 340px; }
+        .rngi-slots.dense { gap: 4px; grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 350px; }
+        .rngi-slot {
+          display: flex; flex-direction: column; align-items: center; gap: 1px;
+          min-width: 62px; padding: 5px 7px 4px;
+          background: var(--panel); border: 1px solid var(--border);
+          border-radius: 8px;
+          animation: rngiSlotIn 260ms cubic-bezier(.2,1.1,.4,1) backwards;
+        }
+        .rngi-slots.dense .rngi-slot { min-width: 52px; padding: 4px 5px 3px; }
+        @keyframes rngiSlotIn {
+          from { opacity: 0; transform: translateY(6px) scale(0.96); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .rngi-slot-n {
+          font-family: var(--font-mono);
+          font-size: 13px; line-height: 1.1;
+          font-variant-numeric: tabular-nums;
+          color: var(--text);
+        }
+        .rngi-slot.spinning .rngi-slot-n { color: var(--muted); opacity: 0.7; }
+        .rngi-slot-ep { font-size: 8.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+        .rngi-slot-tag { font-size: 7.5px; letter-spacing: 0.12em; color: var(--muted); min-height: 9px; }
+        /* the kept panel carries the status stripe the app uses everywhere:
+           cyan means this is the one that counts. */
+        .rngi-slot.kept {
+          border-color: var(--accent);
+          box-shadow: inset 3px 0 0 0 var(--accent);
+          animation: rngiSlotIn 260ms cubic-bezier(.2,1.1,.4,1) backwards,
+                     rngiSlotKeep 520ms ease-out 200ms backwards;
+        }
+        .rngi-slot.kept .rngi-slot-n { color: var(--accent); }
+        .rngi-slot.kept .rngi-slot-tag { color: var(--accent); }
+        .rngi-slot.spare.landed { opacity: 0.5; }
+        @keyframes rngiSlotKeep {
+          0%   { box-shadow: inset 3px 0 0 0 var(--accent), 0 0 0 0 rgba(94,234,212,0.25); }
+          45%  { box-shadow: inset 3px 0 0 0 var(--accent), 0 0 0 4px rgba(94,234,212,0.12); }
+          100% { box-shadow: inset 3px 0 0 0 var(--accent), 0 0 0 0 rgba(94,234,212,0); }
+        }
+        .rngi-slot.t-mythic.kept { border-color: #FB7185; box-shadow: inset 3px 0 0 0 #FB7185; }
+        .rngi-slot.t-mythic.kept .rngi-slot-n,
+        .rngi-slot.t-mythic.kept .rngi-slot-tag { color: #FB7185; }
+        .rngi-slot.t-anomaly.kept { border-color: #C084FC; box-shadow: inset 3px 0 0 0 #C084FC; }
+        .rngi-slot.t-anomaly.kept .rngi-slot-n,
+        .rngi-slot.t-anomaly.kept .rngi-slot-tag { color: #C084FC; }
+
+        /* ---- hidden draws: the luck race (v57) ---- */
+        .rngi-race { display: flex; flex-direction: column; align-items: center; gap: 3px; margin-top: 5px; }
+        .rngi-race-head { font-size: 8px; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; }
+        .rngi-race-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+        .rngi-race-draw {
+          font-family: var(--font-mono); font-size: 9.5px;
+          font-variant-numeric: tabular-nums;
+          padding: 2px 5px; border-radius: 5px;
+          border: 1px solid var(--border); color: var(--muted);
+          animation: rngiRaceIn 240ms ease-out backwards;
+        }
+        .rngi-race-draw.won { border-color: var(--accent); color: var(--accent); }
+        .rngi-race-tag { margin-left: 3px; font-size: 7px; letter-spacing: 0.1em; opacity: 0.8; }
+        @keyframes rngiRaceIn {
+          from { opacity: 0; transform: translateY(-4px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
         .rngi-banked { position: relative; }
         /* The float rises up the RIGHT EDGE, not the centre. Centred, it
            drifted straight across "MYTHIC · top 0.002%" and the scored-EP
@@ -18050,7 +18354,8 @@ function TodoApp() {
         @media (prefers-reduced-motion: reduce) {
           .rngi-digit.settling, .rngi-digits.collapse, .rngi-digits.t-anomaly .rngi-digit,
           .rngi-digits.t-mythic .rngi-digit, .rngi-band.slam, .rise, .rngi-chip.drop,
-          .rngi-ep-float, .rngi-stage.band-anomaly, .rngi-stage.band-mythic {
+          .rngi-ep-float, .rngi-stage.band-anomaly, .rngi-stage.band-mythic,
+          .rngi-slot, .rngi-slot.kept, .rngi-race-draw {
             animation: none !important;
           }
           .rngi-ep-float { display: none; }

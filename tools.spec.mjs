@@ -1447,6 +1447,58 @@ await test("named spending survives a reload", async () => {
   await ctx.close();
 });
 
+// --------------------------------------------------------- roll slots (v57) ----
+
+const seedRngi = (over) => ({
+  "tasksh.rngdle.v2": JSON.stringify({
+    ep: 4000000, earned: 4000000, lifetime: 4000000, spent: 0, rolls: 30, totalRolls: 30,
+    draws: 30, streak: 0, owned: [], pets: [], wearing: null, skills: [], armed: [],
+    charges: {}, seen: {}, best: null, history: [], cycles: [], rebirths: 0,
+    prestiges: 0, rollbacks: 0, surplusPct: 0, revealUntil: 0, cooldownUntil: 0,
+    lastSeen: 0, ...over,
+  }),
+});
+
+await test("a slot ladder bought in the save draws that many panels", async () => {
+  const { ctx, page, errors } = await phone(seedRngi({
+    owned: ["slot-2", "slot-3"],
+  }));
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await rollOnce(page);
+  assert.equal(await page.locator(".rngi-slot").count(), 3, "three slots should mean three panels");
+  assert.equal(await page.locator(".rngi-slot.kept").count(), 1, "exactly one panel is kept");
+  // the kept panel's EP must be the highest of the three
+  const eps = await page.$$eval(".rngi-slot", (els) => els.map((e) => e.querySelector(".rngi-slot-ep").textContent));
+  assert.equal(eps.length, 3);
+  assert.match(await page.locator(".rngi-draws").innerText(), /slot \d of 3/, "the line must name the winning slot");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("no slot owned still draws exactly one panel, and hides the strip", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await rollOnce(page);
+  assert.equal(await page.locator(".rngi-slot").count(), 0, "a single draw must not show a panel strip");
+  await ctx.close();
+});
+
+await test("the shop sells the ladder, one rung at a time", async () => {
+  const { ctx, page } = await phone(seedRngi({ ep: 100000000, earned: 100000000 }));
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await openRngdle(page);
+  await page.getByRole("button", { name: "shop" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".rngi-shelves button", { hasText: /^slots$/ }).click();
+  await page.waitForTimeout(250);
+  const text = await page.locator(".rngi-items").innerText();
+  assert.match(text, /Second Slot/, "the first rung is not on the shelf");
+  assert.match(text, /panels, best one kept/, "the shelf does not say what a slot does");
+  await ctx.close();
+});
+
 console.log(results.join("\n"));
 console.log(`  tools.spec.mjs — ${passed} passed`);
 await browser.close();

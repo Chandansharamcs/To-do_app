@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v57`** | 2026-10-20 | Roll slots: every roll drawn on more panels, all shown, best kept — plus 19 more badges and a calm mode that finally reaches the game |
 | **`v56`** | 2026-10-20 | 58 original badges with exactly-computed counts, and luck you can buy |
 | **`v55`** | 2026-10-20 | Routines are cards with a week strip, not one long timeline |
 | **`v54`** | 2026-10-20 | The companion had been blind to every quest since v35; money gets categories and rules |
@@ -79,6 +80,85 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v57 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · roll slots + 19 badges + calm mode                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Roll slots — more panels, one winner, and the payout stays honest
+
+Asked for as "one roll can roll 2 numbers, you can buy more and more number
+slots". This is best-of-N, not pay-all-N: **every panel draws its own ordinary
+number and every panel is shown, but only the highest-EP panel is the roll and
+only that one is paid.** Each individual draw therefore stays a flat
+1-in-1,000,001, which is the only reason the badge counts and every EP figure
+derived from them remain true.
+
+Measured by sweeping all 1,000,001 numbers, expected EP per roll:
+
+| panels | expected EP | x |
+|---|---|---|
+| 1 | 29,247 | 1.00 |
+| 2 | 50,811 | 1.74 |
+| 3 | 70,554 | 2.41 |
+| 4 | 89,230 | 3.05 |
+| 5 | 107,161 | 3.66 |
+| 6 | 124,525 | 4.26 |
+
+A pay-every-panel design would have been 6x, which is why it was not built: at
+6x every other price in the shop, the rebirth ladder and the offline vault
+become meaningless in a single purchase. Prices sit at roughly 59 rolls of the
+income each rung buys, so payback is flat up the ladder instead of the last
+rung being a wall.
+
+### Slots nearly ate the skill budget
+
+`RNGI_SKILL_MAX_DRAWS` (6) caps the draws one press may take, and the slots
+draw from the same engine. Left alone, buying slots would have silently spent
+an armed Double Vision's draws. `RNGI_MAX_SLOTS` is now its own cap, and a
+test asserts 2 skill draws + 3 panels = 5 draws.
+
+### Calm mode was a promise the app was not keeping
+
+Measured before this release: `--calm` was set on the root at `app.jsx:1172`
+and **read by nothing in the stylesheet**, and `--motion-scale` appeared in
+exactly six places, all of them `.pet-anim`. The comment above `.calm-mode`
+claimed it "slows everything". It slowed the pet. `.calm-mode` now disables
+the roll, slot, chip and race animations too — and since all of that is
+presentation, muting it cannot change a number, a badge, an EP or a band.
+
+### Three badges the suite refused to let through
+
+19 originals added, 58 -> 77, catalogue 293 -> **312**. Every count swept, EP
+from the official formula. The suite rejected three:
+
+- `THRICE` was tiered `common` at 13.8% — common means above 25%.
+- `PRIME_SUM` at 24.94%, also under the common floor.
+- `ZERO_FREE` fired on 59.8% of rolls, past the noise ceiling of 55%, and was
+  replaced with `ZERO_PAIR` at 7.0%.
+
+### Two bugs in this release's own first build, found on screenshots
+
+1. Six panels wrapped 5 + 1 and left an orphan panel that read as a mistake.
+   Fixed with an explicit grid — two side by side, three and up in a block of
+   at most three columns.
+2. When a hidden luck draw beat every panel nothing was marked kept and the
+   line read "slot 0 of 6". It now reads "a hidden draw beat every slot".
+
+### And one build failure worth recording
+
+The calm-mode CSS comment contained backticks, which terminate the `<style>`
+template literal — bug B6 exactly. The build failed loudly, as it should; the
+comment was rewritten and a backtick count is now part of the release check.
+
+**Verified:** 649 unit (629 + 20), 174 browser (171 + 3), no console errors, no
+horizontal overflow at 390x844 / 430x932 / 820x1180 / 1440x900. Four mutations
+— payout, draw independence, engine clamp, panel cap — all turned the suite
+red; one of my own tests was found vacuous by that process and rewritten.
 
 ---
 
