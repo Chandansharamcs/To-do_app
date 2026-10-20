@@ -1499,6 +1499,41 @@ await test("the shop sells the ladder, one rung at a time", async () => {
   await ctx.close();
 });
 
+// ------------------------------------------------ tool status lines (v61) ----
+
+await test("each tool card reports something true about the device", async () => {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({ ep: 0, seen: { A: 1, B: 1 }, totalRolls: 9, owned: [], history: [] }),
+    "tasksh.expenses.v1": JSON.stringify({ items: [{ id: 1, d: today, amt: 45000, cat: "food", name: "x" }], cats: [], currency: "₹" }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(400);
+  const statuses = await page.locator(".tool-status").allInnerTexts();
+  assert.ok(statuses.length >= 2, `expected status lines, got ${statuses.length}`);
+  const joined = statuses.join(" | ");
+  assert.match(joined, /2 \/ \d+ badges/, `rngdle status missing or wrong: ${joined}`);
+  assert.match(joined, /9 rolls/, `rngdle roll count missing: ${joined}`);
+  assert.match(joined, /₹450 this month/, `expense status missing: ${joined}`);
+  assert.match(joined, /focus/, `pomodoro status missing: ${joined}`);
+  await ctx.close();
+});
+
+await test("a tool with nothing stored says nothing rather than guessing", async () => {
+  const { ctx, page } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(400);
+  const cards = await page.locator(".tool-card:not(.ghost)").count();
+  const statuses = await page.locator(".tool-status").count();
+  assert.ok(statuses <= cards, `${statuses} status lines on ${cards} cards`);
+  // the captions tool has no state to report, so it must not invent one
+  const captionCard = page.locator(".tool-card", { hasText: "ai captions" });
+  assert.equal(await captionCard.locator(".tool-status").count(), 0, "captions invented a status");
+  await ctx.close();
+});
+
 console.log(results.join("\n"));
 console.log(`  tools.spec.mjs — ${passed} passed`);
 await browser.close();

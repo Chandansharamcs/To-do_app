@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v61`** | 2026-10-20 | Every tool card now reports what it actually holds |
 | **`v60`** | 2026-10-20 | Tasks says what is left to claim, inventory says when it was last done, vault says what is using the space |
 | **`v59`** | 2026-10-20 | Quest cards show their last seven days; the radar names both ends |
 | **`v58`** | 2026-10-20 | Today gets a day rack, a week strip and an honest edge fade |
@@ -83,6 +84,32 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v61 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · the tools grid, the last unstyled tab              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### A menu of four cards that all described themselves
+
+The tools grid listed rngdle, expenses, pomodoro and ai captions, and every
+card said only what it *could* do. Nothing said what it currently held. Each
+card now carries one true line read from the device:
+
+- `3 / 312 badges · 12 rolls`
+- `₹450 this month`
+- `25m focus · idle`, or `focus · 18m left` while a block is running
+
+Read-only: nothing in the status path writes. A tool with nothing true to
+report gets **no line at all** rather than a decorative one — `ai captions` has
+no stored state, so it has no status, and a test asserts it does not invent
+one. Unreadable JSON also produces silence rather than something wrong.
+
+**Verified:** 664 unit, 187 browser (185 + 2), 0 failed. No console errors, no
+horizontal overflow at 390x844. Screenshot with rngdle and expenses seeded.
 
 ---
 

@@ -14022,9 +14022,63 @@ const TOOLS = [
   },
 ];
 
+/** One true line about each tool, straight from what is on the device.
+ *
+ *  A grid of four cards that all say what they *could* do is a menu. Each card
+ *  now says what it currently holds: how much of the catalogue is collected,
+ *  what this month has cost, whether a timer is running. Read-only -- nothing
+ *  here writes, and a tool with nothing true to report gets no line at all
+ *  rather than a decorative one.
+ */
+function toolStatuses() {
+  const out = {};
+
+  try {
+    const save = JSON.parse(localStorage.getItem(STORAGE_KEY_RNGI) || "null");
+    if (save) {
+      const seen = Object.keys(save.seen || {}).length;
+      out.rngdle = `${seen} / ${RNGI_BADGE_TOTAL} badges · ${save.totalRolls || 0} rolls`;
+    } else {
+      out.rngdle = "not started";
+    }
+  } catch { /* unreadable save: say nothing rather than something wrong */ }
+
+  try {
+    const money = JSON.parse(localStorage.getItem(STORAGE_KEY_EXPENSES) || "null");
+    if (money && Array.isArray(money.items)) {
+      const month = getISTDateString(0).slice(0, 7);
+      const total = money.items
+        .filter((e) => expenseMonthKey(e.d) === month)
+        .reduce((n, e) => n + (e.amt || 0), 0);
+      out.expenses = money.items.length
+        ? `${formatMoney(total, money.currency || "₹", { compact: true })} this month`
+        : "nothing logged yet";
+    }
+  } catch { /* ignore */ }
+
+  try {
+    const pomo = loadPomodoro();
+    const live = pomo.session && pomo.session.running && pomo.session.endsAt;
+    if (live) {
+      const left = Math.max(0, pomo.session.endsAt - Date.now());
+      const mins = Math.ceil(left / 60000);
+      out.pomodoro = left > 0
+        ? `${(POMO_PHASES[pomo.session.phase] || {}).label || "focus"} · ${mins}m left`
+        : "block finished";
+    } else {
+      out.pomodoro = `${pomo.settings.work}m focus · idle`;
+    }
+  } catch { /* ignore */ }
+
+  return out;
+}
+
 function ToolsView({ onReward }) {
   const [open, setOpen] = useState(null);
   const tool = TOOLS.find((t) => t.id === open) || null;
+  // recomputed whenever the grid is shown, so a tool used a moment ago is
+  // reflected the next time you come back to the list
+  const statuses = useMemo(() => (open ? {} : toolStatuses()), [open]);
 
   if (tool) {
     const Body = tool.Component;
@@ -14050,6 +14104,7 @@ function ToolsView({ onReward }) {
             <span className="tool-glyph">{t.glyph}</span>
             <span className="tool-name">{t.name}</span>
             <span className="tool-desc">{t.desc}</span>
+            {statuses[t.id] && <span className="tool-status">{statuses[t.id]}</span>}
           </button>
         ))}
         {/* An honest empty slot beats padding the grid with things that
@@ -17604,6 +17659,17 @@ function TodoApp() {
           font-size: 8.5px; color: var(--muted);
         }
         .store-foot { margin-top: 7px; opacity: 0.75; }
+
+        /* ---- one true line per tool (v61) ---- */
+        .tool-status {
+          margin-top: 5px;
+          font-family: var(--font-mono);
+          font-size: 8.5px; letter-spacing: 0.02em;
+          color: var(--muted);
+          font-variant-numeric: tabular-nums;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          max-width: 100%;
+        }
 
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {
