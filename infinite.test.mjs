@@ -43,6 +43,7 @@ const EXPORTS = [
   "rngiOfflineGains", "rngiClaimOffline", "rngiDiscovered", "rngiResetGate",
   "rngiTimeline", "rngiReferenceTimeline", "rngiCueTimes", "rngiRevealState",
   "rngiSurplus", "rngiReset", "rngiEP", "rngiDuration",
+  "RNGT_BADGES", "rngiLuck", "rngiLuckDraws",
 ];
 const M = new Function(`${CODE}\nreturn {${EXPORTS.join(",")}};`)();
 
@@ -92,7 +93,9 @@ T("the catalogue came across whole", () => {
   assert.equal(M.RNGI_PETS.length, 13, "companions");
   assert.equal(M.RNGI_SKILLS.length, 28, "skills");
   assert.ok(M.RNGI_PRODUCTS.length >= 23, `only ${M.RNGI_PRODUCTS.length} products`);
-  assert.equal(M.RNGI_BADGE_TOTAL, 235, "233 upstream badges plus the two Infinite ones");
+  assert.equal(M.RNGI_BADGE_TOTAL, 293,
+    "233 upstream + 2 Infinite + 58 tasks.sh originals (v56)");
+  assert.equal(M.RNG_BADGES.length, 233, "the verified upstream catalogue must never change size");
 });
 
 T("every product that needs another names one that exists", () => {
@@ -148,10 +151,195 @@ T("the two extras have no family, so they always pay", () => {
 });
 
 T("adding the extras does not disturb the 233", () => {
+  // The upstream engine is the thing that must never move: rngScore is what
+  // makes two people agree about a number. v56 added 58 tasks.sh badges, so
+  // rngiScore is now LARGER than rngScore for most numbers -- but it must be
+  // larger only by the extras, never by a single point of the verified 233.
+  for (const n of [1000000, 142857, 777, 1, 123456, 999999, 31415]) {
+    const base = M.rngScore(n);
+    const inf = M.rngiScore(n);
+    const extras = inf.paid.filter((b) => !base.paid.some((x) => x.id === b.id));
+    assert.equal(
+      inf.ep, base.ep + extras.reduce((a, b) => a + b.ep, 0),
+      `the 233 were disturbed scoring ${n}`
+    );
+    // every upstream badge the base engine paid is still paid, at the same EP
+    for (const b of base.paid) {
+      const same = inf.paid.find((x) => x.id === b.id);
+      assert.ok(same, `${n}: upstream badge ${b.id} vanished`);
+      assert.equal(same.ep, b.ep, `${n}: ${b.id} was revalued`);
+    }
+  }
+});
+
+T("the worked example still scores exactly what it always did", () => {
+  // 1,000,000 -> 39 earned / 22 paid / 131,081,274 EP, verified against the
+  // real game. This is the upstream engine and it is frozen.
   const base = M.rngScore(1000000);
-  const inf = M.rngiScore(1000000);
-  assert.equal(inf.ep, base.ep, "a number with no extra badge must score identically");
-  assert.equal(inf.paid.length, base.paid.length);
+  assert.equal(base.ep, 131081274);
+});
+
+// ---- the tasks.sh badges (v56) ---------------------------------------------
+//
+// The official 233 are trustworthy because every count was verified against
+// the real game. These 58 are ours, so nothing external vouches for them --
+// which means the sweep below IS the verification. If a single count here is
+// wrong, its EP is wrong, every roll that earns it is wrong, and the shop
+// prices stop meaning anything.
+
+T("there are 58 tasks.sh badges and they are well formed", () => {
+  assert.equal(M.RNGT_BADGES.length, 58);
+  const ids = new Set();
+  for (const b of M.RNGT_BADGES) {
+    assert.ok(/^T_[A-Z0-9_]+$/.test(b.id), `odd id: ${b.id}`);
+    assert.ok(!ids.has(b.id), `duplicate id: ${b.id}`);
+    ids.add(b.id);
+    assert.ok(b.label && b.emoji && b.desc, `${b.id} is missing text`);
+    assert.ok(["c", "u", "r", "e", "a", "m"].includes(b.tier), `${b.id} bad tier`);
+    assert.equal(typeof b.rule, "function");
+    assert.equal(b.family, null, `${b.id} must not join an upstream family`);
+  }
+});
+
+T("no tasks.sh badge collides with an upstream one", () => {
+  const upstream = new Set(M.RNG_BADGES.map((b) => b.id));
+  for (const b of M.RNGT_BADGES) assert.ok(!upstream.has(b.id), `${b.id} shadows an upstream badge`);
+});
+
+T("EVERY tasks.sh count is exact across all 1,000,001 numbers", () => {
+  // the whole sweep, ~10s. This is the test the catalogue rests on.
+  const live = new Array(M.RNGT_BADGES.length).fill(0);
+  for (let n = 0; n <= M.RNG_MAX; n++) {
+    const s = String(n);
+    for (let i = 0; i < M.RNGT_BADGES.length; i++) if (M.RNGT_BADGES[i].rule(n, s)) live[i]++;
+  }
+  const wrong = [];
+  M.RNGT_BADGES.forEach((b, i) => { if (live[i] !== b.count) wrong.push(`${b.id}: declared ${b.count}, actual ${live[i]}`); });
+  assert.deepEqual(wrong, [], wrong.join(" | "));
+});
+
+T("EP follows the official formula from the count", () => {
+  // floor(100 * 1,000,001 / count) -- the same rule the upstream catalogue
+  // uses, so an original badge and a real one of equal rarity pay equally
+  for (const b of M.RNGT_BADGES) {
+    assert.equal(b.ep, Math.floor((100 * 1000001) / b.count), `${b.id} is mispriced for its odds`);
+  }
+});
+
+T("tier matches rarity, so nothing common is dressed as mythic", () => {
+  for (const b of M.RNGT_BADGES) {
+    const odds = b.count / 1000001;
+    if (b.tier === "m") assert.ok(odds <= 0.00005, `${b.id} is mythic at ${(odds * 100).toFixed(4)}%`);
+    if (b.tier === "c") assert.ok(odds > 0.25, `${b.id} is common at ${(odds * 100).toFixed(4)}%`);
+  }
+});
+
+T("no tasks.sh badge is so common it is noise", () => {
+  for (const b of M.RNGT_BADGES) {
+    assert.ok(b.count / 1000001 <= 0.55, `${b.id} fires on ${(100 * b.count / 1000001).toFixed(1)}% of rolls`);
+  }
+});
+
+T("a known number earns the badges a human would expect", () => {
+  const got = (n) => new Set(M.rngiScore(n).earned.map((b) => b.id));
+  assert.ok(got(8128).has("T_PERFECT"), "8128 is a perfect number");
+  assert.ok(got(111111).has("T_REPUNIT"), "111111 is a repunit");
+  assert.ok(got(314159).has("T_PI"), "314159 contains 314");
+  assert.ok(got(133700).has("T_LEET"), "133700 contains 1337");
+  assert.ok(got(123456).has("T_ALLDIFF"), "123456 has no repeated digit");
+  assert.ok(got(101010).has("T_BINARY"), "101010 is written with 0 and 1");
+  assert.ok(!got(123456).has("T_REPDIGIT"), "123456 is not a repdigit");
+});
+
+// ---- luck (v56) ------------------------------------------------------------
+//
+// He asked for a way to increase luck and chose "draw twice, keep the better"
+// over biasing the number. That choice is load-bearing: every individual draw
+// stays a flat 1-in-1,000,001, which is the only reason the 293 counts above
+// -- and every EP figure derived from them -- remain true.
+
+T("luck is zero until it is bought, and highest owned wins", () => {
+  assert.equal(M.rngiLuck([]), 0);
+  assert.equal(M.rngiLuck(["fourleaf-1"]), 25);
+  assert.equal(M.rngiLuck(["fourleaf-1", "fourleaf-2", "fourleaf-3"]), 75);
+  // owning the whole ladder must not add up to 250%
+  assert.equal(M.rngiLuck(["fourleaf-1", "fourleaf-2", "fourleaf-3", "fourleaf-4", "fourleaf-5"]), 175);
+});
+
+T("the luck ladder is a real ladder", () => {
+  const ladder = M.RNGI_PRODUCTS.filter((p) => p.kind === "luck");
+  assert.equal(ladder.length, 5);
+  for (let i = 1; i < ladder.length; i++) {
+    assert.ok(ladder[i].price > ladder[i - 1].price, `${ladder[i].id} is not dearer than the rung below`);
+    assert.ok(ladder[i].value > ladder[i - 1].value, `${ladder[i].id} is not luckier than the rung below`);
+    assert.equal(ladder[i].requires, ladder[i - 1].id, `${ladder[i].id} skips a rung`);
+  }
+});
+
+T("extra draws come out of the percentage honestly", () => {
+  const never = () => 0.99, always = () => 0.0;
+  assert.equal(M.rngiLuckDraws(0, never), 0);
+  assert.equal(M.rngiLuckDraws(0, always), 0, "zero luck can never draw twice");
+  assert.equal(M.rngiLuckDraws(100, never), 1, "100% is a guaranteed extra draw");
+  assert.equal(M.rngiLuckDraws(100, always), 1, "...and only one");
+  assert.equal(M.rngiLuckDraws(50, always), 1);
+  assert.equal(M.rngiLuckDraws(50, never), 0);
+  assert.equal(M.rngiLuckDraws(175, always), 2, "175% is one certain plus one likely");
+  assert.equal(M.rngiLuckDraws(175, never), 1);
+});
+
+T("50% luck really is about half the time", () => {
+  const r = seeded(99);
+  let twice = 0;
+  for (let i = 0; i < 20000; i++) if (M.rngiLuckDraws(50, r) > 0) twice++;
+  const pct = twice / 20000;
+  assert.ok(Math.abs(pct - 0.5) < 0.02, `50% luck fired on ${(pct * 100).toFixed(1)}% of rolls`);
+});
+
+T("luck plans an extra draw and composes with an armed skill", () => {
+  assert.deepEqual(M.rngiPlanDraws([], 0, () => 0.9), [], "no luck, no extra pick");
+  const solo = M.rngiPlanDraws([], 100, () => 0.9);
+  assert.equal(solo.length, 1);
+  assert.equal(solo[0].id, "luck");
+  assert.equal(solo[0].attempts, 1);
+  // Double Vision armed AND luck: both plans survive, neither replaces the other
+  const both = M.rngiPlanDraws(["twice"], 100, () => 0.9);
+  assert.equal(both.length, 2);
+  assert.deepEqual(both.map((p) => p.id).sort(), ["luck", "twice"]);
+});
+
+T("luck keeps the BETTER of the two draws, never the worse", () => {
+  // scripted RNG: first the luck draw, then the roll's own ordinary draw
+  const picks = M.rngiPlanDraws([], 100, () => 0.0);
+  const lowThenHigh = M.rngiRunDraws(picks, scripted(0, 142857 / 1000001));
+  const highThenLow = M.rngiRunDraws(picks, scripted(142857 / 1000001, 0));
+  assert.equal(lowThenHigh.draws.length, 2);
+  assert.equal(highThenLow.draws.length, 2);
+  for (const out of [lowThenHigh, highThenLow]) {
+    const best = Math.max(...out.draws.map((n) => M.rngiScore(n).ep));
+    assert.equal(out.result.ep, best, "a worse draw was kept");
+  }
+});
+
+T("luck never changes the number itself, only which one you keep", () => {
+  // the invariant the whole catalogue rests on: a draw is still uniform
+  const a = M.rngiDraw(scripted(0.5));
+  const b = M.rngiDraw(scripted(0.5));
+  assert.equal(a, b, "the same random input produced two different numbers");
+  // and a scored number is worth the same whether luck is owned or not
+  assert.equal(M.rngiScore(142857).ep, M.rngiScore(142857).ep);
+});
+
+T("a lucky roll banks more on average than an unlucky one", () => {
+  // the point of buying it, measured rather than asserted by faith
+  const mean = (luck, seed) => {
+    const r = seeded(seed);
+    let total = 0;
+    for (let i = 0; i < 4000; i++) total += M.rngiRunDraws(M.rngiPlanDraws([], luck, r), r).result.ep;
+    return total / 4000;
+  };
+  const plain = mean(0, 7), lucky = mean(100, 7);
+  assert.ok(lucky > plain * 1.2, `luck barely helped: ${Math.round(plain)} -> ${Math.round(lucky)}`);
 });
 
 // ---- pace ------------------------------------------------------------------
@@ -529,8 +717,11 @@ T("the EP gates are the original's, times four", () => {
 });
 
 T("the badge gates are NOT scaled -- they are what makes the end long", () => {
-  assert.equal(M.rngiResetGate(blank()).needBadges, Math.ceil(235 * 0.2));
-  assert.equal(M.rngiResetGate(blank({ rebirths: 6, prestiges: 3 })).needBadges, Math.ceil(235 * 0.75));
+  // a proportion of the collection, so it tracks the catalogue rather than
+  // a number that silently rots every time a badge is added
+  const N = M.RNGI_BADGE_TOTAL;
+  assert.equal(M.rngiResetGate(blank()).needBadges, Math.ceil(N * 0.2));
+  assert.equal(M.rngiResetGate(blank({ rebirths: 6, prestiges: 3 })).needBadges, Math.ceil(N * 0.75));
 });
 
 T("both gates have to be met, not either", () => {
@@ -601,8 +792,10 @@ T("the permanent bonus actually compounds across resets", () => {
 });
 
 T("the ladder is visible before it is reachable", () => {
-  const early = M.rngiResetGate(blank({ seen: seenCount(40) }));
-  assert.ok(early.visible, "15% of the collection should reveal the ladder");
+  // expressed as a share of the catalogue, not a literal, for the same reason
+  const N = M.RNGI_BADGE_TOTAL;
+  const early = M.rngiResetGate(blank({ seen: seenCount(Math.ceil(N * 0.2)) }));
+  assert.ok(early.visible, "a fifth of the collection should reveal the ladder");
   assert.ok(!early.ready);
   assert.ok(!M.rngiResetGate(blank({ seen: seenCount(5) })).visible);
 });

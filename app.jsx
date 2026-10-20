@@ -10511,6 +10511,19 @@ const RNGI_PRODUCT_ROWS = [
   ["auto-roll", "utility", "Auto-Roll", 1600000, 0, 0, "", "fires the next roll the moment the cooldown clears. off by default — an idle game that plays itself is a screensaver."],
   ["persistence-core", "utility", "Persistence Core", 4800000, 0, 0, "auto-roll", "auto-roll keeps running while you are on another tab of the app."],
   ["archive-lens", "utility", "Archive Lens", 120000, 0, 0, "", "keeps a longer history of your rolls on the stats page."],
+
+  // ---- luck (v56) ----
+  // The one upgrade the user asked for by name. It buys EXTRA DRAWS, not a
+  // thumb on the scale: at 60% luck, 60% of rolls are drawn twice and the
+  // better of the two is kept. Every individual draw stays a flat 1-in-
+  // 1,000,001, so the 293 badge counts -- and therefore every EP figure in
+  // this file -- stay exactly true. Biasing the number itself would have
+  // made the whole catalogue a lie.
+  ["fourleaf-1", "luck", "Fourleaf I",   240000,   25, 0, "", "a quarter of your rolls are drawn twice, and you keep the better one."],
+  ["fourleaf-2", "luck", "Fourleaf II",  900000,   50, 0, "fourleaf-1", "half of them now."],
+  ["fourleaf-3", "luck", "Fourleaf III", 2600000,  75, 0, "fourleaf-2", "three rolls in four get a second draw."],
+  ["fourleaf-4", "luck", "Fourleaf IV",  6500000, 100, 0, "fourleaf-3", "every roll is drawn twice. the better one is always the one that counts."],
+  ["fourleaf-5", "luck", "Fourleaf V",  15000000, 175, 0, "fourleaf-4", "always twice, and three times on three rolls in four."],
 ];
 
 const RNGI_PET_ROWS = [
@@ -10619,7 +10632,116 @@ const RNGI_EXTRA_BADGES = [
   },
 ].map((b) => ({ ...b, odds: b.count / (RNG_MAX + 1) }));
 
-const RNGI_ALL_BADGES = [...RNG_BADGES, ...RNGI_EXTRA_BADGES];
+
+// ---- tasks.sh original badges (v56) ---------------------------------------
+//
+// The official catalogue is 233 and has not grown. These 58 are ours, built
+// to the same contract and held to the same standard: every `count` below was
+// produced by sweeping all 1,000,001 numbers and counting real matches, and
+// `rngdle.test.mjs` re-derives every one of them. A badge whose odds are a
+// guess is a badge that makes the whole EP economy a guess.
+//
+// EP uses the official formula, floor(100 * 1,000,001 / count), so a tasks.sh
+// badge and a real one of the same rarity are worth the same.
+//
+// None of them carry a family, so they always pay -- they are additive to the
+// verified 233 rather than competing with them.
+
+/** Number-theory helpers, built once on first use.
+ *
+ *  Lazily, because a 1,000,001-entry sieve at module load is a megabyte and
+ *  several milliseconds spent on a tab most launches never open. */
+let _rngMath = null;
+function rngMath() {
+  if (_rngMath) return _rngMath;
+  const N = 1000001;
+  const isComp = new Uint8Array(N + 1);
+  for (let i = 2; i * i <= N; i++) if (!isComp[i]) for (let j = i * i; j <= N; j += i) isComp[j] = 1;
+  const isPrime = (n) => n >= 2 && !isComp[n];
+  const tri = new Set(); for (let k = 1; (k * (k + 1)) / 2 <= 1000000; k++) tri.add((k * (k + 1)) / 2);
+  const lucas = new Set(); { let a = 2, b = 1; while (a <= 1000000) { lucas.add(a); const t = a + b; a = b; b = t; } }
+  const catalan = new Set(); { let c = 1; for (let n = 0; n < 22 && c <= 1000000; n++) { catalan.add(c); c = (c * 2 * (2 * n + 1)) / (n + 2); } }
+  const perfect = new Set([6, 28, 496, 8128]);
+  const mersenne = new Set(); for (let k = 2; k < 21; k++) { const v = 2 ** k - 1; if (v <= 1000000) mersenne.add(v); }
+  const repunit = new Set(); { let v = 1; while (v <= 1000000) { repunit.add(v); v = v * 10 + 1; } }
+  const happy = (n) => { const seen = new Set(); while (n !== 1 && !seen.has(n)) { seen.add(n); n = String(n).split("").reduce((a, d) => a + d * d, 0); } return n === 1; };
+  const sopfr = (n) => { let s = 0, m = n; for (let p = 2; p * p <= m; p++) while (m % p === 0) { s += p; m /= p; } if (m > 1) s += m; return s; };
+  const nfactors = (n) => { let c = 0, m = n; for (let p = 2; p * p <= m; p++) while (m % p === 0) { c++; m /= p; } if (m > 1) c++; return c; };
+  _rngMath = { isPrime, tri, lucas, catalan, perfect, mersenne, repunit, happy, sopfr, nfactors };
+  return _rngMath;
+}
+const rngDigs = (s) => { const o = []; for (let i = 0; i < s.length; i++) o.push(s.charCodeAt(i) - 48); return o; };
+const rngSum = (a) => a.reduce((x, y) => x + y, 0);
+const rngProd = (a) => a.reduce((x, y) => x * y, 1);
+const rngRev = (s) => s.split("").reverse().join("");
+
+const RNGT_BADGE_ROWS = [
+  ["T_PERFECT","Perfect Number","💎","m",25000025,4,"equals the sum of its own divisors",(n)=>rngMath().perfect.has(n)],
+  ["T_REPUNIT","Repunit","1️⃣","m",16666683,6,"nothing but ones",(n)=>rngMath().repunit.has(n)],
+  ["T_STAIRCASE","Counting Up","🔼","m",16666683,6,"the digits 1,2,3… in order from the start",(n,s)=>"123456789".startsWith(s)],
+  ["T_COUNTDOWN","Counting Down","🔽","m",16666683,6,"the digits 9,8,7… in order from the start",(n,s)=>"987654321".startsWith(s)],
+  ["T_SUMONE","Minimal","🫙","m",14285728,7,"digits add up to 1",(n,s)=>rngSum(rngDigs(s))===1],
+  ["T_AUTOMORPHIC","Automorphic","🪆","m",8333341,12,"its square ends with itself",(n,s)=>String(n*n).endsWith(s)],
+  ["T_CATALAN","Catalan","🧩","m",7692315,13,"a Catalan number",(n)=>rngMath().catalan.has(n)],
+  ["T_MERSENNE","Mersenne","🎺","m",5555561,18,"one less than a power of two",(n)=>rngMath().mersenne.has(n)],
+  ["T_ARMSTRONG","Armstrong","💪","m",4761909,21,"equals the sum of its digits each raised to the digit count",(n,s)=>n===rngDigs(s).reduce((a,d)=>a+d**s.length,0)],
+  ["T_LUCAS","Lucas","🦁","m",3448279,29,"a Lucas number: 2, 1, 3, 4, 7, 11…",(n)=>rngMath().lucas.has(n)],
+  ["T_REPDIGIT","Repdigit","♻️","m",2222224,45,"every digit is the same",(n,s)=>s.length>1&&new Set(s).size===1],
+  ["T_TRIMORPHIC","Trimorphic","🧊","m",2000002,50,"its cube ends with itself",(n,s)=>String(n*n*n).endsWith(s)],
+  ["T_BINARY","Binary Look","💻","a",1538463,65,"written with nothing but 0 and 1",(n,s)=>/^[01]+$/.test(s)],
+  ["T_PALPRIME","Palindromic Prime","🔁","a",884956,113,"a prime that reads the same backwards",(n,s)=>rngMath().isPrime(n)&&s===rngRev(s)],
+  ["T_SUMMAX","Maxed Out","🧨","a",476190,210,"digits add up to 50 or more",(n,s)=>rngSum(rngDigs(s))>=50],
+  ["T_LEET","Leet","🕶️","a",333333,300,"contains 1337",(n,s)=>s.includes("1337")],
+  ["T_SUMDIV","Digit-Sum Divides","🧮","a",323624,309,"divisible by the sum of its digits and by their product",(n,s)=>{const a=rngDigs(s),p=rngProd(a);return p>0&&n%rngSum(a)===0&&n%p===0;}],
+  ["T_SUMEQLEN","Featherweight","🪶","a",284900,351,"digits add up to how many digits there are",(n,s)=>rngSum(rngDigs(s))===s.length],
+  ["T_TERNARY","Ternary Look","🔢","e",136986,730,"written with nothing but 0, 1 and 2",(n,s)=>/^[012]+$/.test(s)],
+  ["T_ZEROHEAVY","Mostly Void","🕳️","e",130548,766,"more than half its digits are zero",(n,s)=>s.length>=3&&[...s].filter((c)=>c==="0").length*2>s.length],
+  ["T_SUM7","Lucky Sum","🍀","e",126262,792,"digits add up to 7",(n,s)=>rngSum(rngDigs(s))===7],
+  ["T_CLOCK","On The Clock","⏰","e",119047,840,"four digits that read as a valid 24-hour time",(n,s)=>s.length===4&&+s.slice(0,2)<24&&+s.slice(2)<60],
+  ["T_MIRRORHALF","Mirrored Halves","🪟","e",101010,990,"the second half is the first half reversed",(n,s)=>s.length%2===0&&s.length>=4&&s.slice(s.length/2)===rngRev(s.slice(0,s.length/2))],
+  ["T_ASCENDPAIR","Twin Steps","👯","e",101010,990,"made of pairs of equal digits, like 112233",(n,s)=>s.length%2===0&&s.length>=4&&[...Array(s.length/2)].every((_,i)=>s[2*i]===s[2*i+1])],
+  ["T_DOUBLED","Doubled","✖️","e",100100,999,"the same block of digits written twice",(n,s)=>s.length%2===0&&s.slice(0,s.length/2)===s.slice(s.length/2)],
+  ["T_ROUNDK","Round Thousand","🎯","e",100000,1000,"a whole number of thousands",(n)=>n>0&&n%1000===0],
+  ["T_TRIANGLE","Triangular","🔺","e",70771,1413,"a triangular number: 1, 3, 6, 10, 15…",(n)=>rngMath().tri.has(n)],
+  ["T_NINEHEAVY","Nearly Nine","9️⃣","e",47483,2106,"more than half its digits are nines",(n,s)=>s.length>=3&&[...s].filter((c)=>c==="9").length*2>s.length],
+  ["T_CONSEC_RUN","Long Run","🏃","e",37023,2701,"four or more identical digits in a row",(n,s)=>/(\d)\1{3,}/.test(s)],
+  ["T_PI","Pi Inside","🥧","e",25006,3999,"contains 314",(n,s)=>s.includes("314")],
+  ["T_E","Euler Inside","🧑‍🔬","e",25006,3999,"contains 271",(n,s)=>s.includes("271")],
+  ["T_SQUAREDIGITS","Square Digits","🟦","e",24408,4097,"every digit is a perfect square: 0, 1, 4 or 9",(n,s)=>/^[0149]+$/.test(s)],
+  ["T_ONEUNIQUE","Two Faces","🎭","e",23288,4294,"uses exactly two different digits, 4 digits or more",(n,s)=>s.length>=4&&new Set(s).size===2],
+  ["T_NONDESC","Staircase Up","🪜","e",20020,4995,"never decreases from one digit to the next",(n,s)=>s.length>1&&rngDigs(s).every((d,i,a)=>i===0||d>=a[i-1])],
+  ["T_PRIMEDIGITS","Prime Digits","🧿","r",18315,5460,"every digit is 2, 3, 5 or 7",(n,s)=>/^[2357]+$/.test(s)],
+  ["T_SUM42","Answer Sum","🛸","r",16496,6062,"digits add up to 42",(n,s)=>rngSum(rngDigs(s))===42],
+  ["T_NONASC","Staircase Down","🛝","r",12510,7993,"never increases from one digit to the next",(n,s)=>s.length>1&&rngDigs(s).every((d,i,a)=>i===0||d<=a[i-1])],
+  ["T_TWIN","Twin Prime","👬","r",12241,8169,"prime, and so is the number two above it",(n)=>rngMath().isPrime(n)&&rngMath().isPrime(n+2)],
+  ["T_SUM13","Unlucky Sum","🐈‍⬛","r",12147,8232,"digits add up to 13",(n,s)=>rngSum(rngDigs(s))===13],
+  ["T_ROUNDC","Round Hundred","💯","r",11111,9000,"a whole number of hundreds but not of thousands",(n)=>n>0&&n%100===0&&n%1000!==0],
+  ["T_SELFDIV","Self-Dividing","➗","r",11063,9039,"divisible by every one of its own digits",(n,s)=>!s.includes("0")&&rngDigs(s).every((d)=>n%d===0)],
+  ["T_EMIRP","Emirp","🪞","r",8941,11184,"prime, and its reverse is a different prime",(n,s)=>rngMath().isPrime(n)&&s.length>1&&!s.endsWith("0")&&rngRev(s)!==s&&rngMath().isPrime(+rngRev(s))],
+  ["T_FACEVALUE","Face Value","🃏","r",6400,15625,"every digit is 0 or greater than 5",(n,s)=>/^[06789]+$/.test(s)],
+  ["T_SMITH","Smith Number","🔧","r",6353,15739,"digit sum equals the digit sum of its prime factors",(n,s)=>n>1&&!rngMath().isPrime(n)&&rngSum(rngDigs(s))===rngSum(rngDigs(String(rngMath().sopfr(n))))],
+  ["T_HILL","Single Peak","⛰️","r",5885,16992,"rises to one peak then falls, no flats",(n,s)=>{const a=rngDigs(s);if(a.length<3)return false;let i=1;while(i<a.length&&a[i]>a[i-1])i++;if(i===1||i===a.length)return false;while(i<a.length&&a[i]<a[i-1])i++;return i===a.length;}],
+  ["T_BOWL","Single Dip","🥣","r",4198,23817,"falls to one low point then rises, no flats",(n,s)=>{const a=rngDigs(s);if(a.length<3)return false;let i=1;while(i<a.length&&a[i]<a[i-1])i++;if(i===1||i===a.length)return false;while(i<a.length&&a[i]>a[i-1])i++;return i===a.length;}],
+  ["T_NOPRIMEDIGIT","No Primes","🚫","r",2143,46657,"contains none of 2, 3, 5 or 7",(n,s)=>!/[2357]/.test(s)],
+  ["T_HALVES","Balanced Halves","⚖️","u",1959,51027,"both halves of the number add up to the same thing",(n,s)=>s.length%2===0&&s.length>=4&&rngSum(rngDigs(s.slice(0,s.length/2)))===rngSum(rngDigs(s.slice(s.length/2)))],
+  ["T_DIGITPROD_SQ","Square Product","🔲","u",1747,57240,"its digits multiply to a perfect square above zero",(n,s)=>{const p=rngProd(rngDigs(s));return p>0&&Number.isInteger(Math.sqrt(p));}],
+  ["T_YEAR","A Year","📆","u",1677,59600,"contains a year between 1900 and 2099",(n,s)=>{for(let i=0;i+4<=s.length;i++){const v=+s.slice(i,i+4);if(v>=1900&&v<=2099)return true;}return false;}],
+  ["T_PRIME","Prime","🔱","u",1273,78498,"a prime number",(n)=>rngMath().isPrime(n)],
+  ["T_PRIMELEN","Prime Length","📏","u",1099,90991,"has a prime number of digits",(n,s)=>rngMath().isPrime(s.length)],
+  ["T_SANDWICHEND","Matching Ends","🥪","u",1001,99900,"starts and ends with the same digit, 4 digits or more",(n,s)=>s.length>=4&&s[0]===s[s.length-1]],
+  ["T_UNDULATE","Undulating","🌊","u",733,136425,"digits alternate up and down the whole way",(n,s)=>{const a=rngDigs(s);if(a.length<4)return false;for(let i=1;i<a.length;i++){if(a[i]===a[i-1])return false;if(i>1&&Math.sign(a[i]-a[i-1])===Math.sign(a[i-1]-a[i-2]))return false;}return true;}],
+  ["T_HAPPY","Happy Number","🙂","u",698,143071,"square its digits over and over and you reach 1",(n)=>rngMath().happy(n)],
+  ["T_ALLDIFF","All Different","🌈","u",593,168571,"no digit repeats",(n,s)=>new Set(s).size===s.length],
+  ["T_SEMIPRIME","Semiprime","✌️","u",476,210035,"exactly two prime factors, counted with repeats",(n)=>n>1&&rngMath().nfactors(n)===2],
+  ["T_EVENSUM","Even Weight","➖","c",200,500000,"digits add up to an even number",(n,s)=>rngSum(rngDigs(s))%2===0],
+];
+
+const RNGT_BADGES = RNGT_BADGE_ROWS.map(([id, label, emoji, tier, ep, count, desc, rule]) => ({
+  id, label, emoji, tier, ep, count, desc, rule, family: null, tasksh: true,
+  odds: count / 1000001,
+}));
+
+const RNGI_ALL_BADGES = [...RNG_BADGES, ...RNGI_EXTRA_BADGES, ...RNGT_BADGES];
 const RNGI_BADGE_TOTAL = RNGI_ALL_BADGES.length;
 const RNGI_BADGE_BY_ID = Object.fromEntries(RNGI_ALL_BADGES.map((b) => [b.id, b]));
 
@@ -10627,7 +10749,9 @@ const RNGI_BADGE_BY_ID = Object.fromEntries(RNGI_ALL_BADGES.map((b) => [b.id, b]
  *  fork-only badges, which have no family and so always pay. */
 function rngiScore(n) {
   const base = rngScore(n);
-  const extra = RNGI_EXTRA_BADGES.filter((b) => b.set.has(n));
+  const s = String(n);
+  const extra = RNGI_EXTRA_BADGES.filter((b) => b.set.has(n))
+    .concat(RNGT_BADGES.filter((b) => b.rule(n, s)));
   if (!extra.length) return base;
   return {
     ...base,
@@ -10656,6 +10780,7 @@ const RNGI_SHELVES = [
   { id: "skills", label: "skills", blurb: "charged effects, and the rack that fires them", kinds: ["skill", "skill-slot"] },
   { id: "pets", label: "friends", blurb: "wallet multipliers, one worn at a time", kinds: ["companion"] },
   { id: "offline", label: "offline", blurb: "earn while the app is shut", kinds: ["offline", "offline-cap", "offline-roller"] },
+  { id: "luck", label: "luck", blurb: "extra draws, never a thumb on the scale", kinds: ["luck"] },
   { id: "tools", label: "tools", blurb: "automation and the archive", kinds: ["utility"] },
   { id: "auras", label: "skins", blurb: "cosmetic only, never odds", kinds: ["aura"] },
 ];
@@ -10672,6 +10797,28 @@ function rngiRollSettings(owned = []) {
     if (p.kind === "cooldown") cooldownMS = Math.min(cooldownMS, p.value);
   }
   return { revealMS, cooldownMS };
+}
+
+/** Permanent luck, as a percentage of an extra draw.
+ *
+ *  "Highest owned wins" rather than additive, so buying the ladder out of
+ *  order (or a save that lists them oddly) can never read as 250%. */
+function rngiLuck(owned = []) {
+  let pct = 0;
+  for (const id of owned || []) {
+    const p = RNGI_PRODUCT_BY_ID[id];
+    if (p && p.kind === "luck") pct = Math.max(pct, p.value || 0);
+  }
+  return pct;
+}
+
+/** How many EXTRA draws this press gets. 175% is one guaranteed extra plus a
+ *  75% shot at a second -- the fractional part is a real coin flip, not a
+ *  rounding. */
+function rngiLuckDraws(pct, rand) {
+  const whole = Math.floor(pct / 100);
+  const frac = (pct % 100) / 100;
+  return whole + (frac > 0 && rngiUnit(rand) < frac ? 1 : 0);
 }
 
 function rngiOfflineSettings(owned = []) {
@@ -10821,7 +10968,7 @@ function rngiUnit(rand) {
  *  a draw clears its bar -- the unspent draws are simply not taken. Every
  *  number kept is paid for; the best one is the roll you see.
  */
-function rngiPlanDraws(armed) {
+function rngiPlanDraws(armed, luckPct = 0, rand = null) {
   const picks = [];
   for (const id of armed) {
     const s = RNGI_SKILL_BY_ID[id];
@@ -10829,6 +10976,11 @@ function rngiPlanDraws(armed) {
     if (s.kind === "best-of") picks.push({ id, attempts: s.attempts || 2, floor: 0 });
     else if (s.kind === "floor") picks.push({ id, attempts: s.attempts || 3, floor: s.floor || 0 });
   }
+  // Luck rides along as one more best-of pick. rngiRunDraws already compares
+  // every pick against the roll's own ordinary draw and keeps the highest, so
+  // luck composes with an armed Double Vision instead of fighting it.
+  const extra = rngiLuckDraws(luckPct, rand);
+  if (extra > 0) picks.push({ id: "luck", attempts: extra, floor: 0 });
   return picks;
 }
 
@@ -10892,7 +11044,8 @@ function rngiPetDrop(state, luck, rand) {
 function rngiRoll(state, now = Date.now(), rand = null) {
   const armed = (state.armed || []).filter((id) => RNGI_SKILL_BY_ID[id]);
   const fx = rngiSkillEffects(armed);
-  const { draws, result, winner } = rngiRunDraws(rngiPlanDraws(armed), rand);
+  const luckPct = rngiLuck(state.owned);
+  const { draws, result, winner } = rngiRunDraws(rngiPlanDraws(armed, luckPct, rand), rand);
 
   const mult = rngiWalletMult(state);
   const banked = Math.round(result.ep * mult.total * fx.wallet);

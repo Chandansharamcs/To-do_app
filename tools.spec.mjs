@@ -10,8 +10,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const APP = readFileSync(join(here, "app.jsx"), "utf8");
 
 const MIME = {
   ".html": "text/html", ".js": "application/javascript", ".json": "application/json",
@@ -787,7 +789,12 @@ await test("the collection fills in as badges turn up", async () => {
   await openRngdle(page);
   await page.locator(".rngi-tabs button", { hasText: "badges" }).click();
   await page.waitForTimeout(300);
-  assert.equal(await page.locator(".rngi-cell").count(), 235, "235 badges including the two Infinite ones");
+  // derived from the shipped catalogue, not a literal -- this went red the
+  // moment v56 added 58 tasks.sh badges, which is a catalogue growing, not a
+  // bug. The grid must show ALL of them.
+  const TOTAL = (APP.match(/^\s*\["T_[A-Z0-9_]+",/gm) || []).length + 233 + 2;
+  assert.equal(await page.locator(".rngi-cell").count(), TOTAL,
+    `the grid should show every badge in the catalogue (${TOTAL})`);
   assert.equal(await page.locator(".rngi-cell.got").count(), 0, "a fresh save owns nothing");
 
   await page.locator(".rngi-tabs button", { hasText: "roll" }).click();

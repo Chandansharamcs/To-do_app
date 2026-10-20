@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v56`** | 2026-10-20 | 58 original badges with exactly-computed counts, and luck you can buy |
 | **`v55`** | 2026-10-20 | Routines are cards with a week strip, not one long timeline |
 | **`v54`** | 2026-10-20 | The companion had been blind to every quest since v35; money gets categories and rules |
 | **`v53`** | 2026-10-19 | Daily tasks carry tags too, so the radar can finally see the push-ups |
@@ -225,6 +226,60 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v56`**
+
+RNGdle: a bigger catalogue and a luck stat, both built so the odds stay true.
+
+- **58 new badges — 235 → 293.** The official catalogue is still exactly 233
+  and has not grown, so "more badges" had to mean original ones. They are
+  held to the upstream contract rather than invented: **every `count` was
+  produced by sweeping all 1,000,001 numbers and counting real matches**, and
+  `infinite.test.mjs` re-runs that whole sweep and re-derives all 58 on every
+  test run. EP uses the official formula, `floor(100 × 1,000,001 / count)`,
+  so a tasks.sh badge and a real one of the same rarity pay the same.
+  Spread: 12 mythic, 6 anomaly, 16 epic, 13 rare, 10 uncommon, 1 common.
+  Rarest is Perfect Number (4 of a million: 6, 28, 496, 8128).
+
+  New ground the official set does not cover: primes, twin primes, emirps,
+  Mersenne, triangular, Catalan, Lucas, Smith, happy, Armstrong, automorphic,
+  trimorphic, self-dividing, semiprime; digit-sum targets; shape rules
+  (repdigit, binary-look, staircases, mirrored halves, single peak, single
+  dip, undulating); and written-form rules (contains π, contains 1337,
+  contains a year, reads as a valid 24-hour time).
+
+- **The upstream 233 are frozen and proven so.** `rngScore` is what makes two
+  people agree about a number, so the test now asserts that `rngiScore` is
+  larger *only* by the extras, that every upstream badge still pays, and that
+  none has been revalued. A mutation adding +1 EP to the upstream table is
+  killed.
+
+- **Luck, as five rungs you buy: Fourleaf I–V, 25% → 175%.** It buys EXTRA
+  DRAWS, never a thumb on the scale: at 60% luck, 60% of rolls are drawn
+  twice and the better is kept. That choice is load-bearing — every
+  individual draw stays a flat 1-in-1,000,001, which is the only reason the
+  293 counts, and every EP figure derived from them, remain true. Biasing the
+  number itself would have made the entire catalogue a lie, which is why the
+  option was put to the owner before building.
+
+  Luck rides along as one more best-of pick, so it **composes** with an armed
+  Double Vision instead of replacing it. "Highest rung owned wins", so owning
+  the whole ladder reads 175%, not 250%. Measured: 100% luck lifts mean
+  banked EP by well over 20% across 4,000 seeded rolls.
+
+- **Economy impact, stated rather than hidden.** Mean EP per roll goes
+  21,545 → **27,345 (1.27×)** for a catalogue 26% larger. Proportionate, so
+  no price was touched.
+
+Tests: **629 unit** (+16 in `infinite.test.mjs`) and **171 browser**. Eight
+mutations — an off-by-one count, EP divorced from odds, additive luck, luck
+firing at 0%, luck replacing a skill, the extras not paying, a badge joining
+an upstream family, the upstream table revalued — all killed. Three existing
+tests went red when the catalogue grew and were rewritten to derive from
+`RNGI_BADGE_TOTAL` instead of hardcoding 235, so the next badge added does
+not break them.
+
+---
 
 **2026-10-20 — `tasksh-v55`**
 
