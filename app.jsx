@@ -3814,50 +3814,85 @@ function VaultView() {
 // (self-development area), kept consistent with the rest of the palette.
 // ============================================================
 
-const AREAS = [
-  { key: "work", label: "Work", color: "#5EEAD4" },
-  { key: "fitness", label: "Fitness", color: "#F5A623" },
-  { key: "health", label: "Health", color: "#F0576B" },
-  { key: "self", label: "Self-Dev", color: "#8B9CF7" },
+/** v52: ONE layer of tags, not two.
+ *
+ *  v26 split categories into 4 fixed AREAS plus 10 editable SUB_AREAS beneath
+ *  them, and a quest belonged to exactly one of each. That was two taxonomies
+ *  to keep straight, it put a tag called "Deep Work" next to a quest called
+ *  "Deep Work", and the fixed four could not be changed without a release.
+ *
+ *  Now there is a single editable list of tags, and a quest can carry more
+ *  than one. The defaults are the owner's five.
+ */
+const DEFAULT_TAGS = [
+  { key: "work",       label: "Work",       color: "#5EEAD4" },
+  { key: "body",       label: "Body",       color: "#F5A623" },
+  { key: "health",     label: "Health",     color: "#F0576B" },
+  { key: "self",       label: "Self",       color: "#8B9CF7" },
+  { key: "discipline", label: "Discipline", color: "#60A5FA" },
 ];
 
-// Optional finer grain under each area. A habit keeps its `area` (which still
-// drives all XP maths and the life-area cards) and may additionally carry a
-// `sub` key from this list. The radar plots subs rather than the 4 areas, so
-// it reads as a detailed shape instead of a sparse quadrilateral.
-//
-// `sub` is optional by design: existing saved habits have no such field, and
-// anything untagged falls back to the area's first sub (see subForHabit), so
-// nobody has to re-tag anything for the chart to work.
-const SUB_AREAS = [
-  { key: "deep",     area: "work",    label: "Deep Work" },
-  { key: "admin",    area: "work",    label: "Admin" },
-  { key: "learning", area: "work",    label: "Learning" },
-  { key: "training", area: "fitness", label: "Training" },
-  { key: "movement", area: "fitness", label: "Movement" },
-  { key: "nutrition", area: "health", label: "Nutrition" },
-  { key: "sleep",    area: "health",  label: "Sleep" },
-  { key: "mind",     area: "health",  label: "Mind" },
-  { key: "creative", area: "self",    label: "Creative" },
-  { key: "social",   area: "self",    label: "Social" },
+/** Colours offered to a tag the user adds later. Chosen to stay distinct
+ *  from each other at an 8px radar label on a dark background. */
+const TAG_PALETTE = [
+  "#5EEAD4", "#F5A623", "#F0576B", "#8B9CF7", "#60A5FA",
+  "#7EE787", "#FB7185", "#C084FC", "#34D399", "#FBBF24",
+  "#F472B6", "#38BDF8",
 ];
 
-const SUBS_BY_AREA = AREAS.reduce((acc, a) => {
-  acc[a.key] = SUB_AREAS.filter((s) => s.area === a.key);
-  return acc;
-}, {});
+/** The radar stops being readable somewhere past a dozen vertices -- labels
+ *  collide and the polygon turns to mush. Measured: 10 is comfortable at
+ *  360px, 13-character labels still fit. */
+const MAX_TAGS = 12;
 
-function subMeta(key) {
-  return SUB_AREAS.find((s) => s.key === key) || null;
+const STORAGE_KEY_TAGS = "tasksh.tags.v1";
+
+function loadTags() {
+  const stored = loadStored(STORAGE_KEY_TAGS, null);
+  if (!Array.isArray(stored) || !stored.length) return DEFAULT_TAGS;
+  const clean = stored
+    .filter((t) => t && typeof t.key === "string" && typeof t.label === "string")
+    .map((t) => ({
+      key: t.key,
+      label: String(t.label).slice(0, 14),
+      color: /^#[0-9a-fA-F]{6}$/.test(t.color) ? t.color : TAG_PALETTE[0],
+    }))
+    .slice(0, MAX_TAGS);
+  return clean.length ? clean : DEFAULT_TAGS;
 }
 
-// Resolves which sub a habit counts toward. Untagged habits (everything that
-// existed before this feature) land on their area's first sub, so the radar
-// is populated from day one rather than starting empty.
-function subForHabit(h) {
-  if (h.sub && subMeta(h.sub) && subMeta(h.sub).area === h.area) return h.sub;
-  const list = SUBS_BY_AREA[h.area];
-  return list && list.length ? list[0].key : null;
+/** Which tags a quest counts toward.
+ *
+ *  Reads the new `tags` array, and falls back to migrating the old
+ *  `area`/`sub` pair so a v51 backup restores without losing its shape.
+ *  Anything it cannot place lands on the first tag rather than vanishing
+ *  from the chart.
+ */
+function habitTags(h, tags = DEFAULT_TAGS) {
+  const known = new Set(tags.map((t) => t.key));
+  if (Array.isArray(h && h.tags)) {
+    const kept = h.tags.filter((k) => known.has(k));
+    if (kept.length) return kept;
+  }
+  const migrated = migrateAreaToTag(h, known);
+  return migrated.length ? migrated : [tags[0].key];
+}
+
+/** Old four areas -> the new five. `fitness` became `body`; everything the
+ *  old scheme called admin-ish consistency is `discipline` now. */
+const AREA_TO_TAG = { work: "work", fitness: "body", health: "health", self: "self" };
+
+function migrateAreaToTag(h, known) {
+  const out = [];
+  const push = (k) => { if (k && known.has(k) && !out.includes(k)) out.push(k); };
+  // a few old sub-tags map somewhere other than their parent area
+  const SUB_OVERRIDE = {
+    screen: "discipline", admin: "discipline", movement: "health",
+    spirituality: "self", social: "self", mind: "health",
+  };
+  if (h && h.sub && SUB_OVERRIDE[h.sub]) push(SUB_OVERRIDE[h.sub]);
+  if (h && h.area) push(AREA_TO_TAG[h.area]);
+  return out;
 }
 
 // ---- habit history (v35) --------------------------------------------------
@@ -3969,59 +4004,32 @@ function mergeHabitLists(good, bad) {
   return [...g, ...b];
 }
 
-function computeSubXP(subKey, habits) {
-  return habits.filter((h) => subForHabit(h) === subKey).reduce((s, h) => s + habitNet(h), 0);
-}
-
-// ---- user-editable sub-tags (v26) ----------------------------------------
-// SUB_AREAS ships as the default set; users can rename, add and remove tags,
-// and the radar follows. Stored separately from habits so renaming a tag
-// never has to rewrite every habit that uses it -- habits reference the tag
-// KEY, and only the label changes.
-
-const STORAGE_KEY_SUBS = "tasksh.subareas.v1";
-const STORAGE_KEY_RADAR_MODE = "tasksh.radarmode.v1";
-
-function loadSubAreas() {
-  const stored = loadStored(STORAGE_KEY_SUBS, null);
-  if (!Array.isArray(stored) || !stored.length) return SUB_AREAS;
-  // tolerate partial/corrupt entries rather than blanking the user's set
-  return stored.filter((s) => s && s.key && s.area && AREAS.some((a) => a.key === s.area));
-}
-
-function subsForArea(list, areaKey) {
-  return list.filter((s) => s.area === areaKey);
-}
-
-/** Resolves a habit's sub against a *dynamic* tag list. */
-function subForHabitIn(list, h) {
-  if (h.sub && list.some((s) => s.key === h.sub && s.area === h.area)) return h.sub;
-  const first = list.find((s) => s.area === h.area);
-  return first ? first.key : null;
-}
-
-/** v45: floored, the same way computeAreaXP is.
+/** XP on one tag.
  *
- *  v44 floored the four broad areas and called "no negative stats" done. It
- *  was not: the radar defaults to TAG mode, tags are scored here, and this
- *  function had no floor -- so the Screen Time axis that prompted the request
- *  was still drawn below zero after the fix shipped. The floor belongs on
- *  both scorers or on neither. */
-function computeSubXPIn(list, subKey, habits) {
-  return Math.max(0, computeSubXPRawIn(list, subKey, habits));
-}
-
-/** The uncapped figure. The axis popup shows it when it differs, because
- *  "0" and "0 after a 280-point deficit" are not the same fact. */
-function computeSubXPRawIn(list, subKey, habits) {
+ *  OPTION ① -- full credit. A quest tagged Body AND Discipline gives its full
+ *  value to BOTH axes. The axes therefore do NOT sum to your total XP, and
+ *  they are not meant to: the radar answers "how much effort landed here",
+ *  and a workout genuinely was both.
+ *
+ *  The alternative -- splitting the XP between its tags -- was rejected
+ *  because it makes a 2-tag quest worth half per axis, so the chart would
+ *  reward you for under-tagging and the data would rot. Your LEVEL still
+ *  counts every quest exactly once; only the chart reads differently.
+ */
+function computeTagXPRaw(tagKey, habits, tags) {
   return (habits || [])
-    .filter((h) => subForHabitIn(list, h) === subKey)
-    .reduce((s, h) => s + habitNet(h), 0);
+    .filter((h) => habitTags(h, tags).includes(tagKey))
+    .reduce((sum, h) => sum + habitNet(h), 0);
 }
 
 /** Everything behind one radar vertex, for the tap-a-dot popup.
- *  Pure so the arithmetic can be tested without rendering a chart. */
-function axisBreakdown(habits, filterFn) {
+ *  Pure so the arithmetic can be tested without rendering a chart.
+ *
+ *  v53: `dailyItems` is whatever daily tasks also land on this axis. They
+ *  only ever add -- a daily task you did not do pays nothing, it does not
+ *  subtract -- so they contribute to `gained` and `done` and never to
+ *  `lost` or `slipped`. */
+function axisBreakdown(habits, filterFn, dailyItems) {
   const mine = (habits || []).filter(filterFn);
   let gained = 0, lost = 0, done = 0, slipped = 0;
   for (const h of mine) {
@@ -4031,60 +4039,88 @@ function axisBreakdown(habits, filterFn) {
     done += d;
     slipped += sl;
   }
+  const daily = (dailyItems || []).filter((t) => dailyDoneCount(t) > 0);
+  for (const t of daily) {
+    gained += dailyItemXP(t);
+    done += dailyDoneCount(t);
+  }
   const raw = gained - lost;
   const rows = mine
-    .map((h) => ({ id: h.id, label: h.label, net: habitNet(h) }))
+    .map((h) => ({ id: h.id, label: h.label, net: habitNet(h), daily: false }))
+    .concat(daily.map((t) => ({ id: `d${t.id}`, label: t.text, net: dailyItemXP(t), daily: true })))
     .sort((a, b) => b.net - a.net);
-  return { count: mine.length, gained, lost, done, slipped, raw, value: Math.max(0, raw), rows };
+  return {
+    count: mine.length + daily.length, gained, lost, done, slipped,
+    raw, value: Math.max(0, raw), rows,
+    dailyCount: daily.length, dailyXP: daily.reduce((s, t) => s + dailyItemXP(t), 0),
+  };
 }
 
-function useSubAreas() {
-  const [subs, setSubs] = useState(loadSubAreas);
-  // "areas" = the 4 broad ones, "subs" = the finer tags
-  const [radarMode, setRadarMode] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY_RADAR_MODE) || "subs"; } catch { return "subs"; }
-  });
+/** Floored, so a pure-penalty tag reads as empty rather than inside-out.
+ *  The true figure is kept by computeTagXPRaw for the axis popup. */
+function computeTagXP(tagKey, habits, tags) {
+  return Math.max(0, computeTagXPRaw(tagKey, habits, tags));
+}
+
+/** ONE RADAR AXIS (v53): quests plus daily tasks.
+ *
+ *  Floored on the SUM rather than on each half. A tag sitting at -40 from
+ *  slipped quests that then earns +100 from daily tasks reads 60, not 100 --
+ *  flooring the quest half first would quietly forgive the penalty, which is
+ *  exactly the kind of free money the v51 economy audit was about. */
+function tagAxisRaw(tagKey, habits, tags, inventory) {
+  return computeTagXPRaw(tagKey, habits, tags) + computeDailyTagXP(tagKey, inventory, tags);
+}
+
+function tagAxisXP(tagKey, habits, tags, inventory) {
+  return Math.max(0, tagAxisRaw(tagKey, habits, tags, inventory));
+}
+
+/** The editable tag list. Habits reference a tag KEY, so renaming or
+ *  recolouring never has to rewrite a single quest. */
+function useTags() {
+  const [tags, setTags] = useState(loadTags);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_SUBS, JSON.stringify(subs)); } catch {}
-  }, [subs]);
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY_RADAR_MODE, radarMode); } catch {}
-  }, [radarMode]);
+    try { localStorage.setItem(STORAGE_KEY_TAGS, JSON.stringify(tags)); } catch {}
+  }, [tags]);
 
-  const renameSub = useCallback((key, label) => {
-    const l = String(label || "").trim().slice(0, 18);
+  const renameTag = useCallback((key, label) => {
+    const l = String(label || "").trim().slice(0, 14);
     if (!l) return;
-    setSubs((prev) => prev.map((s) => (s.key === key ? { ...s, label: l } : s)));
+    setTags((prev) => prev.map((t) => (t.key === key ? { ...t, label: l } : t)));
   }, []);
 
-  const addSub = useCallback((areaKey, label) => {
-    const l = String(label || "").trim().slice(0, 18);
+  const recolourTag = useCallback((key, color) => {
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) return;
+    setTags((prev) => prev.map((t) => (t.key === key ? { ...t, color } : t)));
+  }, []);
+
+  const addTag = useCallback((label) => {
+    const l = String(label || "").trim().slice(0, 14);
     if (!l) return;
-    setSubs((prev) => {
-      // key derived from the label, uniquified -- habits reference the key,
-      // so it must be stable even if two tags share a display name
+    setTags((prev) => {
+      if (prev.length >= MAX_TAGS) return prev;
       let base = l.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "tag";
       let key = base, n = 2;
-      while (prev.some((s) => s.key === key)) key = `${base}${n++}`;
-      return [...prev, { key, area: areaKey, label: l }];
+      while (prev.some((t) => t.key === key)) key = `${base}${n++}`;
+      // first unused colour, so two new tags are never the same shade
+      const used = new Set(prev.map((t) => t.color));
+      const color = TAG_PALETTE.find((c) => !used.has(c)) || TAG_PALETTE[prev.length % TAG_PALETTE.length];
+      return [...prev, { key, label: l, color }];
     });
   }, []);
 
-  const removeSub = useCallback((key) => {
-    // never leave an area with zero tags -- habits there would have nothing
-    // to resolve to
-    setSubs((prev) => {
-      const target = prev.find((s) => s.key === key);
-      if (!target) return prev;
-      if (subsForArea(prev, target.area).length <= 1) return prev;
-      return prev.filter((s) => s.key !== key);
-    });
+  /** Removing a tag must not orphan the quests wearing it, so the caller
+   *  hands in a repair function that strips the key from every habit. */
+  const removeTag = useCallback((key, repair) => {
+    setTags((prev) => (prev.length <= 1 ? prev : prev.filter((t) => t.key !== key)));
+    if (repair) repair(key);
   }, []);
 
-  const resetSubs = useCallback(() => setSubs(SUB_AREAS), []);
+  const resetTags = useCallback(() => setTags(DEFAULT_TAGS), []);
 
-  return { subs, radarMode, setRadarMode, renameSub, addSub, removeSub, resetSubs };
+  return { tags, renameTag, recolourTag, addTag, removeTag, resetTags };
 }
 
 // curated ANSI/terminal-inspired categorical palette, used to give each
@@ -4193,13 +4229,97 @@ const LEVEL_TITLES = [
   "Ascendant", "Legend", "Mythic", "Immortal", "Transcendent", "Eternal",
 ];
 
+// ---- daily tasks as tagged points (v53) -----------------------------------
+//
+// Until v53 a daily task paid coins and nothing else, so the radar -- which
+// reads XP -- could not see them at all. Nine of the twenty things in this
+// user's inventory are physical (laps, push-ups, punches, hangs, karate, two
+// workouts) and the Body axis still read 2 quests. The work was being done;
+// the chart had no way to hear about it.
+//
+// A daily task now carries `tags` and a `history` of the days it was ticked.
+// Its difficulty value is paid TWICE over: once as coins (the spendable
+// currency, unchanged) and once as points into every tag it wears. Same
+// full-credit rule as quests -- a 2-tag task gives its whole value to both
+// axes, because it genuinely was both.
+const DIFF_VALUE = { easy: 10, mid: 50, hard: 100 };
+
+/** 400 completions of one task is over a year of it being drawn every single
+ *  day -- unreachable with a random three-a-day draw, but bounded rather
+ *  than endless. */
+const DAILY_HISTORY_MAX = 400;
+
+/** Points one completion of this task is worth. */
+function dailyValue(item) {
+  return DIFF_VALUE[item && item.diff] || DIFF_VALUE.easy;
+}
+
+/** How many times it has ever been completed. */
+function dailyDoneCount(item) {
+  return Array.isArray(item && item.history) ? item.history.length : 0;
+}
+
+/** Lifetime points from one daily task. */
+function dailyItemXP(item) {
+  return dailyValue(item) * dailyDoneCount(item);
+}
+
+/** Which tags a daily task counts toward.
+ *
+ *  Unlike habitTags there is deliberately NO fallback to the first tag. A
+ *  habit always had an area, so inventing one was recovery; a daily task may
+ *  genuinely be untagged, and quietly filing "Bring milk" under Work would be
+ *  making data up. Untagged tasks still pay coins and still count toward your
+ *  level -- they just do not move a radar axis. */
+function dailyTags(item, tags) {
+  const known = new Set((tags || []).map((t) => t.key));
+  return Array.isArray(item && item.tags) ? item.tags.filter((k) => known.has(k)) : [];
+}
+
+/** Lifetime daily-task points on one axis. Full credit per tag. */
+function computeDailyTagXP(tagKey, inventory, tags) {
+  return (inventory || [])
+    .filter((t) => dailyTags(t, tags).includes(tagKey))
+    .reduce((s, t) => s + dailyItemXP(t), 0);
+}
+
+/** Every daily task's points, counted ONCE each -- what the level reads.
+ *  A 2-tag task is double-counted on the chart and single-counted here, the
+ *  same split quests have had since v52. */
+function computeDailyTotalXP(inventory) {
+  return (inventory || []).reduce((s, t) => s + dailyItemXP(t), 0);
+}
+
+/** Record a completion. Idempotent per day: the board can only pay once, and
+ *  a second call for the same day must not mint a second 100 points. */
+function logDailyDone(inventory, id, day) {
+  return (inventory || []).map((t) => {
+    if (t.id !== id) return t;
+    const hist = Array.isArray(t.history) ? t.history : [];
+    if (hist.includes(day)) return t;
+    return { ...t, history: [...hist, day].slice(-DAILY_HISTORY_MAX) };
+  });
+}
+
 // LEVEL XP -- lifetime progress. Deliberately does NOT subtract reward
 // spending: claiming a reward you earned should never demote you or push you
 // negative. Before v27 it did both (155 earned - 40 lost - 150 spent = -35 XP
 // and a drop from level 2 to level 1), which punished the user for using the
 // feature. Bad habits still count against you; that's the point of them.
-function computeTotalXP(habits) {
-  return Math.max(0, (habits || []).reduce((s, h) => s + habitNet(h), 0));
+//
+// v53: daily tasks join the total. Each is counted ONCE here no matter how
+// many tags it wears, so the level stays an honest "how much did you do"
+// while the radar stays an honest "where did it land". The pace roughly
+// triples -- a full board is 160/day against a measured habit pace of
+// 58.5/day -- which was the user's explicit choice when asked.
+function computeTotalXP(habits, inventory) {
+  const quests = (habits || []).reduce((s, h) => s + habitNet(h), 0);
+  const daily = (inventory || []).reduce(
+    (s, t) => s + (DIFF_VALUE[t && t.diff] || DIFF_VALUE.easy)
+                * (Array.isArray(t && t.history) ? t.history.length : 0),
+    0
+  );
+  return Math.max(0, quests + daily);
 }
 
 // SPENDABLE BALANCE -- what rewards actually cost against. This is the number
@@ -4211,16 +4331,6 @@ function computeTotalXP(habits) {
  *  plot inside-out and read as "you are worse than nothing at this", which
  *  is not a thing. The penalty still counts against total XP; it just does
  *  not drag an axis below the floor. */
-function computeAreaXP(area, habits) {
-  const raw = (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
-  return Math.max(0, raw);
-}
-
-/** The uncapped figure, for anywhere that wants to show the real damage. */
-function computeAreaXPRaw(area, habits) {
-  return (habits || []).filter((h) => h.area === area).reduce((s, h) => s + habitNet(h), 0);
-}
-
 // Cumulative XP required to REACH level L (L >= 1).
 //
 // Still quadratic -- each level costs more than the last -- but flattened in
@@ -4298,15 +4408,15 @@ function titleForLevel(lvl) {
 
 
 const seedGoodHabits = [
-  { id: 1, label: "Deep Work", area: "work", xp: 40, history: [getISTDateString(0), getISTDateString(-1)] },
-  { id: 2, label: "Workout", area: "fitness", xp: 20, history: [getISTDateString(-1)] },
-  { id: 3, label: "Healthy Diet", area: "health", xp: 10, history: [] },
-  { id: 4, label: "Reading", area: "self", xp: 10, history: [] },
+  { id: 1, label: "Deep Work", tags: ["work"], desc: "one uninterrupted block, no phone", xp: 40, history: [getISTDateString(0), getISTDateString(-1)] },
+  { id: 2, label: "Workout", tags: ["body"], desc: "any real session, however short", xp: 20, history: [getISTDateString(-1)] },
+  { id: 3, label: "Healthy Diet", tags: ["health"], desc: "no junk for the whole day", xp: 10, history: [] },
+  { id: 4, label: "Reading", tags: ["self"], desc: "a chapter, for yourself not for school", xp: 10, history: [] },
 ];
 
 const seedBadHabits = [
-  { id: 1, label: "High Screen Time", area: "self", xp: 20, history: [] },
-  { id: 2, label: "Junk Food", area: "health", xp: 20, history: [] },
+  { id: 1, label: "High Screen Time", tags: ["discipline"], xp: 20, history: [] },
+  { id: 2, label: "Junk Food", tags: ["health"], xp: 20, history: [] },
 ];
 
 const seedRewards = [
@@ -4314,16 +4424,6 @@ const seedRewards = [
   { id: 2, label: "Order takeout", cost: 150, claimed: [] },
   { id: 3, label: "Take a day off", cost: 250, claimed: [] },
 ];
-
-function LifeAreaCard({ area, xp }) {
-  return (
-    <div className="area-card">
-      <span className="area-dot" style={{ background: area.color }} />
-      <span className="area-label">{area.label}</span>
-      <span className="area-xp">{xp} XP</span>
-    </div>
-  );
-}
 
 // ---- habit card (v35) ------------------------------------------------------
 // One card replaces GoodHabitCard and BadHabitCard. Every habit now has two
@@ -4524,7 +4624,7 @@ function QuestHistory({ habit, onClose }) {
 // habit with penalty 0 behaves exactly like a v34 good habit; one with xp 0
 // behaves exactly like a v34 bad habit. The old split was never a difference
 // in kind, only in which list a row happened to live in.
-function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, onSave, onHistory,
+function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelete, onSave, onHistory,
                     reorder = false, onMove, canUp = false, canDown = false,
                     index = 0, total = 1 }) {
   const today = getISTDateString(0);
@@ -4544,7 +4644,9 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
   const { streak, freezeUsed } = streakFreezeInfo(
     normaliseHistory(habit.history).filter((e) => e.t === "done").map((e) => e.d)
   );
-  const area = AREAS.find((a) => a.key === habit.area) || AREAS[0];
+  const mine = habitTags(habit, tags);
+  const tagObjs = mine.map((k) => tags.find((t) => t.key === k)).filter(Boolean);
+  const area = tagObjs[0] || tags[0];
 
   // Delete arms first, then confirms. A habit carries months of history and
   // the button sits next to edit on a small row -- a single mis-tap used to
@@ -4562,16 +4664,16 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
 
   const [editing, setEditing] = useState(false);
   const [eLabel, setELabel] = useState(habit.label);
-  const [eArea, setEArea] = useState(habit.area);
-  const [eSub, setESub] = useState(() => subForHabitIn(subs, habit));
+  const [eTags, setETags] = useState(() => habitTags(habit, tags));
+  const [eDesc, setEDesc] = useState(habit.desc || "");
   const [eXP, setEXP] = useState(habitXP(habit));
   const [ePen, setEPen] = useState(habitPenalty(habit));
   const [eOpp, setEOpp] = useState(habit.opposite || "");
 
   const openEdit = () => {
     setELabel(habit.label);
-    setEArea(habit.area);
-    setESub(subForHabitIn(subs, habit));
+    setETags(habitTags(habit, tags));
+    setEDesc(habit.desc || "");
     setEXP(habitXP(habit));
     setEPen(habitPenalty(habit));
     setEOpp(habit.opposite || "");
@@ -4582,7 +4684,7 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
     const text = eLabel.trim();
     if (!text) return;
     onSave(habit.id, {
-      label: text, area: eArea, sub: eSub,
+      label: text, tags: eTags, desc: eDesc.trim().slice(0, 90),
       xp: Math.max(0, +eXP || 0),
       penalty: Math.max(0, +ePen || 0),
       opposite: eOpp || null,
@@ -4601,35 +4703,42 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
             onKeyDown={(e) => e.key === "Enter" && saveEdit()}
             autoFocus
           />
-          <div className="edit-row">
-            {AREAS.map((a) => (
-              <button
-                key={a.key}
-                type="button"
-                className={`area-chip ${eArea === a.key ? "active" : ""}`}
-                style={{ "--ac": a.color }}
-                onClick={() => {
-                  setEArea(a.key);
-                  const list = subsForArea(subs, a.key);
-                  setESub(list.length ? list[0].key : null);
-                }}
-              >
-                {a.label}
-              </button>
-            ))}
+          {/* v52: tags are a multi-select. A quest may wear more than one,
+              and each one gets the FULL value on the radar -- see
+              computeTagXPRaw for why that is the honest choice. Never zero:
+              deselecting the last tag would drop the quest off the chart. */}
+          <div className="edit-row edit-row-tags">
+            {tags.map((t) => {
+              const on = eTags.includes(t.key);
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  className={`area-chip ${on ? "active" : ""}`}
+                  style={{ "--ac": t.color }}
+                  onClick={() => setETags((prev) =>
+                    prev.includes(t.key)
+                      ? (prev.length > 1 ? prev.filter((k) => k !== t.key) : prev)
+                      : [...prev, t.key])}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
           </div>
-          <div className="edit-row edit-row-subs">
-            {subsForArea(subs, eArea).map((sb) => (
-              <button
-                key={sb.key}
-                type="button"
-                className={`sub-chip ${eSub === sb.key ? "active" : ""}`}
-                onClick={() => setESub(sb.key)}
-              >
-                {sb.label}
-              </button>
-            ))}
-          </div>
+          {eTags.length > 1 && (
+            <div className="edit-tag-note">
+              counts in full toward {eTags.length} tags — use sparingly
+            </div>
+          )}
+          <input
+            className="edit-label edit-desc"
+            placeholder="what this actually means (optional)"
+            value={eDesc}
+            maxLength={90}
+            onChange={(e) => setEDesc(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+          />
 
           {/* reward and penalty are separate on purpose: skipping a workout
               should be allowed to cost less than doing it earns */}
@@ -4715,8 +4824,13 @@ function HabitCard({ habit, subs = SUB_AREAS, allHabits = [], onMark, onDelete, 
       <div className="quest-habit-main">
         <span className="quest-habit-label">{habit.label}</span>
         <span className="quest-habit-meta">
-          {meta.join(" / ")} XP · {area.label}{streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
+          {meta.join(" / ")} XP
+          {tagObjs.map((t) => (
+            <span key={t.key} className="quest-tag-pip" style={{ color: t.color }}> · {t.label}</span>
+          ))}
+          {streak > 0 ? ` · 🔥${streak}${freezeUsed ? " ❄️" : ""}` : ""}
         </span>
+        {habit.desc && <span className="quest-habit-desc">{habit.desc}</span>}
       </div>
       <button
         className="hist-btn"
@@ -4866,7 +4980,7 @@ function RewardCard({ reward, canClaim, onClaim, onDelete, onSave }) {
  *  the dot you tapped is still on screen next to the number it produced.
  */
 function AxisDetail({ axis, habits, onClose }) {
-  const b = useMemo(() => axisBreakdown(habits, axis.pick), [habits, axis]);
+  const b = useMemo(() => axisBreakdown(habits, axis.pick, axis.daily), [habits, axis]);
   const clamped = b.raw < 0;
   return (
     <div className="axis-pop" role="dialog" aria-label={`${axis.label} points`}>
@@ -4886,8 +5000,14 @@ function AxisDetail({ axis, habits, onClose }) {
         <span className="axis-pop-gain">+{b.gained}</span>
         <span className="axis-pop-sep">/</span>
         <span className="axis-pop-lose">−{b.lost}</span>
-        <span className="axis-pop-meta">{b.done} done · {b.slipped} slipped · {b.count} quest{b.count === 1 ? "" : "s"}</span>
+        <span className="axis-pop-meta">{b.done} done · {b.slipped} slipped · {b.count} item{b.count === 1 ? "" : "s"}</span>
       </div>
+
+      {b.dailyCount > 0 && (
+        <div className="axis-pop-daily">
+          {b.dailyXP} of that is daily tasks ({b.dailyCount} tagged here)
+        </div>
+      )}
 
       {b.rows.length === 0 ? (
         <div className="axis-pop-empty">nothing tagged here yet</div>
@@ -4895,7 +5015,9 @@ function AxisDetail({ axis, habits, onClose }) {
         <div className="axis-pop-rows">
           {b.rows.slice(0, 6).map((r) => (
             <div key={r.id} className="axis-pop-row">
-              <span className="axis-pop-row-label">{r.label}</span>
+              <span className="axis-pop-row-label">
+                {r.daily && <span className="axis-pop-daily-mark">◉</span>}{r.label}
+              </span>
               <span className={`axis-pop-row-net ${r.net < 0 ? "neg" : r.net > 0 ? "pos" : ""}`}>
                 {r.net > 0 ? `+${r.net}` : r.net}
               </span>
@@ -4908,13 +5030,14 @@ function AxisDetail({ axis, habits, onClose }) {
   );
 }
 
-function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, spend }) {
+function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, spend,
+                     inventory = [], setInventory }) {
+  const tags = tagCtl.tags;
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
   const [pickedAxis, setPickedAxis] = useState(null);
   const [historyFor, setHistoryFor] = useState(null);
-  const subs = tagCtl.subs;
-  const totalXP = useMemo(() => computeTotalXP(habits), [habits]);
+  const totalXP = useMemo(() => computeTotalXP(habits, inventory), [habits, inventory]);
   // v41: rewards are paid for in COINS, not XP.
   //
   // Daily quests and pomodoro blocks both minted coins and nothing anywhere
@@ -4987,7 +5110,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     setHabits((prev) => {
       const i = prev.findIndex((h) => h.id === id);
       if (i < 0) return prev;
-      const shown = (h) => areaFilter === "all" || h.area === areaFilter;
+      const shown = (h) => areaFilter === "all" || habitTags(h, tags).includes(areaFilter);
       let j = i + dir;
       while (j >= 0 && j < prev.length && !shown(prev[j])) j += dir;
       if (j < 0 || j >= prev.length) return prev;
@@ -5014,7 +5137,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
   const saveReward = (id, patch) => setRewards((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
   const [ghLabel, setGhLabel] = useState("");
-  const [ghArea, setGhArea] = useState("work");
+  const [ghArea, setGhArea] = useState(() => (tags[0] ? tags[0].key : "work"));
   const [ghXP, setGhXP] = useState(20);
   const [ghPen, setGhPen] = useState(0);
   const [rwLabel, setRwLabel] = useState("");
@@ -5024,7 +5147,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     const t = ghLabel.trim();
     if (!t) return;
     setHabits((prev) => [...prev, {
-      id: makeId(), label: t, area: ghArea,
+      id: makeId(), label: t, tags: [ghArea],
       xp: Math.max(0, +ghXP || 0),
       penalty: Math.max(0, +ghPen || 0),
       history: [],
@@ -5045,53 +5168,45 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
   // broad areas, so the shape reads as detailed instead of a sparse diamond.
   // Each vertex keeps its parent area's colour so the four groups stay
   // visually legible around the ring.
-  // Radar plots either the 4 broad areas or the finer user-editable tags.
-  // Both read from the same habit data -- switching is a view change only.
-  // Values are NOT clamped at zero. A net-negative area is real information --
-  // clamping made "-280, your worst area by far" render identically to "never
-  // started", which is the opposite of what a diagnostic chart is for.
-  // Values are NOT clamped at zero. A net-negative area is real information --
-  // clamping made "-280, your worst area by far" render identically to "never
-  // started", which is the opposite of what a diagnostic chart is for.
-  const areaAxes = useMemo(() => (
-    tagCtl.radarMode === "areas"
-      ? AREAS.map((a) => ({
-          key: a.key, label: a.label, color: a.color,
-          value: computeAreaXP(a.key, habits),
-          raw: computeAreaXPRaw(a.key, habits),
-          pick: (h) => h.area === a.key,
-        }))
-      : subs.map((sb) => ({
-          key: sb.key, label: sb.label,
-          color: (AREAS.find((a) => a.key === sb.area) || {}).color,
-          value: computeSubXPIn(subs, sb.key, habits),
-          raw: computeSubXPRawIn(subs, sb.key, habits),
-          pick: (h) => subForHabitIn(subs, h) === sb.key,
-        }))
-  ), [tagCtl.radarMode, subs, habits]);
+  /** One axis per tag. Full credit (option ①): a quest wearing two tags
+   *  contributes its whole value to both, so the axes do NOT sum to your
+   *  total XP and were never meant to. See computeTagXPRaw. */
+  /** v53: daily tasks land here too. Each axis is quests + daily tasks, so
+   *  "20 laps on roof" finally shows up as Body instead of only as coins. */
+  const areaAxes = useMemo(() => tags.map((t) => ({
+    key: t.key, label: t.label, color: t.color,
+    value: tagAxisXP(t.key, habits, tags, inventory),
+    raw: tagAxisRaw(t.key, habits, tags, inventory),
+    pick: (h) => habitTags(h, tags).includes(t.key),
+    daily: (inventory || []).filter((x) => dailyTags(x, tags).includes(t.key)),
+  })), [tags, habits, inventory]);
 
-  // One ceiling for BOTH modes, so switching view doesn't silently rescale the
-  // shape, and so growth pushes the polygon outward instead of flattening its
-  // neighbours.
+  // A fixed ceiling, so growth pushes the polygon outward instead of
+  // flattening its neighbours.
   const radarMax = useMemo(() => {
-    const areaPeak = Math.max(...AREAS.map((a) => computeAreaXP(a.key, habits)), 0);
-    const subPeak = Math.max(...subs.map((sb) => computeSubXPIn(subs, sb.key, habits)), 0);
-    const peak = Math.max(areaPeak, subPeak, 1);
+    const peak = Math.max(...areaAxes.map((x) => x.value), 1);
     const step = peak <= 100 ? 25 : peak <= 500 ? 50 : 100;
     return Math.ceil(peak / step) * step;
-  }, [subs, habits]);
+  }, [areaAxes]);
 
-  // Habits with no `sub` tag are counted by the 4-area view but vanish in the
-  // tag view, so the same data appears to total differently.
-  const untaggedXP = useMemo(() => {
-    if (tagCtl.radarMode === "areas") return 0;
-    const known = new Set(subs.map((s) => s.key));
-    const orphan = (h) => !h.sub || !known.has(h.sub);
-    return habits.filter(orphan).reduce((s, h) => s + Math.abs(habitNet(h)), 0);
-  }, [tagCtl.radarMode, subs, habits]);
+  // How much of the chart is double-counted, so the one number that could
+  // mislead is stated rather than hidden.
+  const doubleTagged = useMemo(
+    () => habits.filter((h) => habitTags(h, tags).length > 1).length
+        + (inventory || []).filter((t) => dailyTags(t, tags).length > 1).length,
+    [habits, inventory, tags]
+  );
 
-  const visibleHabits = areaFilter === "all" ? habits : habits.filter((h) => h.area === areaFilter);
-  const earnedXP = habits.reduce((s, h) => s + habitXP(h) * countHist(h, "done"), 0);
+  /** Stated rather than hidden: a daily task with no tag is invisible to the
+   *  chart, and that is exactly the failure mode v53 exists to end. */
+  const untaggedDaily = useMemo(
+    () => (inventory || []).filter((t) => dailyTags(t, tags).length === 0).length,
+    [inventory, tags]
+  );
+
+  const visibleHabits = areaFilter === "all" ? habits : habits.filter((h) => habitTags(h, tags).includes(areaFilter));
+  const earnedXP = habits.reduce((s, h) => s + habitXP(h) * countHist(h, "done"), 0)
+                 + computeDailyTotalXP(inventory);
   const lostXP = habits.reduce((s, h) => s + habitPenalty(h) * countHist(h, "slip"), 0);
   const spentXP = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
 
@@ -5119,14 +5234,11 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
         </div>
       </div>
 
-      <div className="section-header"><span>LIFE-AREAS</span></div>
+      <div className="section-header"><span>TAGS</span></div>
       <div className="radar-card">
         <div className="radar-controls">
           <div className="radar-mode">
-            <button className={tagCtl.radarMode === "areas" ? "active" : ""}
-                    onClick={() => { tagCtl.setRadarMode("areas"); sound.click(); }}>4 areas</button>
-            <button className={tagCtl.radarMode === "subs" ? "active" : ""}
-                    onClick={() => { tagCtl.setRadarMode("subs"); sound.click(); }}>{subs.length} tags</button>
+            <span className="radar-count">{tags.length} tag{tags.length === 1 ? "" : "s"}</span>
           </div>
           <button className="radar-edit" onClick={() => setShowTagEditor(true)}>edit tags</button>
         </div>
@@ -5147,9 +5259,17 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
         {!pickedAxis && (
           <div className="radar-hint">tap a dot for its exact points</div>
         )}
-        {untaggedXP > 0 && (
+        {doubleTagged > 0 && (
           <div className="radar-note">
-            {untaggedXP} XP from untagged habits isn&apos;t plotted — tag them to include it
+            {doubleTagged} thing{doubleTagged === 1 ? " counts" : "s count"} toward more than one
+            tag, in full. The axes add up to more than your XP on purpose — your
+            level still counts each one once.
+          </div>
+        )}
+        {untaggedDaily > 0 && (
+          <div className="radar-note">
+            {untaggedDaily} daily task{untaggedDaily === 1 ? " has" : "s have"} no tag — {untaggedDaily === 1 ? "it pays" : "they pay"} coins
+            and level but {untaggedDaily === 1 ? "lands" : "land"} on no axis. Tag {untaggedDaily === 1 ? "it" : "them"} on the TASKS tab.
           </div>
         )}
       </div>
@@ -5197,17 +5317,43 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
       <div className="area-filter">
         <button className={areaFilter === "all" ? "active" : ""}
                 onClick={() => setAreaFilter("all")}>all</button>
-        {AREAS.map((a) => (
-          <button key={a.key}
-                  className={areaFilter === a.key ? "active" : ""}
-                  style={{ "--ac": a.color }}
-                  onClick={() => { setAreaFilter(a.key); sound.click(); }}>
-            {a.label}
+        {tags.map((t) => (
+          <button key={t.key}
+                  className={areaFilter === t.key ? "active" : ""}
+                  style={{ "--ac": t.color }}
+                  onClick={() => { setAreaFilter(t.key); sound.click(); }}>
+            {t.label}
           </button>
         ))}
       </div>
 
-      {showTagEditor && <TagEditor tagCtl={tagCtl} onClose={() => setShowTagEditor(false)} />}
+      {showTagEditor && (
+        <TagEditor
+          tagCtl={tagCtl}
+          usage={Object.fromEntries(tags.map((t) => [
+            t.key,
+            habits.filter((h) => habitTags(h, tags).includes(t.key)).length
+              + (inventory || []).filter((x) => dailyTags(x, tags).includes(t.key)).length,
+          ]))}
+          onDropTag={(key) => {
+            setHabits((prev) => prev.map((h) => {
+              const kept = habitTags(h, tags).filter((k) => k !== key);
+              return { ...h, tags: kept.length ? kept : [tags.find((t) => t.key !== key)?.key].filter(Boolean) };
+            }));
+            // Daily tasks are allowed to end up with nothing -- unlike a quest
+            // they have no fallback, so dropping the tag drops them off the
+            // chart rather than reassigning them somewhere they do not belong.
+            if (setInventory) {
+              setInventory((prev) => prev.map((x) => (
+                dailyTags(x, tags).includes(key)
+                  ? { ...x, tags: dailyTags(x, tags).filter((k) => k !== key) }
+                  : x
+              )));
+            }
+          }}
+          onClose={() => setShowTagEditor(false)}
+        />
+      )}
       {historyFor && (
         <QuestHistory
           habit={habits.find((h) => h.id === historyFor.id) || historyFor}
@@ -5235,8 +5381,8 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
             <HabitCard
               key={h.id}
               habit={h}
-              subs={subs}
               allHabits={habits}
+              tags={tags}
               onMark={markToday}
               onHistory={(h) => setHistoryFor(h)}
               onDelete={delHabit}
@@ -5266,9 +5412,10 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
         </button>
       </div>
       <div className="duration-chips">
-        {AREAS.map((a) => (
-          <button key={a.key} className={ghArea === a.key ? "active" : ""} onClick={() => setGhArea(a.key)}>
-            {a.label}
+        {tags.map((t) => (
+          <button key={t.key} className={ghArea === t.key ? "active" : ""}
+                  style={{ "--ac": t.color }} onClick={() => setGhArea(t.key)}>
+            {t.label}
           </button>
         ))}
         <label className="new-xp-field">
@@ -5330,13 +5477,67 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
 const STORAGE_KEY_INVENTORY = "tasksh.inventory.v1";
 const STORAGE_KEY_DAILY = "tasksh.daily.v1";
 
+// One number per difficulty, read from DIFF_VALUE so the coins you are paid
+// and the points your tag is credited can never drift apart. They are the
+// same figure on purpose: "100 push ups" is hard, so it pays 100 ◉ and 100
+// into Body.
 const DIFFICULTIES = [
-  { key: "easy", label: "easy", coins: 10,  color: "#7EE787" },
-  { key: "mid",  label: "mid",  coins: 50,  color: "#F5A623" },
-  { key: "hard", label: "hard", coins: 100, color: "#F0576B" },
+  { key: "easy", label: "easy", coins: DIFF_VALUE.easy, color: "#7EE787" },
+  { key: "mid",  label: "mid",  coins: DIFF_VALUE.mid,  color: "#F5A623" },
+  { key: "hard", label: "hard", coins: DIFF_VALUE.hard, color: "#F0576B" },
 ];
 
 const diffMeta = (k) => DIFFICULTIES.find((d) => d.key === k) || DIFFICULTIES[0];
+
+/** Best-effort tag for a daily task, from its words.
+ *
+ *  Used in two places and trusted in neither: once when upgrading an old
+ *  inventory (a radar that goes blank after an update reads as "the update
+ *  ate my progress"), and behind a `suggest` button in the editor. Every
+ *  result is editable, and anything it cannot place it leaves alone rather
+ *  than guessing -- a wrong tag is worse than no tag, because a wrong one
+ *  looks decided.
+ *
+ *  Ordered, longest-signal-first, and capped at two so the full-credit rule
+ *  cannot be gamed into "everything counts everywhere" by a keyword pile-up.
+ */
+const DAILY_TAG_HINTS = [
+  ["body",       /push\s?up|pushup|press\s?up|squat|punch|kick|\blaps?\b|\brun\b|running|jog|sprint|\bhangs?\b|pull\s?up|plank|workout|work out|\bgym\b|karate|spar|crunch|burpee|\babs\b|dumbbell|lift/i],
+  ["health",     /water|hydrat|sleep|slept|bed\s?time|eat\b|meal|diet|fruit|veg|junk|walk|stretch|meditat|breath|yoga|bath|shower|brush|floss|nap\b|sun\b|sunlight/i],
+  ["work",       /stud(y|ied)|revis|chapter|read|homework|assignment|exam|test\b|notes?\b|project|code|build|ship|write|essay|upload|learn|practice|practise|skill/i],
+  ["self",       /draw|sketch|paint|art\b|music|guitar|sing|journal|gratitude|pray|temple|plant|garden|happy|rest\b|hobby|create|creative|new thing|something new/i],
+  ["discipline", /\bno\b|\bnot\b|skip|avoid|quit|limit|less than|under \d|screen|scroll|phone|lock in|wake|early|clean|tidy|save|budget|streak|follow (the|something)/i],
+];
+
+function guessDailyTags(text, tags) {
+  const known = new Set((tags || []).map((t) => t.key));
+  const s = String(text || "");
+  const out = [];
+  for (const [key, re] of DAILY_TAG_HINTS) {
+    if (out.length >= 2) break;
+    if (known.has(key) && re.test(s)) out.push(key);
+  }
+  return out;
+}
+
+/** v52 -> v53: every inventory item gains `tags` and `history`.
+ *
+ *  `history` starts empty on purpose. The app never recorded which daily
+ *  tasks were completed on which day -- only today's board did, and only for
+ *  today -- so there is no past to backfill from. Inventing one would put
+ *  points on the chart that were never earned. */
+function migrateInventory(inv, tags) {
+  if (!Array.isArray(inv)) return inv;
+  return inv.map((t) => {
+    if (!t || typeof t !== "object") return t;
+    const has = Array.isArray(t.tags);
+    return {
+      ...t,
+      tags: has ? t.tags : guessDailyTags(t.text, tags),
+      history: Array.isArray(t.history) ? t.history : [],
+    };
+  });
+}
 
 /**
  * Which day the quest board belongs to.
@@ -5372,13 +5573,15 @@ function migrateTasksToInventory(tasks) {
     id: t.id,
     text: t.text,
     diff: byPrio[t.priority] || "mid",
+    tags: [],
+    history: [],
   }));
 }
 
 const seedInventory = [
-  { id: 9001, text: "100 pushups", diff: "hard" },
-  { id: 9002, text: "Read 20 pages", diff: "mid" },
-  { id: 9003, text: "Water the plants", diff: "easy" },
+  { id: 9001, text: "100 pushups",      diff: "hard", tags: ["body"],   history: [] },
+  { id: 9002, text: "Read 20 pages",    diff: "mid",  tags: ["work"],   history: [] },
+  { id: 9003, text: "Water the plants", diff: "easy", tags: ["self"],   history: [] },
 ];
 
 const seedTasks = [
@@ -5437,15 +5640,53 @@ function Checkbox({ checked, onChange, color }) {
   );
 }
 
-function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward, onComplete, coins = 0 }) {
+/** The tag row shared by the composer and the inline editor. Chips, not a
+ *  dropdown: tapping two of them is the whole interaction, and a <select>
+ *  cannot express "two at once" without a modal. */
+function DailyTagPicker({ tags, picked, onToggle, onSuggest }) {
+  return (
+    <div className="duration-chips inv-tag-chips">
+      {tags.map((t) => {
+        const on = picked.includes(t.key);
+        return (
+          <button
+            key={t.key}
+            className={on ? "active" : ""}
+            style={{ "--ac": t.color }}
+            onClick={() => onToggle(t.key)}
+            aria-pressed={on}
+          >
+            {on ? "✓ " : ""}{t.label}
+          </button>
+        );
+      })}
+      {onSuggest && (
+        <button className="inv-suggest" onClick={onSuggest} title="guess from the words">
+          suggest
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DailyView({ inventory, setInventory, daily, setDaily, routines, onReward, onComplete,
+                     coins = 0, tags = DEFAULT_TAGS }) {
   const [text, setText] = useState("");
   const [diff, setDiff] = useState("mid");
+  const [pick, setPick] = useState([]);
   const [flash, triggerFlash] = useFlash();
   const [armed, setArmed] = useState(null);
   const [editId, setEditId] = useState(null);
   const [editText, setEditText] = useState("");
   const [editDiff, setEditDiff] = useState("mid");
+  const [editTags, setEditTags] = useState([]);
   const armTimer = useRef(null);
+  const tagMeta = (k) => tags.find((t) => t.key === k) || null;
+  /** Two tags is the cap, same as a quest. Past that the full-credit rule
+   *  stops meaning anything -- tag a task with all five and it inflates
+   *  every axis at once. */
+  const toggleIn = (list, key) =>
+    list.includes(key) ? list.filter((k) => k !== key) : list.length >= 2 ? list : [...list, key];
   useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
 
   /** An item leaving a difficulty it was drawn under leaves a hole in today's
@@ -5474,6 +5715,7 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
     setEditId(t.id);
     setEditText(t.text);
     setEditDiff(t.diff);
+    setEditTags(dailyTags(t, tags));
     sound.click();
   };
 
@@ -5488,7 +5730,9 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
       const slot = slotOf(t.id);
       if (slot) repairSlot(t.id, slot);
     }
-    setInventory((prev) => prev.map((x) => (x.id === t.id ? { ...x, text: next, diff: editDiff } : x)));
+    setInventory((prev) => prev.map((x) => (
+      x.id === t.id ? { ...x, text: next, diff: editDiff, tags: editTags } : x
+    )));
     setEditId(null);
     sound.success();
   };
@@ -5496,8 +5740,13 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
   const add = () => {
     const t = text.trim();
     if (!t) { triggerFlash(); sound.error(); return; }
-    setInventory((prev) => [...prev, { id: makeId(), text: t, diff }]);
+    // An untagged task still pays coins and still counts toward the level, so
+    // nothing is lost by shipping one -- but the guess costs nothing either,
+    // and an item that never reaches the chart is the whole bug v53 fixes.
+    const chosen = pick.length ? pick : guessDailyTags(t, tags);
+    setInventory((prev) => [...prev, { id: makeId(), text: t, diff, tags: chosen, history: [] }]);
     setText("");
+    setPick([]);
     sound.click();
   };
 
@@ -5570,6 +5819,21 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
                 <span className="daily-diff">{d.label}</span>
                 <span className="daily-text">{task.text}</span>
                 <span className="daily-coins">{done ? "✓ claimed" : `+${d.coins} ◉`}</span>
+                {/* v53: what this pays into. Shown on the card you tap, not
+                    one tab away, because the point of tagging a daily task
+                    is seeing where the work lands. */}
+                <span className="daily-tags">
+                  {dailyTags(task, tags).length === 0 ? (
+                    <span className="daily-tag none">untagged</span>
+                  ) : dailyTags(task, tags).map((k) => {
+                    const m = tagMeta(k);
+                    return (
+                      <span key={k} className="daily-tag" style={{ "--tc": m.color }}>
+                        {done ? "✓" : "+"}{d.coins} {m.label}
+                      </span>
+                    );
+                  })}
+                </span>
               </button>
             );
           })}
@@ -5584,7 +5848,12 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
         </button>
       </div>
 
-      <div className="section-header"><span>INVENTORY</span></div>
+      <div className="section-header habits-header">
+        <span>INVENTORY</span>
+        <span className="keypool-hint">
+          {inventory.length} item{inventory.length === 1 ? "" : "s"} · {computeDailyTotalXP(inventory)} pts earned
+        </span>
+      </div>
 
       <div className={`composer ${flash ? "shake" : ""}`}>
         <input
@@ -5608,6 +5877,17 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
           </button>
         ))}
       </div>
+      <DailyTagPicker
+        tags={tags}
+        picked={pick}
+        onToggle={(k) => { setPick((p) => toggleIn(p, k)); sound.click(); }}
+        onSuggest={text.trim() ? () => { setPick(guessDailyTags(text, tags)); sound.click(); } : null}
+      />
+      <div className="inv-tag-note">
+        {pick.length === 0
+          ? `no tag — coins and level only · ${diffMeta(diff).coins} pts go nowhere on the radar`
+          : `+${diffMeta(diff).coins} ◉ and +${diffMeta(diff).coins} to ${pick.map((k) => (tagMeta(k) || {}).label).join(" and ")}`}
+      </div>
 
       <div className="quest-habit-list">
         {inventory.length === 0 ? (
@@ -5619,6 +5899,8 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
           inventory.map((t) => {
             const d = diffMeta(t.diff);
             const isToday = Object.values(daily.picks || {}).includes(t.id);
+            const mine = dailyTags(t, tags);
+            const times = dailyDoneCount(t);
             return (
               <div className={`quest-habit-card good ${isToday ? "drawn" : ""}`} key={t.id}>
                 {editId === t.id ? (
@@ -5643,6 +5925,12 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
                         </button>
                       ))}
                     </div>
+                    <DailyTagPicker
+                      tags={tags}
+                      picked={editTags}
+                      onToggle={(k) => { setEditTags((p) => toggleIn(p, k)); sound.click(); }}
+                      onSuggest={() => { setEditTags(guessDailyTags(editText, tags)); sound.click(); }}
+                    />
                     <div className="inv-edit-actions">
                       <button className="note-btn save" onClick={() => saveEdit(t)}>save</button>
                       <button className="note-btn" onClick={cancelEdit}>cancel</button>
@@ -5654,9 +5942,18 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
                     {/* the whole row is the edit affordance: a pencil icon at
                         this size is a 12px tap target next to a delete ✕ */}
                     <button className="quest-habit-main inv-tap" onClick={() => beginEdit(t)}>
-                      <span className="quest-habit-label">{t.text}</span>
+                      <span className="quest-habit-label">
+                        {t.text}
+                        {mine.map((k) => {
+                          const m = tagMeta(k);
+                          return <span key={k} className="inv-tag-dot" style={{ background: m.color }} title={m.label} />;
+                        })}
+                      </span>
                       <span className="quest-habit-meta">
-                        {d.label} · +{d.coins} coins{isToday ? " · drawn" : ""} · tap to edit
+                        {d.label} · +{d.coins} ◉
+                        {mine.length ? ` → ${mine.map((k) => (tagMeta(k) || {}).label).join(" + ")}` : " · untagged"}
+                        {times ? ` · ${times}× = ${dailyItemXP(t)} pts` : ""}
+                        {isToday ? " · drawn" : ""}
                       </span>
                     </button>
                     {armed === t.id ? (
@@ -5736,69 +6033,92 @@ const STORAGE_KEY_NOTIFY_ENABLED = "tasksh.notifyenabled.v1";
 // a key is a credential, not data), and never synced to the worker's KV.
 const STORAGE_KEY_AI_KEY = "tasksh.aikey.v1";
 
-/** Rename, add and remove the finer tags. Grouped under their parent area. */
-function TagEditor({ tagCtl, onClose }) {
-  const [adding, setAdding] = useState(null);   // area key being added to
+/** Rename, recolour, add and remove tags.
+ *
+ *  Flat now: v52 removed the four fixed parent areas, so this is one list.
+ *  Deleting a tag has to repair every quest wearing it, or those quests fall
+ *  off the radar with no way to get back on.
+ */
+function TagEditor({ tagCtl, onClose, onDropTag, usage }) {
+  const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [confirm, setConfirm] = useState(null);
+  const tags = tagCtl.tags;
+  const full = tags.length >= MAX_TAGS;
 
-  const commitAdd = (areaKey) => {
-    if (draft.trim()) { tagCtl.addSub(areaKey, draft); sound.success(); }
-    setDraft(""); setAdding(null);
+  const commitAdd = () => {
+    if (draft.trim()) { tagCtl.addTag(draft); sound.success(); }
+    setDraft(""); setAdding(false);
   };
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
-          <span className="sheet-title">edit tags</span>
+          <span className="sheet-title">tags</span>
           <button className="sheet-close" onClick={onClose} aria-label="Close">×</button>
         </div>
 
-        {AREAS.map((a) => {
-          const mine = subsForArea(tagCtl.subs, a.key);
+        {tags.map((t) => {
+          const used = (usage && usage[t.key]) || 0;
           return (
-            <div key={a.key} className="tag-group">
-              <div className="tag-group-head">
-                <span className="tag-dot" style={{ background: a.color }} />
-                <span className="tag-group-name">{a.label}</span>
-              </div>
-              {mine.map((sb) => (
-                <div key={sb.key} className="tag-row">
-                  <input
-                    className="tag-input"
-                    defaultValue={sb.label}
-                    maxLength={18}
-                    onBlur={(e) => tagCtl.renameSub(sb.key, e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                  />
-                  <button
-                    className="tag-del"
-                    disabled={mine.length <= 1}
-                    title={mine.length <= 1 ? "each area needs at least one tag" : "remove"}
-                    onClick={() => { tagCtl.removeSub(sb.key); sound.delete(); }}
-                  >×</button>
-                </div>
-              ))}
-              {adding === a.key ? (
-                <div className="tag-row">
-                  <input
-                    className="tag-input" autoFocus placeholder="new tag…" maxLength={18}
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onBlur={() => commitAdd(a.key)}
-                    onKeyDown={(e) => { if (e.key === "Enter") commitAdd(a.key); if (e.key === "Escape") { setDraft(""); setAdding(null); } }}
-                  />
-                </div>
+            <div key={t.key} className="tag-row">
+              <button
+                className="tag-dot swatch"
+                style={{ background: t.color }}
+                title="change colour"
+                onClick={() => {
+                  const i = TAG_PALETTE.indexOf(t.color);
+                  tagCtl.recolourTag(t.key, TAG_PALETTE[(i + 1) % TAG_PALETTE.length]);
+                  sound.click();
+                }}
+              />
+              <input
+                className="tag-input"
+                defaultValue={t.label}
+                maxLength={14}
+                onBlur={(e) => tagCtl.renameTag(t.key, e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+              />
+              <span className="tag-use">{used}</span>
+              {confirm === t.key ? (
+                <button className="tag-del armed"
+                        onClick={() => { tagCtl.removeTag(t.key, onDropTag); setConfirm(null); sound.delete(); }}>
+                  sure?
+                </button>
               ) : (
-                <button className="tag-add" onClick={() => { setDraft(""); setAdding(a.key); }}>+ add tag</button>
+                <button
+                  className="tag-del"
+                  disabled={tags.length <= 1}
+                  title={tags.length <= 1 ? "you need at least one tag" : "remove"}
+                  onClick={() => { setConfirm(t.key); sound.click(); }}
+                >×</button>
               )}
             </div>
           );
         })}
 
+        {adding ? (
+          <div className="tag-row">
+            <input
+              className="tag-input" autoFocus placeholder="new tag…" maxLength={14}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitAdd}
+              onKeyDown={(e) => { if (e.key === "Enter") commitAdd(); if (e.key === "Escape") { setDraft(""); setAdding(false); } }}
+            />
+          </div>
+        ) : (
+          <button className="tag-add" disabled={full}
+                  onClick={() => { setDraft(""); setAdding(true); }}>
+            {full ? `${MAX_TAGS} is the most the radar can read` : "+ add tag"}
+          </button>
+        )}
+
         <div className="sheet-foot">
-          habits keep their tag when you rename it
-          <button className="tag-reset" onClick={() => { tagCtl.resetSubs(); sound.click(); }}>reset to defaults</button>
+          the number is how many quests wear it. renaming keeps them; deleting
+          takes the tag off them.
+          <button className="tag-reset" onClick={() => { tagCtl.resetTags(); sound.click(); }}>reset to defaults</button>
         </div>
       </div>
     </div>
@@ -5885,7 +6205,7 @@ function AchievementToast({ id, onDone }) {
   }, [id, onDone]);
   if (!a) return null;
   return (
-    <div className="ach-toast" onClick={onDone}>
+    <div className="ach-toast">
       <span className="ach-toast-icon">{a.icon}</span>
       <span className="ach-toast-body">
         <span className="ach-toast-kicker">achievement</span>
@@ -5893,6 +6213,12 @@ function AchievementToast({ id, onDone }) {
         <span className="ach-toast-desc">{a.desc}</span>
       </span>
       <span className="ach-toast-coins">+{a.coins}</span>
+      {/* v52: the toast used to be one big tap target pinned over the bottom
+          of the list, and for its 4.2 seconds it swallowed every tap and
+          swipe aimed at whatever was underneath -- a quest you were trying
+          to swipe just did not respond. The body is inert now and only this
+          button takes input. It self-dismisses regardless. */}
+      <button className="ach-toast-x" onClick={onDone} aria-label="Dismiss">×</button>
     </div>
   );
 }
@@ -6503,14 +6829,18 @@ function applyAIActions(actions, state, setters) {
         touched.add("vaultHabits"); break;
 
       case "add_good_habit":
-        habits = [...habits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: a.xp, penalty: 0, history: [] }];
+        habits = [...habits, { id: makeId(), label: a.label,
+          tags: Array.isArray(a.tags) && a.tags.length ? a.tags : migrateAreaToTag(a, new Set(loadTags().map((t) => t.key))),
+          xp: a.xp, penalty: 0, history: [] }];
         touched.add("habits"); break;
       case "delete_good_habit":
         habits = habits.filter((h) => h.id !== a.id);
         touched.add("habits"); break;
 
       case "add_bad_habit":
-        habits = [...habits, { id: makeId(), label: a.label, area: a.area, ...(a.sub ? { sub: a.sub } : {}), xp: 0, penalty: a.xp, history: [] }];
+        habits = [...habits, { id: makeId(), label: a.label,
+          tags: Array.isArray(a.tags) && a.tags.length ? a.tags : migrateAreaToTag(a, new Set(loadTags().map((t) => t.key))),
+          xp: 0, penalty: a.xp, history: [] }];
         touched.add("habits"); break;
       case "delete_bad_habit":
         habits = habits.filter((h) => h.id !== a.id);
@@ -12645,7 +12975,14 @@ function TodayQuestRow({ quest, index, onComplete }) {
           onClick={() => !quest.done && onComplete()}
           aria-label={quest.done ? "Completed" : "Complete quest"}
         />
-        <span className={`today-task-text ${quest.done ? "done" : ""}`}>{quest.text}</span>
+        <span className={`today-task-text ${quest.done ? "done" : ""}`}>
+          {quest.text}
+          {/* v53: where the points land, inline. Two tags is the cap, so this
+              never pushes the coin figure off a 360px row. */}
+          {(quest.tagMeta || []).map((m) => (
+            <span key={m.key} className="today-quest-chip" style={{ "--tc": m.color }}>{m.label}</span>
+          ))}
+        </span>
         <span className="today-quest-tag" style={{ color: quest.diff.color }}>
           {quest.done ? "✓" : `+${quest.diff.coins}◉`}
         </span>
@@ -12658,7 +12995,7 @@ function TodayQuestRow({ quest, index, onComplete }) {
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
 function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0,
-                     daily, inventory, onQuestComplete, spend }) {
+                     daily, inventory, onQuestComplete, spend, tags = DEFAULT_TAGS }) {
   const spendableXP = coins;   // v41: rewards cost coins, XP is progression only
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
@@ -12696,10 +13033,12 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
       .map((d) => {
         const id = picks[d.key];
         const item = id ? (inventory || []).find((t) => t.id === id) : null;
-        return item ? { ...item, diff: d, done: done.includes(item.id) } : null;
+        if (!item) return null;
+        const tagMeta = dailyTags(item, tags).map((k) => tags.find((t) => t.key === k)).filter(Boolean);
+        return { ...item, diff: d, done: done.includes(item.id), tagMeta };
       })
       .filter(Boolean);
-  }, [daily, inventory]);
+  }, [daily, inventory, tags]);
 
   const openTasks = useMemo(() => {
     const order = { high: 0, mid: 1, low: 2 };
@@ -12885,12 +13224,21 @@ function TodoApp() {
   // v36: the Tasks tab became an inventory + a daily draw. On the first launch
   // after upgrading, the old task list is folded in rather than discarded --
   // priority maps onto difficulty.
+  //
+  // v53: items also gained `tags` and `history`, so every load runs through
+  // migrateInventory. Cheap, idempotent, and it also repairs an item typed
+  // in by hand or restored from a v52 backup.
   const [inventory, setInventory] = useState(() => {
     const inv = loadStored(STORAGE_KEY_INVENTORY, null);
-    if (Array.isArray(inv)) return inv;
+    if (Array.isArray(inv)) return migrateInventory(inv, loadTags());
     const old = loadStored(STORAGE_KEY_TASKS, null);
-    return Array.isArray(old) && old.length ? migrateTasksToInventory(old) : seedInventory;
+    return Array.isArray(old) && old.length
+      ? migrateInventory(migrateTasksToInventory(old), loadTags())
+      : seedInventory;
   });
+  // Stamped onto a daily task when it is completed; kept current further
+  // down, once routines and the clock are in scope.
+  const questDayRef = useRef(getISTDateString(0));
   const [daily, setDaily] = useState(() => loadStored(STORAGE_KEY_DAILY, { day: "", picks: {}, done: [] }));
   // v35 merged good+bad into one list. On first launch after the upgrade the
   // merged key is absent, so fold the two old lists together; mergeHabitLists
@@ -12905,14 +13253,14 @@ function TodoApp() {
   });
   const [rewards, setRewards] = useState(() => loadStored(STORAGE_KEY_REWARDS, seedRewards));
   const totalXP = useMemo(
-    () => computeTotalXP(habits),
-    [habits, rewards]
+    () => computeTotalXP(habits, inventory),
+    [habits, rewards, inventory]
   );
   const currentLevel = useMemo(() => levelFromXP(totalXP).level, [totalXP]);
   const themeCtl = useTheme(currentLevel);
   const petCtl = usePet(currentLevel);
   const { links, setLinks } = useLinks();
-  const tagCtl = useSubAreas();
+  const tagCtl = useTags();
   const [linkTarget, setLinkTarget] = useState(null);   // ref string or null
 
   // any view can request the link sheet without prop-drilling
@@ -12966,6 +13314,12 @@ function TodoApp() {
     // React does not promise the updater runs when you call it
     setDaily((d) => ((d.done || []).includes(id) ? d : { ...d, done: [...(d.done || []), id] }));
     achCtl.addCoins(coins);
+    // v53: the same tick also writes the day into the task's own history,
+    // which is what the radar and the level read. Stamped with the QUEST day
+    // rather than the calendar day -- the board rolls at the first routine,
+    // so something finished at 01:00 belongs to the day you were awake for,
+    // and dating it tomorrow would let that task be completed twice.
+    setInventory((prev) => logDailyDone(prev, id, questDayRef.current));
     sound.success();
     petBus.emit("habitDone");
   }, [daily, achCtl]);
@@ -13244,6 +13598,10 @@ function TodoApp() {
   // Redraw when the quest day rolls over. Keyed on the day STRING rather than
   // a timer so it also fires correctly after the app has been closed for days.
   const questDay = questDayString(routines, nowMinutes);
+  // completeQuest is declared further up this component and needs the same
+  // date to stamp a task's history with. A ref, not a dependency: it must be
+  // readable before this line runs and must never be stale afterwards.
+  questDayRef.current = questDay || getISTDateString(0);
   useEffect(() => {
     if (!questDay) return;
     if (daily.day !== questDay) setDaily(drawDaily(inventory, questDay));
@@ -14876,7 +15234,8 @@ function TodoApp() {
           transform: translateX(-50%);
           z-index: 90; width: calc(100% - 32px); max-width: 380px;
           display: flex; align-items: center; gap: 11px;
-          padding: 11px 13px; cursor: pointer;
+          padding: 11px 13px;
+          pointer-events: none;
           background: var(--panel);
           border: 1px solid var(--accent);
           border-radius: 12px;
@@ -14898,6 +15257,12 @@ function TodoApp() {
         }
         .ach-toast-name { font-size: 13px; font-weight: 600; color: var(--text); }
         .ach-toast-desc { font-size: 10px; color: var(--muted); }
+        .ach-toast-x {
+          pointer-events: auto; cursor: pointer; flex-shrink: 0;
+          background: transparent; border: none; color: var(--muted);
+          font-size: 18px; line-height: 1; padding: 4px 2px 4px 8px;
+          min-width: 26px; min-height: 26px;
+        }
         .ach-toast-coins {
           font-family: var(--font-mono); font-size: 12px;
           font-weight: 700; color: var(--accent2); flex-shrink: 0;
@@ -16110,6 +16475,12 @@ function TodoApp() {
         }
         .today-task-row.is-done { opacity: 0.5; }
         .today-quest-tag { font-size: 9px; font-variant-numeric: tabular-nums; }
+        .today-quest-chip {
+          font-size: 8px; letter-spacing: 0.05em; text-transform: lowercase;
+          color: var(--tc, var(--muted)); border: var(--border-w) solid var(--tc, var(--border));
+          border-radius: 3px; padding: 0 3px; margin-left: 5px;
+          opacity: 0.85; white-space: nowrap;
+        }
         .today-quest-note {
           font-size: 8.5px; color: var(--muted); padding: 4px 2px 0;
         }
@@ -16157,6 +16528,11 @@ function TodoApp() {
         .axis-pop-row-net.pos { color: var(--accent); }
         .axis-pop-row-net.neg { color: var(--danger); }
         .axis-pop-more, .axis-pop-empty { font-size: 8.5px; color: var(--muted); margin-top: 6px; }
+        .axis-pop-daily {
+          font-size: 8.5px; color: var(--accent2); margin: 4px 0 2px;
+          font-variant-numeric: tabular-nums;
+        }
+        .axis-pop-daily-mark { color: var(--accent2); margin-right: 4px; font-size: 8px; }
 
         /* ---- per-quest calendar (v45, #10) ---- */
         .qh-sheet { max-width: 340px; }
@@ -16205,6 +16581,31 @@ function TodoApp() {
         .qh-stat-n { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
         .qh-stat-l { font-size: 7.5px; color: var(--muted); text-align: center; line-height: 1.3; }
         .qh-all { margin-top: 9px; text-align: center; font-size: 8.5px; color: var(--muted); }
+
+        /* ---- tags (v52) ---- */
+        .radar-count { font-size: 9px; color: var(--muted); letter-spacing: 0.06em; }
+        .quest-tag-pip { font-size: 8.5px; }
+        .quest-habit-desc {
+          display: block; font-size: 8.5px; color: var(--muted);
+          line-height: 1.45; margin-top: 2px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .edit-row-tags { flex-wrap: wrap; gap: 4px; }
+        .edit-tag-note { font-size: 8px; color: var(--accent); margin: -2px 0 4px; }
+        .edit-desc { font-size: 10.5px; margin-top: 4px; }
+        .tag-dot.swatch {
+          width: 14px; height: 14px; border-radius: 50%; border: none;
+          cursor: pointer; flex-shrink: 0; padding: 0;
+        }
+        .tag-use {
+          font-size: 8.5px; color: var(--muted); width: 18px; text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        .tag-del.armed {
+          width: auto; padding: 0 7px; font-size: 8.5px;
+          color: var(--danger); border-color: var(--danger);
+        }
+        .tag-add:disabled { color: var(--muted); border-color: var(--border); cursor: default; }
 
         /* ---- named items + year view (v48) ---- */
         .xp-hints { display: flex; gap: 4px; flex-wrap: wrap; margin: -4px 0 9px; }
@@ -17337,6 +17738,37 @@ function TodoApp() {
         }
         .daily-text { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); }
         .daily-coins { font-size: 10px; color: var(--accent2); flex: none; }
+
+        /* ---- daily task tags (v53) ---- */
+        /* Column, not a row: two tags at 9px still fit beside a 100-point
+           coin figure on a 360px screen only if they stack. */
+        .daily-tags {
+          display: flex; flex-direction: column; align-items: flex-end;
+          gap: 2px; flex: none; max-width: 42%;
+        }
+        .daily-tag {
+          font-size: 8.5px; letter-spacing: 0.04em; white-space: nowrap;
+          color: var(--tc, var(--muted));
+          border: var(--border-w) solid var(--tc, var(--border));
+          border-radius: 3px; padding: 1px 4px; opacity: 0.9;
+          font-variant-numeric: tabular-nums;
+        }
+        .daily-tag.none { color: var(--muted); border-color: var(--border); opacity: 0.6; }
+        .inv-tag-chips { padding-top: 0; }
+        .inv-suggest {
+          font-family: var(--font-mono); font-size: 9px; color: var(--muted);
+          background: none; border: var(--border-w) dashed var(--border);
+          border-radius: 3px; padding: 3px 7px; cursor: pointer;
+        }
+        .inv-suggest:hover { color: var(--accent); border-color: var(--accent); }
+        .inv-tag-note {
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+          padding: 0 18px 10px;
+        }
+        .inv-tag-dot {
+          display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+          margin-left: 5px; vertical-align: middle;
+        }
         .daily-note {
           display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
           font-family: var(--font-mono); font-size: 9px;
@@ -18277,6 +18709,7 @@ pet, wallet and themes are always included.
             daily={daily}
             inventory={inventory}
             onQuestComplete={completeQuest}
+            tags={tagCtl.tags}
             vaultHabits={vaultHabits}
             habits={habits}
             rewards={rewards}
@@ -18296,6 +18729,7 @@ pet, wallet and themes are always included.
             onReward={(c) => achCtl.addCoins(c)}
             onComplete={completeQuest}
             coins={achCtl.coins}
+            tags={tagCtl.tags}
           />
         ) : tab === "routines" ? (
           <RoutinesView routines={routines} setRoutines={setRoutines} />
@@ -18308,6 +18742,8 @@ pet, wallet and themes are always included.
             tagCtl={tagCtl}
             habits={habits}
             setHabits={setHabits}
+            inventory={inventory}
+            setInventory={setInventory}
             rewards={rewards}
             setRewards={setRewards}
             coins={achCtl.coins}

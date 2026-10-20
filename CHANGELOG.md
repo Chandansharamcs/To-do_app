@@ -24,6 +24,8 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v53`** | 2026-10-19 | Daily tasks carry tags too, so the radar can finally see the push-ups |
+| **`v52`** | 2026-10-19 | One editable tag list, quests can wear several, points reset |
 | **`v51`** | 2026-10-19 | The coin balance was invisible on both screens that move it, and Today gave rewards away free |
 | **`v50`** | 2026-10-19 | The three rngdle screens the reveal pass did not touch |
 | **`v49`** | 2026-10-18 | RNGdle's real reveal choreography, and rarity you can see |
@@ -221,6 +223,145 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-19 — `tasksh-v53`**
+
+The chart could not see most of the work.
+
+- **Daily tasks now carry tags, and finishing one credits its points to
+  them.** Until now a daily task paid coins and nothing else, while the radar
+  reads XP — so the two never met. Nine of the owner's twenty daily tasks are
+  physical (20 laps on roof, 100 push ups, 40 punches in wall, 3 min hang,
+  20 squats, 20 punches 20 pushups, two workouts, karate) and his Body axis
+  still read **two quests**. He was doing the work every day; the chart had
+  no way to hear about it. Measured after the fix, from a clean reset: a
+  board of *Be happy / 20 laps on roof / Bath at evening* moved
+  `Self 0→10, Body 0→50, Health 0→100`.
+
+- **Points equal coins. One number, by construction.** `DIFFICULTIES` now
+  reads its values out of `DIFF_VALUE = { easy: 10, mid: 50, hard: 100 }`, so
+  the amount you are paid and the amount your tag is credited cannot drift
+  apart in a later edit. "100 push ups" is `hard`, so it is 100 ◉ **and** 100
+  into Body — which is exactly how the owner described it.
+
+- **Two tags get full credit; the level still counts once.** Same rule quests
+  got in v52, and the same reason: splitting the value between tags would
+  make a 2-tag task worth half per axis and quietly reward under-tagging. The
+  level reads `computeDailyTotalXP`, which counts each task exactly once —
+  if full credit leaked into the level, adding a second tag would literally
+  double your XP. Pinned by a mutation test, not just a unit test.
+
+- **The zero floor moved to the SUM.** New `tagAxisRaw/tagAxisXP` add quests
+  and daily tasks *before* flooring at zero. Flooring each half separately
+  would mean a tag sitting at −40 from slipped quests reads 100 after a
+  100-point daily task instead of 60 — quietly forgiving the penalty, which
+  is the same shape as the v51 "claiming a reward from Today was free" bug.
+
+- **A daily task may be untagged, and the app says so instead of guessing.**
+  `dailyTags` has no fallback to the first tag — unlike `habitTags`, where
+  inventing one is recovery because a habit always had an area. Filing
+  "Bring milk" under Work would be making data up. An untagged task still
+  pays coins and still counts toward your level; the Tasks card reads
+  `untagged` and the radar card names how many there are.
+
+- **Completions are recorded per task, dated with the QUEST day.** Each
+  inventory item gained a `history` array, stamped with `questDayString`
+  rather than the calendar date — the board rolls at the first routine
+  (05:30), so something finished at 01:00 belongs to the day you were awake
+  for, and dating it tomorrow would let the same task be completed twice.
+  `logDailyDone` is idempotent per day on its own, because React does not
+  promise how often an updater runs.
+
+- **Upgrading guesses rather than blanking.** `migrateInventory` adds `tags`
+  and `history` to every item, using a keyword table for the tags, because a
+  radar that goes empty after an update reads as "the update ate my
+  progress". The guess is capped at two tags, never overwrites tags you
+  chose, and says nothing when it is unsure — a wrong tag is worse than no
+  tag, because a wrong one looks decided. There is a `suggest` button in the
+  editor that runs the same function on demand.
+
+- **History starts empty, deliberately.** The app never recorded which daily
+  tasks were completed on which day — only today's board did, and only for
+  today — so there is nothing to backfill. Inventing one would put points on
+  the chart that were never earned.
+
+- **Deleting a tag repairs daily tasks too.** The tag editor's usage counts
+  now include them, and dropping a tag strips it from the inventory. Unlike
+  quests they are allowed to end up with nothing rather than being reassigned
+  somewhere they do not belong.
+
+- **Levelling is roughly three times faster, on purpose.** A full board is
+  160 points a day against a measured habit pace of 58.5/day, so level 10
+  arrives in ~14 days instead of ~53. The owner was shown those figures and
+  chose it. Side effect worth knowing: from a hard reset, clearing one full
+  board is exactly 160 points, which is exactly level 2 — the level-up screen
+  fires on day one.
+
+Tests: **540 unit** (+61: 55 new in `dailytags.test.mjs`, 6 in
+`keydetect.test.mjs`) and **164 browser** (+14 in `regress.spec.mjs`). Ten
+mutations were applied to the new code — split-instead-of-full-credit,
+level double-counting, floor-per-half, non-idempotent logging, a fallback
+tag, a backfilled history, overwritten tags, an uncapped guesser, slipped
+daily tasks, and dropping daily points from the level — and all ten were
+killed. Each mutation was verified to have actually applied first; a
+mutation that does not apply is not a passing test.
+
+---
+
+**2026-10-19 — `tasksh-v52`**
+
+The category system was two taxonomies stacked on each other. Now it is one.
+
+- **Areas and sub-tags collapsed into ONE editable tag list.** v26 gave you 4
+  fixed areas plus 10 editable sub-tags beneath them, and every quest needed
+  one of each. That meant two schemes to keep straight, a tag called "Deep
+  Work" sitting next to a quest called "Deep Work", and four categories that
+  could not be changed without a release. There is now a single list, it is
+  editable, and the defaults are the owner's five: **Work, Body, Health,
+  Self, Discipline**. Net deletion — the sub machinery removed more code than
+  editable tags added.
+
+- **A quest can wear more than one tag, and OPTION ① is how they score:**
+  full credit to each. A workout tagged Body + Discipline gives its whole
+  value to both. **The axes therefore sum to more than your total XP, on
+  purpose**, and the chart says so underneath itself. Your level still counts
+  each quest exactly once, so progression is untouched.
+
+  The rejected alternative — splitting the XP across a quest's tags — is
+  seductive because the axes would then reconcile. It is also corrupting: a
+  2-tag quest would be worth half per axis, so the chart would quietly reward
+  under-tagging and the data would rot. A test asserts adding a second tag
+  never reduces the first one's value.
+
+- **Quests have descriptions.** A line under the name saying what it actually
+  means, so "Manage" can be "kept the app honest" rather than a word.
+
+- **Tags are addable, renameable, recolourable and deletable**, capped at 12
+  because the radar stops being readable past that (measured: 10 axes are
+  comfortable at 360px and 13-character labels still fit). Deleting a tag
+  repairs every quest wearing it rather than orphaning them off the chart.
+
+- **Fixed: the achievement toast was swallowing swipes.** It was one large
+  tap target pinned over the bottom of the screen, and for its 4.2 seconds
+  every tap and swipe aimed at the list underneath went to the toast instead
+  — so a quest you tried to swipe simply did not respond. Found while
+  debugging a "failing" swipe test that turned out to be reporting a real
+  bug. The body is inert now; a small × takes the input, and it still
+  self-dismisses. A test asserts nothing at the centre of a quest card
+  resolves to the toast.
+
+- **Migration is automatic.** `fitness` becomes `body`; old sub-tags that
+  belonged elsewhere are moved rather than lost (screen time and admin both
+  become `discipline`); anything unplaceable lands on the first tag rather
+  than disappearing from the chart. A v51 backup restores without losing its
+  shape.
+
+- **Tests: 479 unit + 150 browser** (was 460 + 149). A new `tags.test.mjs`,
+  and the v44/v45 negative-stat tests in `keydetect` and `quest` were ported
+  rather than deleted — the bug they guard is older than the model they were
+  written against. Four mutations on the new code: splitting XP instead of
+  full credit, removing the floor, dropping the sub-tag remap, and letting an
+  untaggable quest fall off the chart. All four went red.
 
 **2026-10-19 — `tasksh-v51`**
 

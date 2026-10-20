@@ -662,8 +662,8 @@ await test("the vault is backup, build and sound now", async () => {
  *  that grabs the first card is testing an already-ticked row. These get a
  *  clean, deliberately untouched set instead. */
 const CLEAN_HABITS = JSON.stringify([
-  { id: 501, label: "Swipe Me", area: "work", sub: "deep", xp: 30, penalty: 10, history: [] },
-  { id: 502, label: "Other One", area: "self", sub: "creative", xp: 10, penalty: 5, history: [] },
+  { id: 501, label: "Swipe Me", tags: ["work"], xp: 30, penalty: 10, history: [] },
+  { id: 502, label: "Other One", tags: ["self"], xp: 10, penalty: 5, history: [] },
 ]);
 
 async function openQuests(viewport) {
@@ -794,7 +794,6 @@ await test("every axis has its own finger-sized tap region, even at zero", async
   const { ctx, page } = await open();
   await page.evaluate(() => {
     localStorage.setItem("tasksh.habits.v1", JSON.stringify([]));
-    localStorage.setItem("tasksh.radarmode.v1", "subs");
   });
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(600);
@@ -822,10 +821,9 @@ await test("no radar axis is ever plotted below zero", async () => {
   const { ctx, page } = await open();
   await page.evaluate(() => {
     localStorage.setItem("tasksh.habits.v1", JSON.stringify([
-      { id: 1, label: "Screen Time", area: "health", sub: "mind", xp: 0, penalty: 40,
+      { id: 1, label: "Screen Time", tags: ["discipline"], xp: 0, penalty: 40,
         history: [{ d: "2026-01-01", t: "slip" }, { d: "2026-01-02", t: "slip" }] },
     ]));
-    localStorage.setItem("tasksh.radarmode.v1", "subs");
   });
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(600);
@@ -841,10 +839,9 @@ await test("a clamped axis admits what zero is hiding", async () => {
   const { ctx, page } = await open();
   await page.evaluate(() => {
     localStorage.setItem("tasksh.habits.v1", JSON.stringify([
-      { id: 1, label: "Screen Time", area: "health", sub: "mind", xp: 0, penalty: 40,
+      { id: 1, label: "Screen Time", tags: ["discipline"], xp: 0, penalty: 40,
         history: [{ d: "2026-01-01", t: "slip" }, { d: "2026-01-02", t: "slip" }] },
     ]));
-    localStorage.setItem("tasksh.radarmode.v1", "subs");
   });
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(600);
@@ -856,13 +853,13 @@ await test("a clamped axis admits what zero is hiding", async () => {
   for (let i = 0; i < n; i++) {
     const l = await dots.nth(i).getAttribute("aria-label");
     labels.push(l);
-    if (!/Mind/i.test(l)) continue;
+    if (!/Discipline/i.test(l)) continue;
     await dots.nth(i).click();
     await page.waitForTimeout(260);
     found = (await page.locator(".axis-pop-raw").count()) === 1;
     break;
   }
-  assert.ok(found, `the Mind axis did not report its hidden deficit. axes: ${labels.join(" | ")}`);
+  assert.ok(found, `the Discipline axis did not report its hidden deficit. axes: ${labels.join(" | ")}`);
   await ctx.close();
 });
 
@@ -1075,6 +1072,275 @@ await test("rngdle EP cannot reach the coin balance", async () => {
   await ctx.close();
 });
 
+
+await test("a toast cannot swallow a swipe aimed at the list behind it", async () => {
+  // the achievement toast was one big tap target pinned over the bottom of
+  // the screen, and for its 4.2 seconds every swipe went to it instead
+  const { ctx, page } = await openQuests();
+  const card = swipeCard(page);
+  await card.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  const box = await card.boundingBox();
+  const hit = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.closest(".ach-toast") ? "toast" : "card-or-below") : "nothing";
+  }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  assert.notEqual(hit, "toast", "the toast is intercepting taps meant for the list");
+  await ctx.close();
+});
+
+
+// ------------------------------------------------- v53: tagged daily tasks --
+//
+// Daily tasks paid coins and nothing else, so the radar -- which reads XP --
+// could not see them. Nine of the twenty things in his inventory are
+// physical, and Body sat at two quests. These tests pin the fix end to end:
+// the tag is visible where you tap, the points land on the axis, and the two
+// screens that can complete a quest agree about all of it.
+
+const TAG_SEED = {
+  "tasksh.inventory.v1": JSON.stringify([
+    { id: 901, text: "100 push ups",      diff: "hard", tags: ["body"], history: [] },
+    { id: 902, text: "Revise 2 chapters", diff: "mid",  tags: ["work"], history: [] },
+    { id: 903, text: "Bruh at night",     diff: "easy", tags: [],       history: [] },
+  ]),
+  "tasksh.habits.v1": JSON.stringify([
+    { id: 1, label: "Workout", tags: ["body"], xp: 50, penalty: 50, history: [] },
+    { id: 2, label: "Study",   tags: ["work"], xp: 30, penalty: 30, history: [] },
+  ]),
+  "tasksh.wallet.v1": JSON.stringify({ coins: 500 }),
+};
+
+async function tagged(seed = TAG_SEED) {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctx.route("**/tasksh-notify.techcraftor.workers.dev/**", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  const page = await ctx.newPage();
+  // Seeded ONCE. addInitScript runs on every navigation, so seeding
+  // unconditionally would silently reset the save on reload and make
+  // "survives a reload" a test of nothing.
+  await page.addInitScript((s) => {
+    if (localStorage.getItem("__seeded")) return;
+    for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v);
+    localStorage.setItem("__seeded", "1");
+  }, seed);
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  // the radar hit areas carry "<label>: <value> XP", which is the only place
+  // the exact axis number is readable without opening the popup
+  const axis = async (label) => {
+    const t = await page.locator(`svg.radar-chart [aria-label^="${label}:"]`).getAttribute("aria-label");
+    return Number(String(t).match(/:\s*(-?\d+)/)[1]);
+  };
+  const history = (id) => page.evaluate((i) => {
+    const inv = JSON.parse(localStorage.getItem("tasksh.inventory.v1") || "[]");
+    return (inv.find((t) => t.id === i) || {}).history || [];
+  }, id);
+  return { ctx, page, axis, history };
+}
+
+await test("a daily task says which tag it pays into, on the card you tap", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "tasks");
+  const card = page.locator(".daily-card", { hasText: "100 push ups" });
+  assert.equal(await card.count(), 1, "the hard task was not drawn");
+  assert.match(await card.innerText(), /Body/i, "the card does not say where its points go");
+  await ctx.close();
+});
+
+await test("an untagged daily task is labelled untagged rather than filed somewhere", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "tasks");
+  const card = page.locator(".daily-card", { hasText: "Bruh at night" });
+  assert.match(await card.innerText(), /untagged/i);
+  await ctx.close();
+});
+
+await test("completing a daily task moves its tag on the radar", async () => {
+  // the whole feature in one assertion
+  const { ctx, page, axis } = await tagged();
+  await gotoTab(page, "quest");
+  const before = await axis("Body");
+  await gotoTab(page, "tasks");
+  await page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await page.waitForTimeout(500);
+  await gotoTab(page, "quest");
+  assert.equal(await axis("Body"), before + 100, "Body did not gain the 100 it was paid");
+  await ctx.close();
+});
+
+await test("it moves only the tag it wears", async () => {
+  const { ctx, page, axis } = await tagged();
+  await gotoTab(page, "quest");
+  const work = await axis("Work");
+  await gotoTab(page, "tasks");
+  await page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await page.waitForTimeout(500);
+  await gotoTab(page, "quest");
+  assert.equal(await axis("Work"), work, "an unrelated axis moved");
+  await ctx.close();
+});
+
+await test("an untagged daily task still pays coins but moves no axis", async () => {
+  const { ctx, page, axis } = await tagged();
+  await gotoTab(page, "quest");
+  const snapshot = {};
+  for (const k of ["Work", "Body", "Health", "Self", "Discipline"]) snapshot[k] = await axis(k);
+  await gotoTab(page, "tasks");
+  const coinsBefore = await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.wallet.v1")).coins);
+  await page.locator(".daily-card", { hasText: "Bruh at night" }).click();
+  await page.waitForTimeout(500);
+  assert.ok(await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.wallet.v1")).coins) > coinsBefore,
+    "an untagged task should still pay");
+  await gotoTab(page, "quest");
+  for (const k of Object.keys(snapshot)) assert.equal(await axis(k), snapshot[k], `${k} moved`);
+  await ctx.close();
+});
+
+await test("completing from Today credits the tag exactly as completing from Tasks does", async () => {
+  // two buttons, one rule. This is the shape of the v51 bug where claiming a
+  // reward from Today was free because Today had its own copy of the logic.
+  const a = await tagged();
+  await gotoTab(a.page, "tasks");
+  await a.page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await a.page.waitForTimeout(500);
+  await gotoTab(a.page, "quest");
+  const fromTasks = await a.axis("Body");
+  await a.ctx.close();
+
+  const b = await tagged();
+  await gotoTab(b.page, "today");
+  await b.page.locator(".today-task-row.quest", { hasText: "100 push ups" })
+            .locator(".today-task-check").click();
+  await b.page.waitForTimeout(500);
+  await gotoTab(b.page, "quest");
+  const fromToday = await b.axis("Body");
+  await b.ctx.close();
+
+  assert.equal(fromToday, fromTasks, "the two screens credit different amounts");
+});
+
+await test("Today shows the tag chip on a drawn quest", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "today");
+  const row = page.locator(".today-task-row.quest", { hasText: "100 push ups" });
+  assert.equal(await row.locator(".today-quest-chip").count(), 1, "no tag chip on the Today row");
+  assert.match(await row.innerText(), /Body/i);
+  await ctx.close();
+});
+
+await test("one completion is written once, however many screens you tap it from", async () => {
+  const { ctx, page, history } = await tagged();
+  await gotoTab(page, "tasks");
+  await page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await page.waitForTimeout(400);
+  await gotoTab(page, "today");
+  const row = page.locator(".today-task-row.quest", { hasText: "100 push ups" });
+  if (await row.count()) {
+    await row.locator(".today-task-check").click({ force: true }).catch(() => {});
+    await page.waitForTimeout(400);
+  }
+  assert.deepEqual((await history(901)).length, 1, "the same day was logged twice");
+  await ctx.close();
+});
+
+await test("a completion survives a reload", async () => {
+  const { ctx, page, axis } = await tagged();
+  await gotoTab(page, "tasks");
+  await page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await page.waitForTimeout(500);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  await gotoTab(page, "quest");
+  assert.ok(await axis("Body") >= 100, "the points were not persisted");
+  await ctx.close();
+});
+
+await test("tagging a daily task in the editor sticks", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "tasks");
+  await page.locator(".inv-tap", { hasText: "Bruh at night" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".inv-edit .inv-tag-chips button", { hasText: "Self" }).first().click();
+  await page.waitForTimeout(150);
+  await page.locator(".note-btn.save").click();
+  await page.waitForTimeout(400);
+  const tags = await page.evaluate(() => {
+    const inv = JSON.parse(localStorage.getItem("tasksh.inventory.v1") || "[]");
+    return (inv.find((t) => t.id === 903) || {}).tags;
+  });
+  assert.deepEqual(tags, ["self"], `tags came back as ${JSON.stringify(tags)}`);
+  await ctx.close();
+});
+
+await test("a daily task cannot be given more than two tags", async () => {
+  // full credit x five tags would inflate every axis at once
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "tasks");
+  await page.locator(".inv-tap", { hasText: "Bruh at night" }).click();
+  await page.waitForTimeout(250);
+  const chips = page.locator(".inv-edit .inv-tag-chips button");
+  const n = await chips.count();
+  for (let i = 0; i < n; i++) { await chips.nth(i).click(); await page.waitForTimeout(60); }
+  await page.locator(".note-btn.save").click();
+  await page.waitForTimeout(400);
+  const tags = await page.evaluate(() => {
+    const inv = JSON.parse(localStorage.getItem("tasksh.inventory.v1") || "[]");
+    return (inv.find((t) => t.id === 903) || {}).tags || [];
+  });
+  assert.ok(tags.length <= 2, `got ${tags.length} tags`);
+  await ctx.close();
+});
+
+await test("the radar card names the untagged tasks instead of hiding them", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "quest");
+  const txt = await page.locator(".radar-card").innerText();
+  assert.match(txt, /untagged|no tag/i, "nothing told me a task is invisible to the chart");
+  await ctx.close();
+});
+
+await test("the axis popup separates daily tasks from quests", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "tasks");
+  await page.locator(".daily-card", { hasText: "100 push ups" }).click();
+  await page.waitForTimeout(500);
+  await gotoTab(page, "quest");
+  await page.locator('svg.radar-chart [aria-label^="Body:"]').click();
+  await page.waitForTimeout(350);
+  const pop = page.locator(".axis-pop");
+  assert.equal(await pop.count(), 1, "the axis popup did not open");
+  assert.match(await pop.innerText(), /daily task/i, "the popup does not say what came from daily tasks");
+  assert.match(await pop.innerText(), /100 push ups/);
+  await ctx.close();
+});
+
+await test("deleting a tag does not leave a daily task pointing at nothing", async () => {
+  const { ctx, page } = await tagged();
+  await gotoTab(page, "quest");
+  await page.locator(".radar-edit", { hasText: "edit tags" }).click();
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator(".sheet-title", { hasText: "tags" }).count(), 1, "tag editor did not open");
+  // the label lives in an <input value>, not in text, so hasText cannot see it
+  const rows = page.locator(".tag-row");
+  let row = null;
+  for (let i = 0, n = await rows.count(); i < n; i++) {
+    const v = await rows.nth(i).locator(".tag-input").inputValue().catch(() => null);
+    if (v === "Body") { row = rows.nth(i); break; }
+  }
+  assert.ok(row, "no Body row in the tag editor");
+  await row.locator(".tag-del").click();          // arms
+  await page.waitForTimeout(200);
+  await row.locator(".tag-del.armed").click();    // confirms
+  await page.waitForTimeout(500);
+  const stale = await page.evaluate(() => {
+    const tags = JSON.parse(localStorage.getItem("tasksh.tags.v1") || "[]").map((t) => t.key);
+    const inv = JSON.parse(localStorage.getItem("tasksh.inventory.v1") || "[]");
+    return inv.flatMap((t) => (t.tags || []).filter((k) => !tags.includes(k)));
+  });
+  assert.deepEqual(stale, [], `daily tasks still wear deleted tags: ${JSON.stringify(stale)}`);
+  await ctx.close();
+});
 
 await browser.close();
 server.close();

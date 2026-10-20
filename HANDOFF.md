@@ -13,8 +13,8 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v51   (service worker cache tag, see sw.js)
-  LAST UPDATED      2026-10-18
+  CURRENT VERSION   tasksh-v53   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-10-19
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
 ```
@@ -139,16 +139,44 @@ full-screen LEVEL UP at people who had done nothing, and did the same after
 importing a backup (v29 fix). First run records the current level silently.
 Only levels crossed *while using the app* are a moment.
 
-## XP model (v27)
+## XP model (v27, extended v41 and v53)
 
-Two separate numbers, deliberately:
-- `computeTotalXP(good, bad)` — **level XP**. Lifetime progress, floored at 0.
-  Reward spending is NOT subtracted; claiming something you earned must never
-  demote you.
-- `computeSpendableXP(good, bad, rewards)` — the **wallet** rewards are paid
-  from. Also floored at 0 for pre-v27 saves that went negative.
+Three currencies. Keeping them straight is most of this app's bug history.
+
+| | earned from | spent on | drives |
+|---|---|---|---|
+| **XP** | quests + daily tasks | nothing | level, pet |
+| **coins ◉** | daily tasks, pomodoro, achievements, level-ups | rewards | nothing |
+| **EP** | rngdle only | rngdle only | sealed off from both |
+
+- `computeTotalXP(habits, inventory)` — **level XP**. Lifetime progress,
+  floored at 0. Reward spending is NOT subtracted; claiming something you
+  earned must never demote you. Arg 2 was `rewards` in v26 and that bug is
+  why. Each daily task counts **once** here however many tags it wears.
+- Rewards are paid in **coins**, from `tasksh.wallet.v1` — not XP (v41).
 
 Never merge these back together.
+
+### v53: daily tasks are XP too
+
+`DIFF_VALUE = { easy: 10, mid: 50, hard: 100 }` is the single source for both
+the coins paid and the points credited, and `DIFFICULTIES` reads out of it so
+the two can never drift. An inventory item is now:
+
+```js
+{ id, text, diff, tags: [], history: ["2026-10-19", ...] }
+```
+
+- `logDailyDone(inventory, id, day)` appends to `history`. Idempotent per
+  day, and stamped with `questDayString` (the board rolls at the first
+  routine, not midnight) via `questDayRef`.
+- `dailyTags()` has **no fallback** to the first tag, unlike `habitTags()`.
+  An untagged daily task is a legitimate state: it pays coins and counts
+  toward the level, it just plots nowhere.
+- `tagAxisXP(tag, habits, tags, inventory)` is what the radar reads —
+  quests + daily, floored on the **sum**. Do not floor the halves separately.
+- `migrateInventory()` runs on every load; `guessDailyTags()` is a keyword
+  table, capped at two tags, that never overwrites a choice you made.
 
 ## AI providers (v29)
 
@@ -216,12 +244,28 @@ Completing either end applies the same done-state to the other.
 rippling through a graph is surprising and hard to undo. Two bridges avoid
 prop-drilling: `linkBridge` (propagate) and `linkUIBridge` (open the sheet).
 
-## Tags (v26)
+## Tags (v26, rebuilt v52, extended v53)
 
-`useSubAreas()`. `SUB_AREAS` is the default set; the user's edits live in
-`tasksh.subareas.v1`. Habits reference a tag **key**, never its label, so
-renaming is free. `subForHabitIn()` falls back to the area's first tag, which
-is why an area can never be left with zero tags.
+**One flat editable list.** v52 deleted the four fixed areas and the ten
+sub-tags beneath them — `AREAS`, `SUB_AREAS`, `subMeta`, `useSubAreas`,
+`LifeAreaCard`, `tasksh.subareas.v1` and the radar mode toggle are all gone.
+
+`useTags()`, stored at `tasksh.tags.v1`, defaults to the owner's five: Work,
+Body, Health, Self, Discipline. `MAX_TAGS = 12` — measured, 10 axes are
+comfortable at 360px and 13-character labels still fit.
+
+Both quests and daily tasks reference a tag **key**, never its label, so
+renaming and recolouring never rewrite a single item.
+
+**Scoring is OPTION ① — full credit.** An item wearing two tags gives its
+whole value to both axes. The axes therefore sum to MORE than your XP, and
+the radar card says so. The rejected alternative (splitting the value) makes
+a 2-tag item worth half per axis, so the chart would reward under-tagging and
+the data would rot. **Your level counts each item exactly once** — that
+separation is load-bearing, and `dailytags.test.mjs` mutation-tests it.
+
+Deleting a tag must repair everything wearing it: quests fall back to another
+tag, daily tasks are allowed to end up with none.
 
 ## The companion (v25)
 
@@ -698,25 +742,38 @@ v6 onward is preserved there, unedited.
 
 ## Testing
 
-Checked in as of v29. Four suites, 98 tests, no test framework — plain
+Current as of v53: **540 unit + 164 browser**, no test framework — plain
 `node:assert` and a hand-rolled `t()`, because adding jest/vitest to a
-zero-runtime-dependency project to run assertions isn't worth it.
+one-runtime-dependency project to run assertions isn't worth it.
 
 ```bash
-npm test              # 70 unit tests, ~1s, no browser
-npm run test:browser  # 28 browser tests, needs playwright chromium
+npm test              # 540 unit tests, ~5s, no browser
+npm run test:browser  # 164 browser tests, needs playwright chromium
 ```
 
 | File | Covers | # |
 |---|---|---|
-| `keydetect.test.mjs` | client detection, key masking, **client↔worker table agreement**, XP/level maths | 21 |
-| `worker/providers.test.mjs` | key→provider routing, `mistral:` tag, table integrity, quota reset clocks | 16 |
-| `worker/callshape.test.mjs` | request shape against a stubbed fetch: token caps, JSON retry, model fallback, **410 handling**, key pool rotation | 17 |
-| `gate.spec.mjs` | the real UI in headless Chromium: first run, LEVEL UP *and* pet evolution overlays, version badge, key gate | 11 |
-| `regress.spec.mjs` | all 6 tabs, task CRUD, XP display, radar geometry, export, offline, 4 viewports | 19 |
+| `keydetect.test.mjs` | client detection, key masking, **client↔worker table agreement**, XP/level maths | 56 |
+| `daily.test.mjs` | which day the quest board belongs to, the draw | 8 |
+| `notify.test.mjs` | push payloads, schedule building | 15 |
+| `cloud.test.mjs` | encrypt/decrypt, code shape, merge | 31 |
+| `pomodoro.test.mjs` | phases, the worker timer, resumption | 26 |
+| `captions.test.mjs` | caption parsing, styling, burn-in | 39 |
+| `rngdle.test.mjs` | 233 badge rules, a 3,000-roll fingerprint (`RNG_FULL=1` for all 1,000,001) | 24 |
+| `infinite.test.mjs` | the Infinite layer: gates, shop, pets, skills | 82 |
+| `quest.test.mjs` | quest history, streaks, opposites, negative stats | 25 |
+| `tags.test.mjs` | the v52 tag model and full credit on quests | 19 |
+| `dailytags.test.mjs` | **v53: tagged daily tasks** — values, full credit, the level counting once, the floor on the sum, logging, the guesser, migration | 55 |
+| `expenses.test.mjs` | entries, autocomplete, month/year rollups | 56 |
+| `sound.test.mjs` | three buses, ambient beds, the silenceable alarm | 30 |
+| `worker/*.test.mjs` | providers · call shape · backup · timer | 21·22·15·16 |
+| `gate.spec.mjs` | first run, LEVEL UP *and* pet evolution overlays, version badge, key gate | 11 |
+| `regress.spec.mjs` | all tabs, CRUD, XP display, radar geometry, the economy, **tagged daily tasks**, export, offline, 4 viewports | 76 |
+| `cloud.spec.mjs` | the backup chooser end to end | 8 |
+| `tools.spec.mjs` | pomodoro, captions, rngdle in the real UI | 69 |
 
-**84 total.** Every one was verified by reverting its fix and confirming it
-goes red — a test that has never failed has never been shown to test anything.
+Every one was verified by reverting its fix and confirming it goes red — a
+test that has never failed has never been shown to test anything.
 
 Two things worth copying if you add more:
 

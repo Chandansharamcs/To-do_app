@@ -240,16 +240,23 @@ test("deviceId is never exported or restored", () => {
 // ------------------------------------------------------------- XP + levels --
 
 const {
-  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeAreaXP, computeAreaXPRaw,
+  cumulativeXPForLevel, levelFromXP, computeTotalXP, computeTagXP, computeTagXPRaw, DEFAULT_TAGS, habitTags,
+  AREA_TO_TAG, migrateAreaToTag,
   normaliseHistory, countHist, habitXP, habitPenalty, habitNet,
   habitDoneOn, habitSlipOn, markHabit, mergeHabitLists,
-  LEVEL_K, LEVEL_P,
+  LEVEL_K, LEVEL_P, DIFF_VALUE,
 } = liftApp([
-  "LEVEL_K", "LEVEL_P",
-  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeAreaXP", "computeAreaXPRaw",
+  "LEVEL_K", "LEVEL_P", "DIFF_VALUE",
+  "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeTagXP", "computeTagXPRaw", "DEFAULT_TAGS", "habitTags", "AREA_TO_TAG", "migrateAreaToTag",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
 ]);
+
+/** v53 daily task: a difficulty and the days it was completed. */
+const dailyTask = (diff, days, tags = ["body"]) => ({
+  id: Math.random(), text: `${diff} task`, diff, tags,
+  history: Array.from({ length: days }, (_, i) => `2026-03-${String(i + 1).padStart(2, "0")}`),
+});
 
 /** v35 habit: `done` completions, optional `slip` marks. */
 const habit = (xp, days, area = "work", penalty = 0, slips = 0) => ({
@@ -347,29 +354,66 @@ test("the wallet is never negative", () => {
   assert.ok(computeTotalXP([habit(1, 40)]) >= 0, "total XP went negative");
 });
 
-test("computeTotalXP takes no rewards argument", () => {
-  // guards against reintroducing the v26 signature by accident
-  assert.equal(computeTotalXP.length, 1, "computeTotalXP should accept exactly (habits)");
+test("computeTotalXP's second argument is the inventory, never rewards", () => {
+  // The v26 signature was computeTotalXP(habits, rewards) and claiming a
+  // reward demoted you. v53 gave arg 2 to daily tasks instead -- which can
+  // only ever ADD -- so the arity guard alone is no longer enough: pin the
+  // meaning, not just the count.
+  assert.equal(computeTotalXP.length, 2, "computeTotalXP should accept (habits, inventory)");
+  const base = [habit(50, 2)];                                    // 100
+  const rewardsShaped = [{ id: 1, label: "cinema", cost: 80, claimed: ["2026-01-01"] }];
+  assert.equal(computeTotalXP(base, rewardsShaped), 100, "reward-shaped data must not subtract");
 });
 
-test("an area never plots below zero", () => {
+test("a completed daily task raises total XP by its difficulty value", () => {
+  // the user's example, exactly: "100 push ups" is hard, so finishing it is
+  // 100 coins AND 100 points
+  assert.equal(computeTotalXP([], [dailyTask("hard", 1)]), DIFF_VALUE.hard);
+  assert.equal(computeTotalXP([], [dailyTask("mid", 3)]), DIFF_VALUE.mid * 3);
+  assert.equal(computeTotalXP([], [dailyTask("easy", 2)]), DIFF_VALUE.easy * 2);
+});
+
+test("a daily task never completed is worth nothing", () => {
+  assert.equal(computeTotalXP([], [dailyTask("hard", 0)]), 0);
+});
+
+test("a 2-tag daily task still counts ONCE toward the level", () => {
+  // full credit is a CHART rule. If it leaked into the level, tagging a task
+  // twice would literally double your XP and the climb would be a lie.
+  const one = computeTotalXP([], [dailyTask("hard", 1, ["body"])]);
+  const two = computeTotalXP([], [dailyTask("hard", 1, ["body", "discipline"])]);
+  assert.equal(one, two, "a second tag changed the level total");
+});
+
+test("quests and daily tasks share one total", () => {
+  assert.equal(computeTotalXP([habit(50, 2)], [dailyTask("hard", 1)]), 100 + DIFF_VALUE.hard);
+});
+
+test("daily points cannot rescue a total from negative penalties", () => {
+  // the floor is on the SUM: -500 of slips plus 100 of push-ups is still
+  // floored at 0, not shown as 100
+  assert.equal(computeTotalXP([habit(0, 0, "work", 500, 1)], [dailyTask("hard", 1)]), 0);
+});
+
+test("a tag never plots below zero", () => {
   // v44, at the owner's request: Screen Time sat negative because it is a
   // bad habit -- nothing ever adds to it -- and the radar plotted it
   // inside-out. The penalty still counts against TOTAL xp; it just cannot
-  // drag an axis under the floor.
+  // drag an axis under the floor. v52 moved this from areas to tags; the
+  // rule and the bug it guards are the same.
   const habits = [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)];
-  assert.equal(computeAreaXP("work", habits), 0);
+  assert.equal(computeTagXP("work", habits, DEFAULT_TAGS), 0);
 });
 
 test("the real damage is still available, just not plotted", () => {
-  // clamping the chart must not hide the number -- a -290 area is real
+  // clamping the chart must not hide the number -- a -290 tag is real
   // information and something will want to show it
   const habits = [habit(10, 1, "work"), habit(0, 0, "work", 100, 3)];
-  assert.equal(computeAreaXPRaw("work", habits), -290);
+  assert.equal(computeTagXPRaw("work", habits, DEFAULT_TAGS), -290);
 });
 
-test("area XP ignores habits from other areas", () => {
-  const v = computeAreaXP("work", [habit(50, 2, "work"), habit(50, 2, "health")]);
+test("tag XP ignores quests that do not wear the tag", () => {
+  const v = computeTagXP("work", [habit(50, 2, "work"), habit(50, 2, "health")], DEFAULT_TAGS);
   assert.equal(v, 100);
 });
 
@@ -395,15 +439,15 @@ test("merging good+bad preserves total XP exactly", () => {
   assert.equal(computeTotalXP(mergeHabitLists(v34Good, v34Bad)), v34Total);
 });
 
-test("merging preserves every area total", () => {
+test("merging preserves every category total, through the v52 rename", () => {
   const merged = mergeHabitLists(v34Good, v34Bad);
-  for (const a of ["work", "fitness", "health", "self"]) {
+  for (const [area, tag] of Object.entries(AREA_TO_TAG)) {
     const before =
-      v34Good.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0) -
-      v34Bad.filter((h) => h.area === a).reduce((s, h) => s + h.xp * h.history.length, 0);
+      v34Good.filter((h) => h.area === area).reduce((s, h) => s + h.xp * h.history.length, 0) -
+      v34Bad.filter((h) => h.area === area).reduce((s, h) => s + h.xp * h.history.length, 0);
     // raw, not clamped: this test is about the merge preserving totals,
     // and v44 floors the plotted value at zero
-    assert.equal(computeAreaXPRaw(a, merged), before, `${a} drifted`);
+    assert.equal(computeTagXPRaw(tag, merged, DEFAULT_TAGS), before, `${area} -> ${tag} drifted`);
   }
 });
 

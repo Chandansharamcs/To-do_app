@@ -230,7 +230,7 @@ a direction rather than a point. **Any future "tap the data point" feature on
 a value-scaled chart has the same problem.** `regress.spec.mjs` taps every
 axis and asserts the popup that opens is the one tapped.
 
-### A floor applied to one scorer is not a floor (v44 → v45)
+### A floor applied to one scorer is not a floor (v44 → v45 → v53)
 
 v44 floored `computeAreaXP` (the 4 broad areas) and shipped "no negative
 stats". The radar **defaults to tag mode**, which is scored by
@@ -238,6 +238,36 @@ stats". The radar **defaults to tag mode**, which is scored by
 screenshot was still negative after the fix. When two functions compute the
 same kind of thing, a rule applied to one of them is a rule applied to
 neither. Both are floored now, both are tested.
+
+**v53 postscript, the inverse mistake.** When a second source started feeding
+the same axis (daily tasks alongside quests), the obvious shape was
+`computeTagXP(...) + computeDailyTagXP(...)` — floor on each, then add. That
+is wrong in the other direction: a tag at −40 from slipped quests plus a
++100 daily task would read **100 instead of 60**, silently forgiving the
+penalty. `tagAxisRaw` adds first and `tagAxisXP` floors once, and a mutation
+test puts the floor back on the halves to prove the test notices. **A floor
+belongs on the number you display, not on each term that builds it.**
+
+### A chart rule must never leak into the level (v52 → v53)
+
+Full credit — an item wearing two tags gives its whole value to *both* axes —
+is a **presentation** rule. The level reads a different function that counts
+each item exactly once. If the two were ever merged, adding a second tag to a
+quest would literally double your XP, levelling would be fiction, and nobody
+would spot it from the UI because both numbers would move "plausibly".
+There is a mutation for this (`computeDailyTotalXP` × tag count) and it must
+stay killed. The same split applies to any future per-tag multiplier.
+
+### Three currencies, and which screen may touch which (v41 → v53)
+
+XP = progression (level, pet). Coins ◉ = the spendable balance. EP = rngdle's
+own, sealed off. Every economy bug in this project has been a screen that
+thought it was holding a different one of those three: Today pricing rewards
+in XP (v41), Today claiming a reward for free (v51), the quest board showing
+no balance at all (v51). v53 adds the first legitimate bridge — a daily task
+pays coins *and* credits XP — and it is deliberately one function,
+`completeQuest`, because two buttons wired to two copies of a rule is how a
+quest gets paid for twice.
 
 ### `addInitScript` re-runs on every navigation (v45)
 

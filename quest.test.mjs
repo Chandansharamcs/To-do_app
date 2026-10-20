@@ -49,9 +49,9 @@ function slice(name) {
 }
 
 const NAMES = [
-  "AREAS", "SUB_AREAS", "normaliseHistory", "countHist", "habitXP", "habitPenalty",
-  "habitNet", "habitDoneOn", "habitSlipOn", "markHabit", "subsForArea", "subForHabitIn",
-  "computeAreaXP", "computeAreaXPRaw", "computeSubXPIn", "computeSubXPRawIn",
+  "DEFAULT_TAGS", "normaliseHistory", "countHist", "habitXP", "habitPenalty",
+  "habitNet", "habitDoneOn", "habitSlipOn", "markHabit", "habitTags",
+  "migrateAreaToTag", "computeTagXP", "computeTagXPRaw",
   "axisBreakdown", "habitMonthGrid", "habitHistoryStats", "longestRun", "shiftMonth",
   "MONTH_NAMES", "computeTotalXP",
 ];
@@ -73,6 +73,7 @@ const STUBS = `
 `;
 const M = new Function(`${STUBS}\n${NAMES.map(slice).join("\n\n")}\nreturn {${NAMES.join(",")},computeStreak};`)();
 
+const TAGS = M.DEFAULT_TAGS;
 const TODAY = "2026-10-18";
 const hist = (...entries) => entries.map((e) => (typeof e === "string" ? { d: e, t: "done" } : e));
 const slip = (d) => ({ d, t: "slip" });
@@ -81,75 +82,83 @@ let pass = 0, failed = 0;
 const tests = [];
 const T = (n, f) => tests.push([n, f]);
 
-// ---- #7: no negative stats, in either radar mode ---------------------------
+// ---- #7: no negative stats, now on tags ----------------------------------
+//
+// v44 floored the 4 broad areas and declared this fixed. The radar defaulted
+// to TAG mode, tags were scored by a DIFFERENT function that had no floor, so
+// the axis in the screenshot was still negative after the fix shipped. v52
+// collapsed the two scorers into one, which removes the whole class of bug --
+// but the floor still has to be there, so it is still tested.
 
 const screenTime = {
-  id: 1, label: "Screen Time", area: "health", sub: "mind",
+  id: 1, label: "Screen Time", tags: ["discipline"],
   xp: 0, penalty: 20,
   history: [slip("2026-10-10"), slip("2026-10-11"), slip("2026-10-12")],
 };
 
-T("a pure-penalty habit drags its tag negative before the floor", () => {
-  assert.equal(M.computeSubXPRawIn(M.SUB_AREAS, "mind", [screenTime]), -60);
+T("a pure-penalty quest drags its tag negative before the floor", () => {
+  assert.equal(M.computeTagXPRaw("discipline", [screenTime], TAGS), -60);
 });
 
 T("the tag axis itself never goes below zero", () => {
-  assert.equal(M.computeSubXPIn(M.SUB_AREAS, "mind", [screenTime]), 0);
+  assert.equal(M.computeTagXP("discipline", [screenTime], TAGS), 0);
 });
 
-T("the area axis never goes below zero either", () => {
-  assert.equal(M.computeAreaXP("health", [screenTime]), 0);
-  assert.equal(M.computeAreaXPRaw("health", [screenTime]), -60);
+T("there is now only ONE scorer, so the two cannot disagree", () => {
+  // the v44 bug was two functions and a floor on only one of them
+  assert.equal(
+    M.computeTagXP("discipline", [screenTime], TAGS),
+    Math.max(0, M.computeTagXPRaw("discipline", [screenTime], TAGS))
+  );
 });
 
 T("no tag in a realistic mixed set can be plotted negative", () => {
   const habits = [
     screenTime,
-    { id: 2, label: "Deep Work", area: "work", sub: "deep", xp: 30, penalty: 10, history: hist("2026-10-17") },
-    { id: 3, label: "Junk Food", area: "health", sub: "nutrition", xp: 0, penalty: 40, history: [slip("2026-10-16"), slip("2026-10-17")] },
-    { id: 4, label: "Sleep", area: "health", sub: "sleep", xp: 15, penalty: 15, history: [slip("2026-10-15")] },
+    { id: 2, label: "Deep Work", tags: ["work"], xp: 30, penalty: 10, history: hist("2026-10-17") },
+    { id: 3, label: "Junk Food", tags: ["health"], xp: 0, penalty: 40, history: [slip("2026-10-16"), slip("2026-10-17")] },
+    { id: 4, label: "Sleep", tags: ["health"], xp: 15, penalty: 15, history: [slip("2026-10-15")] },
   ];
-  for (const sb of M.SUB_AREAS) assert.ok(M.computeSubXPIn(M.SUB_AREAS, sb.key, habits) >= 0, sb.key);
-  for (const a of M.AREAS) assert.ok(M.computeAreaXP(a.key, habits) >= 0, a.key);
+  for (const t of TAGS) assert.ok(M.computeTagXP(t.key, habits, TAGS) >= 0, t.key);
 });
 
 T("the floor is cosmetic -- total XP still feels the penalty", () => {
-  const good = { id: 9, area: "work", xp: 100, penalty: 0, history: hist("2026-10-17") };
+  const good = { id: 9, tags: ["work"], xp: 100, penalty: 0, history: hist("2026-10-17") };
   assert.equal(M.computeTotalXP([good, screenTime]), 40, "100 earned minus 60 lost");
 });
 
-// ---- #8: the breakdown matches the dot -------------------------------------
+// ---- #8: the breakdown matches the dot -----------------------------------
 
 const mixed = [
-  { id: 1, label: "Deep Work", area: "work", sub: "deep", xp: 30, penalty: 10, history: hist("2026-10-16", "2026-10-17") },
-  { id: 2, label: "Email", area: "work", sub: "deep", xp: 5, penalty: 0, history: hist("2026-10-17") },
-  { id: 3, label: "Doomscroll", area: "work", sub: "deep", xp: 0, penalty: 25, history: [slip("2026-10-17")] },
-  { id: 4, label: "Gym", area: "fitness", sub: "training", xp: 40, penalty: 0, history: hist("2026-10-17") },
+  { id: 1, label: "Deep Work", tags: ["work"], xp: 30, penalty: 10, history: hist("2026-10-16", "2026-10-17") },
+  { id: 2, label: "Email", tags: ["work"], xp: 5, penalty: 0, history: hist("2026-10-17") },
+  { id: 3, label: "Doomscroll", tags: ["work"], xp: 0, penalty: 25, history: [slip("2026-10-17")] },
+  { id: 4, label: "Gym", tags: ["body"], xp: 40, penalty: 0, history: hist("2026-10-17") },
 ];
 
 T("the breakdown's value is exactly what the axis plots", () => {
-  const b = M.axisBreakdown(mixed, (h) => M.subForHabitIn(M.SUB_AREAS, h) === "deep");
-  assert.equal(b.value, M.computeSubXPIn(M.SUB_AREAS, "deep", mixed));
-  assert.equal(b.raw, M.computeSubXPRawIn(M.SUB_AREAS, "deep", mixed));
+  const b = M.axisBreakdown(mixed, (h) => M.habitTags(h, TAGS).includes("work"));
+  assert.equal(b.value, M.computeTagXP("work", mixed, TAGS));
+  assert.equal(b.raw, M.computeTagXPRaw("work", mixed, TAGS));
 });
 
 T("gains minus losses is the raw figure, and it adds up by hand", () => {
-  const b = M.axisBreakdown(mixed, (h) => h.sub === "deep");
+  const b = M.axisBreakdown(mixed, (h) => M.habitTags(h, TAGS).includes("work"));
   assert.equal(b.gained, 65, "30+30+5");
   assert.equal(b.lost, 25);
   assert.equal(b.raw, 40);
   assert.equal(b.gained - b.lost, b.raw);
 });
 
-T("done and slipped counts are per mark, not per habit", () => {
-  const b = M.axisBreakdown(mixed, (h) => h.sub === "deep");
-  assert.equal(b.count, 3, "three habits");
-  assert.equal(b.done, 3, "three completions");
+T("done and slipped counts are per mark, not per quest", () => {
+  const b = M.axisBreakdown(mixed, (h) => M.habitTags(h, TAGS).includes("work"));
+  assert.equal(b.count, 3);
+  assert.equal(b.done, 3);
   assert.equal(b.slipped, 1);
 });
 
 T("the rows are sorted best-first and sum to the raw total", () => {
-  const b = M.axisBreakdown(mixed, (h) => h.sub === "deep");
+  const b = M.axisBreakdown(mixed, (h) => M.habitTags(h, TAGS).includes("work"));
   assert.deepEqual(b.rows.map((r) => r.label), ["Deep Work", "Email", "Doomscroll"]);
   assert.equal(b.rows.reduce((a, r) => a + r.net, 0), b.raw);
 });
@@ -162,7 +171,16 @@ T("an empty axis reports zero rather than NaN", () => {
 T("a clamped axis still reports the deficit it is hiding", () => {
   const b = M.axisBreakdown([screenTime], () => true);
   assert.equal(b.value, 0);
-  assert.equal(b.raw, -60, "the popup must be able to say what zero is covering");
+  assert.equal(b.raw, -60);
+});
+
+T("a double-tagged quest appears in BOTH breakdowns, in full", () => {
+  const both = [{ id: 1, label: "Workout", tags: ["body", "discipline"], xp: 50, penalty: 0, history: hist("2026-10-17", "2026-10-16") }];
+  for (const key of ["body", "discipline"]) {
+    const b = M.axisBreakdown(both, (h) => M.habitTags(h, TAGS).includes(key));
+    assert.equal(b.value, 100, key);
+    assert.equal(b.count, 1, key);
+  }
 });
 
 // ---- #10: the per-quest calendar -------------------------------------------
