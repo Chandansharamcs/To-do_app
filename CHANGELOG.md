@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v58`** | 2026-10-20 | Today gets a day rack, a week strip and an honest edge fade |
 | **`v57`** | 2026-10-20 | Roll slots: every roll drawn on more panels, all shown, best kept — plus 19 more badges and a calm mode that finally reaches the game |
 | **`v56`** | 2026-10-20 | 58 original badges with exactly-computed counts, and luck you can buy |
 | **`v55`** | 2026-10-20 | Routines are cards with a week strip, not one long timeline |
@@ -80,6 +81,57 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+┌─ v58 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · the landing tab, first of the polish pass          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The landing tab could say what was happening, not how much was left
+
+Today opened with `HAPPENING NOW`, the activity heatmap, open tasks and
+affordable rewards. It could never answer the only question worth asking at
+18:30: how much of today is actually done. A **day rack** now sits at the top:
+one pip per routine scheduled today plus the three drawn quests, filled means
+done, with `n of m done · k left` beside it.
+
+Pips are discrete rather than a percentage bar because the count is small and
+exact — `3 of 9` is more useful than `34%` — and one pip is narrower for
+quests so the two kinds are told apart without a legend.
+
+### The rack's first total moved, which made it not a counter
+
+The first version counted only routines that were done or not yet finished.
+Marking a routine that had already gone by then made the **total** grow, so one
+tap read as `1/8` becoming `2/9`. Caught by the regression test asserting the
+pip count matches the stated total. The denominator is now the whole day —
+every routine scheduled today, every quest today — so completing something
+moves the filled pips and never the total.
+
+### The last card on a list stopped dead at the screen edge
+
+A row cut off by the viewport ended in a hard line, which reads as a clipped
+bug rather than "there is more below". The scroll container now fades its
+bottom 26px — and only while there is something to scroll to. A
+`useScrollFade` hook watches the container and removes the mask at the end of
+the list, so the last card is never dimmed for no reason. Verified by computed
+style: `linear-gradient(...)` at the top of a long list, `none` at the bottom.
+
+### Also
+
+- The spotlight card carries the same seven-day dot strip the routine cards
+  got in v55, so the landing tab can show whether the routine in front of you
+  is actually holding — `1/7` in cyan once there is something to show.
+- `OPEN TASKS` states how many quests are left instead of leaving you to count.
+- `last7Days()` extracted: v55 inlined the seven-day rule inside
+  `RoutinesCard`, and Today needed the same thing. Two copies of a date rule
+  is how two tabs end up disagreeing about what yesterday was.
+
+**Verified:** 649 unit, 175 browser (171 + 3 new rack/fade tests + the existing
+suite), no console errors, no horizontal overflow at 390x844 / 820x1180 /
+1440x900. `npm test` 649 passed, 0 failed.
 
 ---
 

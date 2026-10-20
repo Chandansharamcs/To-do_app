@@ -67,6 +67,20 @@ function getISTDateString(offsetDays = 0) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
 }
 
+/** The last seven days, oldest first, for any history of date strings.
+ *
+ *  v55 inlined this inside RoutinesCard; v58 puts the same strip on Today's
+ *  spotlight card, so it lives here once. Two copies of a date rule is how
+ *  the two tabs end up disagreeing about what "yesterday" was. */
+function last7Days(history) {
+  const set = new Set(history || []);
+  return Array.from({ length: 7 }, (_, i) => {
+    const off = i - 6;
+    const d = getISTDateString(off);
+    return { d, on: set.has(d), today: off === 0 };
+  });
+}
+
 function getISTWeekdayShort(offsetDays = 0) {
   const d = new Date(Date.now() + offsetDays * 86400000);
   return new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata", weekday: "narrow" }).format(d);
@@ -2604,14 +2618,7 @@ function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelet
    *  week; seven dots tell you instantly whether you are steady or whether
    *  you did six days and stopped. Oldest on the left, today on the right,
    *  which is the direction a week is read in. */
-  const week = useMemo(() => {
-    const set = new Set(routine.history || []);
-    return Array.from({ length: 7 }, (_, i) => {
-      const off = i - 6;
-      const d = getISTDateString(off);
-      return { d, on: set.has(d), today: off === 0 };
-    });
-  }, [routine.history]);
+  const week = useMemo(() => last7Days(routine.history), [routine.history]);
 
   const [dragX, setDragX] = useState(0);
   const draggingRef = useRef(false);
@@ -13887,6 +13894,72 @@ function collectMaxId(data) {
 
 /** One of today's drawn quests, on the Today tab. Swipe right or tap the
  *  box -- the gesture and the button do the same thing on purpose. */
+/** Whether a scroll container has nothing below it.
+ *
+ *  The edge fade only makes sense while there is something to scroll to; at
+ *  the end of the list it would dim the last card for no reason. */
+function useScrollFade(deps = []) {
+  const ref = useRef(null);
+  const [state, setState] = useState({ scrollable: false, atEnd: true });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const overflow = el.scrollHeight - el.clientHeight;
+      setState({
+        scrollable: overflow > 8,
+        atEnd: el.scrollTop >= overflow - 8,
+      });
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      if (ro) ro.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return [ref, state];
+}
+
+/** The day, as ticks.
+ *
+ *  One pip per thing that was actually scheduled today -- every routine that
+ *  has not been and gone, plus the three drawn quests. Filled means done.
+ *  The landing tab could say what was happening now and what was open, but it
+ *  could not answer "how much of today is left", which is the only question
+ *  worth asking at 18:30. The pips are discrete rather than a smooth bar
+ *  because the count is small and exact: 3 of 9, not 34%.
+ */
+function TodayDayRack({ items }) {
+  const done = items.filter((i) => i.done).length;
+  const total = items.length;
+  if (!total) return null;
+  return (
+    <div className="today-rack" aria-label={`${done} of ${total} done today`}>
+      <div className="today-rack-top">
+        <span className="today-rack-label">TODAY</span>
+        <span className={`today-rack-count ${done === total ? "all" : ""}`}>
+          {done}/{total} done
+          {done === total ? " · clear" : ` · ${total - done} left`}
+        </span>
+      </div>
+      <div className="today-rack-pips">
+        {items.map((it, i) => (
+          <span
+            key={i}
+            className={`tr-pip ${it.done ? "on" : ""} ${it.kind}`}
+            style={{ animationDelay: `${i * 18}ms` }}
+            title={`${it.label}${it.done ? " — done" : ""}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TodayQuestRow({ quest, index, onComplete }) {
   const swipe = useSwipeMark({
     onRight: () => { if (!quest.done) onComplete(); },
@@ -14024,12 +14097,33 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
     return counts;
   }, [routines, vaultHabits, habits]);
 
+  /** What "today" is actually made of: every routine scheduled today, plus
+   *  the three drawn quests.
+   *
+   *  The denominator is deliberately the whole day, not "what is left from
+   *  here on". The first version counted only routines not yet finished, so
+   *  marking a routine that had already gone by made the total grow -- one
+   *  tap read as 1/8 turning into 2/9. A counter whose total moves is not a
+   *  counter. Every routine today, every quest today, done or not. */
+  const dayItems = useMemo(() => {
+    const done = (h) => (h || []).includes(todayStr);
+    const routineItems = sorted.map((r) => ({ kind: "routine", label: r.label, done: done(r.history) }));
+    const questItems = openQuests.map((q) => ({ kind: "quest", label: q.text, done: q.done }));
+    return [...routineItems, ...questItems];
+  }, [sorted, todayStr, openQuests]);
+
+  const [fadeRef, fade] = useScrollFade([dayItems.length, openTasks.length, affordable.length]);
+
   const spotlight = current || next;
   const spotlightIsNow = !!current;
   const nextDoneToday = spotlight ? (spotlight.history || []).includes(todayStr) : false;
 
   return (
-    <div className="task-list today-view">
+    <div
+      ref={fadeRef}
+      className={`task-list today-view ${fade.scrollable ? "scrollable" : ""} ${fade.atEnd ? "at-end" : ""}`}
+    >
+      <TodayDayRack items={dayItems} />
       <div className="filters today-section-header">
         <span>{spotlightIsNow ? "HAPPENING NOW" : "NEXT UP"}</span>
       </div>
@@ -14043,6 +14137,16 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
             {spotlightIsNow
               ? `in progress · ${formatDuration(spotlight.duration)}`
               : `in ${Math.max(0, timeToMinutes(spotlight.time) - nowMinutes)}m · ${formatDuration(spotlight.duration)}`}
+          </div>
+          {/* the same seven dots the routine's own card carries, so the
+              landing tab can show whether this one is actually holding */}
+          <div className="routine-week" aria-label={`${last7Days(spotlight.history).filter((w) => w.on).length} of the last 7 days`}>
+            {last7Days(spotlight.history).map((w) => (
+              <span key={w.d} className={`rw-dot ${w.on ? "on" : ""} ${w.today ? "today" : ""}`} title={w.d} />
+            ))}
+            <span className={`rw-count ${last7Days(spotlight.history).some((w) => w.on) ? "has" : ""}`}>
+              {last7Days(spotlight.history).filter((w) => w.on).length}/7
+            </span>
           </div>
           <button
             className={`today-mark-btn ${nextDoneToday ? "done" : ""}`}
@@ -14065,11 +14169,18 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
 
       <div className="filters today-section-header">
         <span>OPEN TASKS</span>
-        {(openQuests.length > 0 || openTasks.length > 0) && (
-          <button className="today-view-all" onClick={() => setTab("tasks")}>
-            view all in tasks →
-          </button>
-        )}
+        <span className="today-header-right">
+          {questsLeft > 0 && (
+            <span className="today-header-left-count">
+              {questsLeft} quest{questsLeft === 1 ? "" : "s"} left
+            </span>
+          )}
+          {(openQuests.length > 0 || openTasks.length > 0) && (
+            <button className="today-view-all" onClick={() => setTab("tasks")}>
+              view all in tasks →
+            </button>
+          )}
+        </span>
       </div>
       {openQuests.length === 0 && openTasks.length === 0 ? (
         <div className="empty-state">
@@ -16945,6 +17056,19 @@ function TodoApp() {
           flex: 1;
           min-height: 0;
           overflow-y: auto;
+          /* v58: a card cut off by the viewport edge used to stop dead, which
+             reads as a clipped bug rather than "there is more". It now fades
+             out, and only while there is actually something below to reach
+             for -- the mask is swapped off at the end of the list. */
+          mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+          -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+        }
+        /* at the very bottom there is nothing left to fade towards, so the
+           last row is fully legible */
+        .task-list.at-end,
+        .task-list:not(.scrollable) {
+          mask-image: none;
+          -webkit-mask-image: none;
         }
 
         .task-row {
@@ -17098,6 +17222,65 @@ function TodoApp() {
           font-size: 10.5px;
           cursor: pointer;
           padding: 0;
+        }
+
+        /* ---- the day, as ticks (v58) ----
+           One pip per thing scheduled today. Cyan is done, an empty track is
+           still to come, and a slipped-routine-shaped hole is visible rather
+           than politely omitted. Discrete because the count is exact. */
+        .today-rack {
+          margin: 12px 16px 2px;
+          padding: 9px 11px 8px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-card);
+          background: var(--panel);
+        }
+        .today-rack-top {
+          display: flex; align-items: baseline; justify-content: space-between;
+          gap: 8px; margin-bottom: 7px;
+        }
+        .today-rack-label {
+          font-family: var(--font-mono);
+          font-size: 8.5px; letter-spacing: 0.16em; color: var(--muted);
+        }
+        .today-rack-count {
+          font-family: var(--font-mono);
+          font-size: 9.5px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
+        }
+        .today-rack-count.all { color: var(--accent); }
+        .today-rack-pips {
+          display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+        }
+        .tr-pip {
+          width: 8px; height: 8px; border-radius: 2px;
+          background: var(--track);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.045);
+          animation: trPipIn 220ms ease backwards;
+        }
+        /* a quest pip is a hair narrower so the two kinds are told apart
+           without needing a legend */
+        .tr-pip.quest { width: 6px; }
+        .tr-pip.on { background: var(--accent); }
+        @keyframes trPipIn {
+          from { opacity: 0; transform: scaleY(0.4); }
+          to   { opacity: 1; transform: scaleY(1); }
+        }
+
+        /* the same dots, lifted off the spotlight card's brighter background */
+        .today-card .rw-dot { background: #2A2F37; }
+        .today-card .rw-dot.on { background: var(--rc, var(--accent)); }
+        .today-card .rw-count { font-size: 8.5px; }
+        .today-card .routine-week { margin-top: 8px; }
+        .today-card .rw-count.has { color: var(--accent); }
+
+        .today-header-right {
+          display: flex; align-items: baseline; gap: 8px;
+        }
+        .today-header-left-count {
+          font-family: var(--font-mono);
+          font-size: 9.5px; color: var(--muted);
+          font-variant-numeric: tabular-nums;
         }
 
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }

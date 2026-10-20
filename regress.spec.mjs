@@ -1429,6 +1429,57 @@ await test("the routines tab still has no horizontal overflow as cards", async (
   await ctx.close();
 });
 
+// --------------------------------------------------- the day rack (v58) ----
+
+await test("the today rack counts every thing scheduled today, and nothing else", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "today");
+  const pips = await page.locator(".tr-pip").count();
+  assert.ok(pips > 0, "no pips on the landing tab");
+  const text = await page.locator(".today-rack-top").innerText();
+  const m = text.match(/(\d+)\/(\d+) done/);
+  assert.ok(m, `the rack did not state a count: ${text}`);
+  assert.equal(Number(m[2]), pips, `${m[2]} claimed but ${pips} pips drawn`);
+  assert.ok(Number(m[1]) <= Number(m[2]), "more done than scheduled");
+  await ctx.close();
+});
+
+await test("marking the spotlight routine moves exactly one pip", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "today");
+  const before = await page.locator(".tr-pip.on").count();
+  const total = await page.locator(".tr-pip").count();
+  const btn = page.locator(".today-mark-btn");
+  assert.equal(await btn.count(), 1, "no spotlight card to mark");
+  await btn.click();
+  await page.waitForTimeout(350);
+  const after = await page.locator(".tr-pip.on").count();
+  assert.ok(after === before + 1 || after === before - 1,
+    `filling moved from ${before} to ${after}, which is not one pip`);
+  assert.equal(await page.locator(".tr-pip").count(), total, "the number of things to do changed");
+  await ctx.close();
+});
+
+await test("the scroll fade only appears while there is more below", async () => {
+  const { ctx, page } = await open();
+  await gotoTab(page, "today");
+  const atTop = await page.evaluate(() => {
+    const el = document.querySelector(".today-view");
+    return { cls: el.className, mask: getComputedStyle(el).maskImage };
+  });
+  if (!atTop.cls.includes("scrollable")) { await ctx.close(); return; }  // short list, nothing to fade
+  assert.notEqual(atTop.mask, "none", "a scrollable list with content below must fade");
+  await page.evaluate(() => { const el = document.querySelector(".today-view"); el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(350);
+  const atEnd = await page.evaluate(() => {
+    const el = document.querySelector(".today-view");
+    return { cls: el.className, mask: getComputedStyle(el).maskImage };
+  });
+  assert.ok(atEnd.cls.includes("at-end"), "reaching the end did not clear the fade");
+  assert.equal(atEnd.mask, "none", "the last card is still dimmed at the end of the list");
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 
