@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v54`** | 2026-10-20 | The companion had been blind to every quest since v35; money gets categories and rules |
 | **`v53`** | 2026-10-19 | Daily tasks carry tags too, so the radar can finally see the push-ups |
 | **`v52`** | 2026-10-19 | One editable tag list, quests can wear several, points reset |
 | **`v51`** | 2026-10-19 | The coin balance was invisible on both screens that move it, and Today gave rewards away free |
@@ -223,6 +224,82 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v54`**
+
+The assistant could not see most of the app, and money had no memory.
+
+- **THE BUG: the companion has been blind to every quest since v35.** The
+  worker's `buildSnapshot` read `data.goodHabits` and `data.badHabits`. v35
+  merged those two lists into one `habits` array **eighteen versions ago**,
+  and the client has sent `habits` ever since — so both arrays arrived empty.
+  Measured by feeding the real payload through the old function:
+
+  ```
+  client sends : routines, vaultHabits, habits(29), rewards, totalXP
+  worker reads : goodHabits → 0 items
+                 badHabits  → 0 items
+  ```
+
+  Nothing ever failed. "What am I neglecting?" was answered with zero
+  knowledge of 29 quests, and every `delete_good_habit` the model proposed
+  was silently dropped because the id set it was checked against was also
+  empty. Nothing added after v29 — expenses, daily tasks, tags, notes — was
+  sent at all. `worker/actions.test.mjs` is the permanent guard.
+
+- **The companion can now change almost anything.** Fourteen new action
+  shapes: quests (tag-aware add/edit/delete), daily tasks, tags, expenses,
+  expense categories, recurring rules and notes. Still behind the same
+  reviewable diff — the user chose "show me first" when asked, so nothing is
+  applied without a tap. The model is still treated as untrusted input:
+  every action is re-validated against the snapshot server-side, and an id
+  or a tag key it invented is dropped rather than trusted.
+
+- **Expense categories are editable.** `cats` has been persisted since v46
+  with no UI to change it, so the seven starters were effectively hardcoded
+  and "education", "cricket" and "recharge" all landed in `other`. Add,
+  rename, recolour, delete. **Deleting a category MOVES its spending to
+  another one rather than deleting it** — money that vanishes from a total
+  because a label was removed is the worst outcome a tracker has.
+
+- **Recurring money rules.** "every 1st day of month u will add 4000 rupees
+  as education", in his words. There is no server to run a cron on and a PWA
+  is not running when closed, so a rule fires on the next OPEN and
+  **back-dates the entry to the day it was owed** — the fee left on the 1st
+  whether or not the app was looking. Two failure modes are designed out and
+  mutation-tested: a rule can never fire twice for one period however many
+  times the app re-opens, and a rule created today never back-fills the
+  eleven months before it existed. Monthly rules clamp, so "the 31st" in
+  February is the 28th rather than being skipped — the alternative pays a
+  monthly bill eleven times a year.
+
+- **Caught before shipping: a unit bug worth £40 of every £4,000.** Amounts
+  are stored in minor units (paise) — `parseAmount` multiplies by 100 so
+  repeated addition cannot drift. `recurLabel` interpolated `rule.amount`
+  raw, and the AI's `amount` is a plain rupee figure, so "add 4000" would
+  have stored ₹40. Spotted on a screenshot where a ₹4000 rule sat above a
+  ₹40 month total. One conversion in one place (`aiAmountToMinor`), the
+  worker prompt now states the unit, and both are pinned by tests.
+
+- **Expenses moved to a shared store.** They lived in `useState` inside
+  `ExpensesTool`, which was fine while the tool was the only thing touching
+  them. Three things need them now — the tool, the recurring runner that
+  fires on app open, and the companion — and a twelve-line store beats
+  prop-drilling through `ToolsView` for all three.
+
+Tests: **613 unit** (+73: 39 in `recurring.test.mjs`, 34 in
+`worker/actions.test.mjs`) and **164 browser**. Twelve mutations applied to
+the recurring engine — re-firing after `lastRun`, back-filling before
+creation, stamping the oldest date instead of the newest, skipping short
+months, firing while paused, unbounded catch-up, deleting a category's
+spending — and all twelve were killed.
+
+> **Deploy note:** the snapshot fix and every new action live in
+> `worker/src/index.js`. GitHub Pages and Cloudflare are separate targets —
+> the app will not gain a single new power until the worker is deployed:
+> `cd worker && npx wrangler deploy`.
+
+---
 
 **2026-10-19 — `tasksh-v53`**
 

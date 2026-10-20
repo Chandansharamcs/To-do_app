@@ -417,7 +417,7 @@ const VALID_SUBS = {
 };
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-const SYSTEM_PROMPT = `Assistant inside "tasks.sh", a productivity PWA managing ROUTINES (daily time blocks), VAULT HABITS (weekly goals), QUEST HABITS (good/bad, worth XP) and REWARDS (cost XP).
+const SYSTEM_PROMPT = `Assistant inside "tasks.sh", a productivity PWA managing ROUTINES (daily time blocks), VAULT HABITS (weekly goals), QUESTS (tagged, worth XP), DAILY TASKS (a pool of three drawn a day), REWARDS (cost coins), EXPENSES and RECURRING money rules.
 
 Reply with ONLY JSON: {"reply":"1-2 short lowercase terse sentences","actions":[...]}
 
@@ -428,19 +428,58 @@ Action shapes (use exactly):
 {"op":"add_vault_habit","label":str,"weeklyGoal":1-7,"icon":"glyph"}
 {"op":"edit_vault_habit","id":num,"label":str,"weeklyGoal":1-7}
 {"op":"delete_vault_habit","id":num}
-{"op":"add_good_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
-{"op":"add_bad_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
-{"op":"delete_good_habit","id":num}
-{"op":"delete_bad_habit","id":num}
+{"op":"add_quest","label":str,"tags":[tagKey],"desc":str,"xp":num,"penalty":num}
+{"op":"edit_quest","id":num,"label":str,"tags":[tagKey],"desc":str,"xp":num,"penalty":num}
+{"op":"delete_quest","id":num}
+{"op":"add_daily_task","text":str,"diff":"easy|mid|hard","tags":[tagKey]}
+{"op":"delete_daily_task","id":num}
+{"op":"add_tag","label":str}
 {"op":"add_reward","label":str,"cost":num}
 {"op":"delete_reward","id":num}
+{"op":"add_expense","amount":num,"cat":catKey,"name":str,"date":"YYYY-MM-DD"}
+{"op":"delete_expense","id":num}
+{"op":"add_expense_cat","label":str}
+{"op":"add_recurring","amount":num,"cat":catKey,"name":str,"every":"day|week|month","day":num}
+{"op":"edit_recurring","id":num,"amount":num,"active":bool}
+{"op":"delete_recurring","id":num}
+{"op":"add_note","title":str,"body":str}
 
-Rules: 24h times, IST; morning=06:00-09:00, evening=18:00-21:00. Edit/delete MUST use ids from the snapshot — never invent them. On edits include only changed fields. XP: trivial 5-10, normal 10-25, hard 30-50; rewards 50-300. Optional "sub" must match the area: work=deep|admin|learning, fitness=training|movement, health=nutrition|sleep|mind, self=creative|social. Questions ("what am I neglecting?") = empty actions, answer in reply. Never delete unless clearly asked — prefer an edit. Few good actions over many trivial. Reply under 240 chars.`;
+Rules:
+- 24h times, IST. morning=06:00-09:00, evening=18:00-21:00.
+- Edit/delete MUST use ids from the snapshot - never invent one.
+- On edits send only the fields that change.
+- TAGS: "tags" must be keys from snapshot.tags (e.g. work, body, health, self, discipline). Up to 2 per item. Two tags means the thing counts FULLY toward both on the chart. Use a second tag only when it genuinely is both.
+- QUESTS: xp is the reward, penalty the cost of skipping. trivial 10, small 20, medium 30, large 50, flagship 100. A pure bad habit is xp 0 with a penalty.
+- DAILY TASKS: easy=10, mid=50, hard=100. That number is paid as coins AND as points to each tag.
+- MONEY: "cat" must be a key from snapshot.expenseCats. If the right category does not exist, emit add_expense_cat FIRST and use the lowercased label with non-letters stripped as its key. amount is a plain whole number in the user's currency (rupees, NOT paise): "4000 rupees" is 4000.
+- RECURRING: "every 1st of the month, 4000 as education" is {"op":"add_recurring","amount":4000,"cat":"education","name":"education","every":"month","day":1}. every=month -> day is 1-31; every=week -> day is 0(Sunday)-6; every=day -> day is ignored. A recurring rule is NOT an expense - do not also emit add_expense for it.
+- Never delete unless clearly asked; prefer an edit.
+- Questions ("how am I doing?") get an empty actions array and a real answer in "reply".
+- Few good actions beat many trivial ones.
+Reply under 240 chars.`;
 
 function buildSnapshot(data) {
   // Trimmed to only what the model needs to reason -- history arrays can be
   // hundreds of date strings and would blow up the token count for no gain.
+  //
+  // v54 FIX. This read `data.goodHabits` / `data.badHabits`, which v35 merged
+  // into one `habits` list eighteen versions earlier. The client has been
+  // sending `habits` ever since, so both arrays arrived EMPTY and the model
+  // has been answering "what am I neglecting?" while seeing zero of the
+  // user's 29 quests -- and every delete_good_habit it proposed was dropped
+  // by the id check below, because the id set was empty too. Measured, not
+  // guessed: feeding the real payload through the old function returned
+  // goodHabits: 0, badHabits: 0.
   const summarise = (h) => (Array.isArray(h) ? h.length : 0);
+  const marks = (h, t) =>
+    (Array.isArray(h) ? h : []).filter((e) => (e && typeof e === "object" ? e.t : "done") === t).length;
+
+  // v35+ merged list, with the v52 pre-merge lists still accepted so an old
+  // client is not suddenly invisible to its own companion.
+  const habits = Array.isArray(data.habits) && data.habits.length
+    ? data.habits
+    : [...(data.goodHabits || []), ...(data.badHabits || [])];
+
   return {
     routines: (data.routines || []).map((r) => ({
       id: r.id, time: r.time, label: r.label, duration: r.duration,
@@ -450,16 +489,36 @@ function buildSnapshot(data) {
       id: h.id, label: h.label, weeklyGoal: h.weeklyGoal, icon: h.icon,
       daysCompleted: summarise(h.history),
     })),
-    goodHabits: (data.goodHabits || []).map((h) => ({
-      id: h.id, label: h.label, area: h.area, xp: h.xp, timesLogged: summarise(h.history),
+    // one list, tag-shaped, exactly as the app stores it since v52
+    quests: habits.map((h) => ({
+      id: h.id, label: h.label, tags: h.tags || [], desc: h.desc || "",
+      xp: h.xp || 0, penalty: h.penalty || 0,
+      done: marks(h.history, "done"), slipped: marks(h.history, "slip"),
     })),
-    badHabits: (data.badHabits || []).map((h) => ({
-      id: h.id, label: h.label, area: h.area, xp: h.xp, timesLogged: summarise(h.history),
+    tags: (data.tags || []).map((t) => ({ key: t.key, label: t.label })),
+    // v53 daily tasks: a pool of three drawn a day, paying coins AND tag points
+    dailyTasks: (data.inventory || []).map((t) => ({
+      id: t.id, text: t.text, diff: t.diff, tags: t.tags || [],
+      timesDone: summarise(t.history),
     })),
     rewards: (data.rewards || []).map((r) => ({
       id: r.id, label: r.label, cost: r.cost, timesClaimed: summarise(r.claimed),
     })),
+    // v54: money. Only this month's entries -- a year of rows is all tokens
+    // and no insight, and the totals it needs are computed here instead.
+    expenseCats: (data.expenseCats || []).map((c) => ({ key: c.key, label: c.label })),
+    expenses: (data.expenses || []).slice(-40).map((e) => ({
+      id: e.id, amt: e.amt, cat: e.cat, note: e.note || "", d: e.d,
+    })),
+    recurring: (data.recurring || []).map((r) => ({
+      id: r.id, amount: r.amount, cat: r.cat, name: r.name || "",
+      every: r.every, day: r.day, active: r.active !== false,
+    })),
+    currency: typeof data.currency === "string" ? data.currency : "\u20b9",
+    notes: (data.notes || []).map((n) => ({ id: n.id, title: n.title || "" })),
+    coins: data.coins ?? null,
     totalXP: data.totalXP ?? null,
+    today: typeof data.today === "string" ? data.today : null,
   };
 }
 
@@ -469,11 +528,33 @@ function buildSnapshot(data) {
 function sanitiseActions(raw, snap) {
   if (!Array.isArray(raw)) return [];
   const ids = {
-    routine: new Set(snap.routines.map((r) => r.id)),
-    vault: new Set(snap.vaultHabits.map((h) => h.id)),
-    good: new Set(snap.goodHabits.map((h) => h.id)),
-    bad: new Set(snap.badHabits.map((h) => h.id)),
-    reward: new Set(snap.rewards.map((r) => r.id)),
+    routine: new Set((snap.routines || []).map((r) => r.id)),
+    vault: new Set((snap.vaultHabits || []).map((h) => h.id)),
+    quest: new Set((snap.quests || []).map((h) => h.id)),
+    daily: new Set((snap.dailyTasks || []).map((t) => t.id)),
+    reward: new Set((snap.rewards || []).map((r) => r.id)),
+    expense: new Set((snap.expenses || []).map((e) => e.id)),
+    recurring: new Set((snap.recurring || []).map((r) => r.id)),
+  };
+  // the two legacy op names still map onto the one merged quest list
+  ids.good = ids.quest;
+  ids.bad = ids.quest;
+
+  // Tag and category keys are whatever the USER has, not a hardcoded list --
+  // v52 made tags editable and v54 made categories editable, so the only
+  // honest source of truth is the snapshot. A key the user does not own is
+  // dropped rather than invented, except for categories the model is
+  // creating in the same batch.
+  const tagKeys = new Set((snap.tags || []).map((t) => t.key));
+  const catKeys = new Set((snap.expenseCats || []).map((c) => c.key));
+  const ISO = /^\d{4}-\d{2}-\d{2}$/;
+  const catKeyFrom = (label) =>
+    String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 14) || "cat";
+  const pickTags = (v) => {
+    if (!Array.isArray(v)) return [];
+    const out = [];
+    for (const k of v) if (tagKeys.has(k) && !out.includes(k)) out.push(k);
+    return out.slice(0, 2);          // same cap the UI enforces
   };
 
   const str = (v, max = 80) =>
@@ -550,6 +631,94 @@ function sanitiseActions(raw, snap) {
 
     } else if (op === "delete_reward") {
       if (ids.reward.has(a.id)) out.push({ op, id: a.id });
+
+    // ---- quests (v52 tag model; add_good_habit/add_bad_habit above stay
+    // ---- accepted so a cached client keeps working)
+    } else if (op === "add_quest") {
+      const label = str(a.label, 60);
+      if (!label) continue;
+      const xp = int(a.xp, 0, 500) ?? 20;
+      const penalty = int(a.penalty, 0, 500) ?? 0;
+      if (xp === 0 && penalty === 0) continue;     // a quest worth nothing is noise
+      out.push({ op, label, tags: pickTags(a.tags), desc: str(a.desc, 90) || "", xp, penalty });
+
+    } else if (op === "edit_quest") {
+      if (!ids.quest.has(a.id)) continue;
+      const patch = { op, id: a.id };
+      if (a.label !== undefined) { const l = str(a.label, 60); if (!l) continue; patch.label = l; }
+      if (a.desc !== undefined) patch.desc = str(a.desc, 90) || "";
+      if (a.tags !== undefined) { const t = pickTags(a.tags); if (!t.length) continue; patch.tags = t; }
+      if (a.xp !== undefined) { const n = int(a.xp, 0, 500); if (n === null) continue; patch.xp = n; }
+      if (a.penalty !== undefined) { const n = int(a.penalty, 0, 500); if (n === null) continue; patch.penalty = n; }
+      if (Object.keys(patch).length <= 2) continue;
+      out.push(patch);
+
+    } else if (op === "delete_quest") {
+      if (ids.quest.has(a.id)) out.push({ op, id: a.id });
+
+    // ---- daily tasks (v53)
+    } else if (op === "add_daily_task") {
+      const text = str(a.text || a.label, 60);
+      if (!text) continue;
+      const diff = ["easy", "mid", "hard"].includes(a.diff) ? a.diff : "mid";
+      out.push({ op, text, diff, tags: pickTags(a.tags) });
+
+    } else if (op === "delete_daily_task") {
+      if (ids.daily.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_tag") {
+      const label = str(a.label, 14);
+      if (!label) continue;
+      out.push({ op, label });
+
+    // ---- money (v54)
+    } else if (op === "add_expense_cat") {
+      const label = str(a.label, 16);
+      if (!label) continue;
+      const key = catKeyFrom(label);
+      if (catKeys.has(key)) continue;     // already exists; not an error, just a no-op
+      catKeys.add(key);                   // so an add_expense later in THIS batch can use it
+      out.push({ op, label });
+
+    } else if (op === "add_expense") {
+      const amount = int(a.amount ?? a.amt, 1, 100000000);
+      if (amount === null) continue;
+      const cat = catKeys.has(a.cat) ? a.cat : null;
+      if (!cat) continue;                 // never file money under a category that is not there
+      const date = ISO.test(a.date || "") ? a.date : null;
+      out.push({ op, amount, cat, name: str(a.name || a.note, 40) || "", ...(date ? { date } : {}) });
+
+    } else if (op === "delete_expense") {
+      if (ids.expense.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_recurring") {
+      const amount = int(a.amount, 1, 100000000);
+      if (amount === null) continue;
+      const cat = catKeys.has(a.cat) ? a.cat : null;
+      if (!cat) continue;
+      const every = ["day", "week", "month"].includes(a.every) ? a.every : "month";
+      // the day only means something for two of the three, and the legal
+      // range differs: 1-31 for a month, 0-6 for a weekday
+      const day = every === "week" ? (int(a.day, 0, 6) ?? 1)
+                : every === "month" ? (int(a.day, 1, 31) ?? 1)
+                : 1;
+      out.push({ op, amount, cat, name: str(a.name, 40) || "", every, day });
+
+    } else if (op === "edit_recurring") {
+      if (!ids.recurring.has(a.id)) continue;
+      const patch = { op, id: a.id };
+      if (a.amount !== undefined) { const n = int(a.amount, 1, 100000000); if (n === null) continue; patch.amount = n; }
+      if (a.active !== undefined) patch.active = !!a.active;
+      if (Object.keys(patch).length <= 2) continue;
+      out.push(patch);
+
+    } else if (op === "delete_recurring") {
+      if (ids.recurring.has(a.id)) out.push({ op, id: a.id });
+
+    } else if (op === "add_note") {
+      const title = str(a.title, 60);
+      if (!title) continue;
+      out.push({ op, title, body: str(a.body, 2000) || "" });
     }
   }
   return out;
@@ -1107,14 +1276,34 @@ Action shapes (use exactly):
 {"op":"add_vault_habit","label":str,"weeklyGoal":1-7,"icon":"glyph"}
 {"op":"edit_vault_habit","id":num,"label":str,"weeklyGoal":1-7}
 {"op":"delete_vault_habit","id":num}
-{"op":"add_good_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
-{"op":"add_bad_habit","label":str,"area":"work|fitness|health|self","sub":str,"xp":num}
-{"op":"delete_good_habit","id":num}
-{"op":"delete_bad_habit","id":num}
+{"op":"add_quest","label":str,"tags":[tagKey],"desc":str,"xp":num,"penalty":num}
+{"op":"edit_quest","id":num,"label":str,"tags":[tagKey],"desc":str,"xp":num,"penalty":num}
+{"op":"delete_quest","id":num}
+{"op":"add_daily_task","text":str,"diff":"easy|mid|hard","tags":[tagKey]}
+{"op":"delete_daily_task","id":num}
+{"op":"add_tag","label":str}
 {"op":"add_reward","label":str,"cost":num}
 {"op":"delete_reward","id":num}
+{"op":"add_expense","amount":num,"cat":catKey,"name":str,"date":"YYYY-MM-DD"}
+{"op":"delete_expense","id":num}
+{"op":"add_expense_cat","label":str}
+{"op":"add_recurring","amount":num,"cat":catKey,"name":str,"every":"day|week|month","day":num}
+{"op":"edit_recurring","id":num,"amount":num,"active":bool}
+{"op":"delete_recurring","id":num}
+{"op":"add_note","title":str,"body":str}
 
-Rules: 24h times, IST; morning=06:00-09:00, evening=18:00-21:00. Edit/delete MUST use ids from the snapshot — never invent them. On edits include only changed fields. XP: trivial 5-10, normal 10-25, hard 30-50; rewards 50-300. Optional "sub" must match the area: work=deep|admin|learning, fitness=training|movement, health=nutrition|sleep|mind, self=creative|social. Never delete unless clearly asked — prefer an edit. Few good actions over many trivial.
+Rules:
+- 24h times, IST. morning=06:00-09:00, evening=18:00-21:00.
+- Edit/delete MUST use ids from the snapshot - never invent one.
+- On edits send only the fields that change.
+- TAGS: "tags" must be keys from snapshot.tags (e.g. work, body, health, self, discipline). Up to 2 per item. Two tags means the thing counts FULLY toward both on the chart. Use a second tag only when it genuinely is both.
+- QUESTS: xp is the reward, penalty the cost of skipping. trivial 10, small 20, medium 30, large 50, flagship 100. A pure bad habit is xp 0 with a penalty.
+- DAILY TASKS: easy=10, mid=50, hard=100. That number is paid as coins AND as points to each tag.
+- MONEY: "cat" must be a key from snapshot.expenseCats. If the right category does not exist, emit add_expense_cat FIRST and use the lowercased label with non-letters stripped as its key. amount is a plain whole number in the user's currency (rupees, NOT paise): "4000 rupees" is 4000.
+- RECURRING: "every 1st of the month, 4000 as education" is {"op":"add_recurring","amount":4000,"cat":"education","name":"education","every":"month","day":1}. every=month -> day is 1-31; every=week -> day is 0(Sunday)-6; every=day -> day is ignored. A recurring rule is NOT an expense - do not also emit add_expense for it.
+- Never delete unless clearly asked; prefer an edit.
+- Questions ("how am I doing?") get an empty actions array and a real answer in "reply".
+- Few good actions beat many trivial ones.
 
 When you do propose actions, your "reply" should say what you're suggesting in one natural sentence — do not list them, the user sees them separately.`;
 

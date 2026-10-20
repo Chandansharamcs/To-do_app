@@ -13,8 +13,8 @@
 ```
 
 ```
-  CURRENT VERSION   tasksh-v53   (service worker cache tag, see sw.js)
-  LAST UPDATED      2026-10-19
+  CURRENT VERSION   tasksh-v54   (service worker cache tag, see sw.js)
+  LAST UPDATED      2026-10-20
   LIVE              chandansharamcs.github.io/To-do_app
   WORKER            tasksh-notify.techcraftor.workers.dev
 ```
@@ -267,7 +267,43 @@ separation is load-bearing, and `dailytags.test.mjs` mutation-tests it.
 Deleting a tag must repair everything wearing it: quests fall back to another
 tag, daily tasks are allowed to end up with none.
 
-## The companion (v25)
+## Money (v46, categories + rules v54)
+
+`expenseStore` is a tiny shared store (not context, not a library) because
+three things write to it: `ExpensesTool`, the recurring runner in `App`, and
+`applyAIActions`. `useExpenseStore()` returns `[state, set]` like useState.
+
+```js
+state = { items: [...], cats: [...], currency: "₹", rules: [...] }
+```
+
+Persisted across two keys: `tasksh.expenses.v1` (items/cats/currency) and
+`tasksh.recurring.v1` (rules), one key per concern so a backup stays legible.
+
+**Amounts are MINOR units (paise).** `parseAmount("12.50")` returns 1250.
+`formatMoney` divides by 100. Anything arriving from the AI is in rupees and
+must go through `aiAmountToMinor`. This has already bitten once.
+
+**Recurring rules** fire in `App` on open, keyed on the IST date string --
+not a timer, because the app is resumed from the background far more often
+than it is launched. `runRecurring` is pure and idempotent; `lastRun` is the
+only thing standing between the user and a double charge. Rules back-date to
+the day they were owed and never back-fill before `createdOn`.
+
+## The companion (v25, unblinded v54)
+
+**The snapshot the model sees is built in the WORKER, not the app.** For
+eighteen versions it read `goodHabits`/`badHabits` -- merged away in v35 --
+so the companion saw zero quests and no expenses, daily tasks or tags at
+all. If you add a surface to the app, you must also add it to
+`buildSnapshot`, to the action vocabulary in `COMPANION_PROMPT`, to
+`sanitiseActions`, AND to `describeAIAction`/`applyAIActions` in the client.
+Miss any one of the five and the feature silently does not exist.
+
+Changing any of the first three means **redeploying the worker**. Pages and
+Cloudflare are separate targets.
+
+## The companion UI (v25)
 
 `CompanionView` is the single AI surface — chat and data changes in one place.
 `POST /companion` returns `{reply, actions}`; actions go through the same

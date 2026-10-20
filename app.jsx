@@ -6773,6 +6773,62 @@ function describeAIAction(a, state) {
       return { kind: "add", surface: "reward", text: `${a.label} · ${a.cost} XP` };
     case "delete_reward":
       return { kind: "remove", surface: "reward", text: find(state.rewards, a.id)?.label || `#${a.id}` };
+
+    // ---- v54: everything the companion gained when it stopped being blind
+    case "add_quest":
+      return { kind: "add", surface: "quest",
+        text: `${a.label} · +${a.xp}${a.penalty ? ` / −${a.penalty}` : ""} XP · ${(a.tags || []).join(" + ") || "untagged"}` };
+    case "edit_quest": {
+      const h = find(state.habits, a.id);
+      const bits = [];
+      if (a.label !== undefined && a.label !== h?.label) bits.push(`"${h?.label}" → "${a.label}"`);
+      if (a.xp !== undefined && a.xp !== h?.xp) bits.push(`+${h?.xp} → +${a.xp} XP`);
+      if (a.penalty !== undefined && a.penalty !== h?.penalty) bits.push(`−${h?.penalty} → −${a.penalty}`);
+      if (a.tags !== undefined) bits.push(`tags → ${a.tags.join(" + ")}`);
+      if (a.desc !== undefined) bits.push("new description");
+      return { kind: "edit", surface: "quest", text: `${h?.label || "quest"}: ${bits.join(", ") || "no change"}` };
+    }
+    case "delete_quest":
+      return { kind: "remove", surface: "quest", text: find(state.habits, a.id)?.label || `#${a.id}` };
+
+    case "add_daily_task":
+      return { kind: "add", surface: "daily",
+        text: `${a.text} · ${a.diff} (+${DIFF_VALUE[a.diff] ?? 10})${(a.tags || []).length ? ` → ${a.tags.join(" + ")}` : " · untagged"}` };
+    case "delete_daily_task":
+      return { kind: "remove", surface: "daily", text: find(state.inventory, a.id)?.text || `#${a.id}` };
+
+    case "add_tag":
+      return { kind: "add", surface: "tag", text: a.label };
+
+    case "add_expense_cat":
+      return { kind: "add", surface: "money", text: `new category: ${a.label}` };
+    case "add_expense": {
+      const c = (state.expenseCats || []).find((x) => x.key === a.cat);
+      return { kind: "add", surface: "money",
+        text: `${formatMoney(aiAmountToMinor(a.amount), state.currency)} · ${c ? c.label : a.cat}${a.name ? ` · ${a.name}` : ""}${a.date ? ` · ${a.date}` : ""}` };
+    }
+    case "delete_expense": {
+      const e = find(state.expenses, a.id);
+      return { kind: "remove", surface: "money", text: e ? `${state.currency || "₹"}${e.amt} · ${e.note || e.cat}` : `#${a.id}` };
+    }
+    case "add_recurring":
+      return { kind: "add", surface: "money",
+        text: recurLabel({ ...a, amount: aiAmountToMinor(a.amount) }, state.expenseCats || [], state.currency || "₹") };
+    case "edit_recurring": {
+      const r = find(state.recurring, a.id);
+      const bits = [];
+      if (a.amount !== undefined) bits.push(`${formatMoney(r?.amount || 0, state.currency)} → ${formatMoney(aiAmountToMinor(a.amount), state.currency)}`);
+      if (a.active !== undefined) bits.push(a.active ? "resumed" : "paused");
+      return { kind: "edit", surface: "money", text: `${r?.name || "rule"}: ${bits.join(", ") || "no change"}` };
+    }
+    case "delete_recurring": {
+      const r = find(state.recurring, a.id);
+      return { kind: "remove", surface: "money",
+        text: r ? recurLabel(r, state.expenseCats || [], state.currency || "₹") : `#${a.id}` };
+    }
+    case "add_note":
+      return { kind: "add", surface: "note", text: a.title };
+
     default:
       return { kind: "edit", surface: "?", text: a.op };
   }
@@ -6787,6 +6843,16 @@ function applyAIActions(actions, state, setters) {
     vaultHabits: [...state.vaultHabits],
     habits: [...state.habits],
     rewards: [...state.rewards],
+  };
+  // v54 surfaces. Money is one object because its three lists are written
+  // together; the rest are plain arrays like the originals.
+  let inventory = [...(state.inventory || [])];
+  let notes = [...(state.notes || [])];
+  let money = {
+    items: [...(state.expenses || [])],
+    cats: [...(state.expenseCats || [])],
+    rules: [...(state.recurring || [])],
+    currency: state.currency || "₹",
   };
   const touched = new Set();
 
@@ -6852,6 +6918,76 @@ function applyAIActions(actions, state, setters) {
       case "delete_reward":
         rewards = rewards.filter((r) => r.id !== a.id);
         touched.add("rewards"); break;
+
+      // ---- v54 ----------------------------------------------------------
+      case "add_quest":
+        habits = [...habits, {
+          id: makeId(), label: a.label, tags: a.tags || [], desc: a.desc || "",
+          xp: a.xp, penalty: a.penalty || 0, history: [],
+        }];
+        touched.add("habits"); break;
+      case "edit_quest":
+        habits = habits.map((h) => h.id === a.id ? {
+          ...h,
+          ...(a.label !== undefined ? { label: a.label } : {}),
+          ...(a.desc !== undefined ? { desc: a.desc } : {}),
+          ...(a.tags !== undefined ? { tags: a.tags } : {}),
+          ...(a.xp !== undefined ? { xp: a.xp } : {}),
+          ...(a.penalty !== undefined ? { penalty: a.penalty } : {}),
+        } : h);
+        touched.add("habits"); break;
+      case "delete_quest":
+        habits = habits.filter((h) => h.id !== a.id);
+        touched.add("habits"); break;
+
+      case "add_daily_task":
+        inventory = [...inventory, {
+          id: makeId(), text: a.text, diff: a.diff || "mid",
+          tags: a.tags || [], history: [],
+        }];
+        touched.add("inventory"); break;
+      case "delete_daily_task":
+        inventory = inventory.filter((t) => t.id !== a.id);
+        touched.add("inventory"); break;
+
+      case "add_tag":
+        if (setters.tagCtl) setters.tagCtl.addTag(a.label);
+        break;
+
+      case "add_expense_cat":
+        money = { ...money, cats: addExpenseCat(money.cats, a.label) };
+        touched.add("money"); break;
+      case "add_expense":
+        money = { ...money, items: [...money.items, {
+          id: makeId(), amt: aiAmountToMinor(a.amount), cat: a.cat,
+          note: a.name || "", d: a.date || getISTDateString(0), at: Date.now(),
+        }] };
+        touched.add("money"); break;
+      case "delete_expense":
+        money = { ...money, items: money.items.filter((e) => e.id !== a.id) };
+        touched.add("money"); break;
+      case "add_recurring":
+        money = { ...money, rules: [...money.rules, {
+          id: makeId(), kind: "expense", every: a.every, day: a.day,
+          amount: aiAmountToMinor(a.amount), cat: a.cat, name: a.name || "",
+          active: true, createdOn: getISTDateString(0), lastRun: null,
+        }] };
+        touched.add("money"); break;
+      case "edit_recurring":
+        money = { ...money, rules: money.rules.map((r) => r.id === a.id ? {
+          ...r,
+          ...(a.amount !== undefined ? { amount: aiAmountToMinor(a.amount) } : {}),
+          ...(a.active !== undefined ? { active: a.active } : {}),
+        } : r) };
+        touched.add("money"); break;
+      case "delete_recurring":
+        money = { ...money, rules: money.rules.filter((r) => r.id !== a.id) };
+        touched.add("money"); break;
+
+      case "add_note":
+        notes = [...notes, { id: makeId(), title: a.title, body: a.body || "", at: Date.now() }];
+        touched.add("notes"); break;
+
       default: break;
     }
   }
@@ -6860,6 +6996,9 @@ function applyAIActions(actions, state, setters) {
   if (touched.has("vaultHabits")) setters.setVaultHabits(vaultHabits);
   if (touched.has("habits")) setters.setHabits(habits);
   if (touched.has("rewards")) setters.setRewards(rewards);
+  if (touched.has("inventory") && setters.setInventory) setters.setInventory(inventory);
+  if (touched.has("notes") && setters.setNotes) setters.setNotes(notes);
+  if (touched.has("money") && setters.setMoney) setters.setMoney((m) => ({ ...m, ...money }));
 }
 
 /**
@@ -6942,6 +7081,19 @@ function CompanionView({ petCtl, state, setters, ctx, showDataMsg }) {
           habits: state.habits,
           rewards: state.rewards,
           totalXP: state.totalXP,
+          // v54: everything added since v29 that the companion could not see.
+          // The worker's snapshot was still reading goodHabits/badHabits --
+          // merged away in v35 -- so it received ZERO quests and had no idea
+          // expenses, daily tasks or tags existed at all.
+          tags: state.tags,
+          inventory: state.inventory,
+          expenses: state.expenses,
+          expenseCats: state.expenseCats,
+          recurring: state.recurring,
+          currency: state.currency,
+          notes: state.notes,
+          coins: state.coins,
+          today: getISTDateString(0),
         },
         petContextSummary(ctx),
         pet.log || [],
@@ -12200,6 +12352,9 @@ function loadExpenses() {
         note: typeof e.note === "string" ? e.note.slice(0, 120) : "",
         d: e.d.slice(0, 10),
         at: Number.isFinite(e.at) ? e.at : 0,
+        // v54: which recurring rule produced this, if any. Kept even after
+        // the rule is deleted, so the history still explains itself.
+        ...(e.rule ? { rule: e.rule } : {}),
       }));
     const cats = Array.isArray(raw.cats) && raw.cats.length
       ? raw.cats.filter((c) => c && typeof c.key === "string")
@@ -12216,6 +12371,240 @@ function loadExpenses() {
 
 function saveExpenses(state) {
   try { localStorage.setItem(STORAGE_KEY_EXPENSES, JSON.stringify(state)); } catch {}
+}
+
+// ---- editable expense categories (v54) ------------------------------------
+//
+// `cats` has been persisted since v46 but there was no way to change it, so
+// the seven starters were effectively hard-coded: "education", "cricket",
+// "recharge" had nowhere to go and everything landed in `other`. Same shape
+// as the tag editor on purpose -- one pattern for "a list of labelled,
+// coloured things the user owns".
+
+const EXPENSE_CAT_COLORS = [
+  "#F59E0B", "#60A5FA", "#FB7185", "#C084FC", "#5EEAD4",
+  "#34D399", "#F472B6", "#38BDF8", "#FBBF24", "#A78BFA",
+  "#7EE787", "#9AA4B2",
+];
+const EXPENSE_GLYPHS = ["◍", "▸", "▤", "◆", "✚", "★", "·", "▲", "●", "◈", "✦", "▣"];
+const MAX_EXPENSE_CATS = 16;
+
+/** Stable key from a label. Collisions get a numeric suffix rather than
+ *  silently merging two categories into one. */
+function expenseCatKey(label, taken = []) {
+  const base = String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 14) || "cat";
+  let key = base, n = 2;
+  while (taken.includes(key)) key = `${base}${n++}`;
+  return key;
+}
+
+function addExpenseCat(cats, label) {
+  const l = String(label || "").trim().slice(0, 16);
+  if (!l || cats.length >= MAX_EXPENSE_CATS) return cats;
+  const key = expenseCatKey(l, cats.map((c) => c.key));
+  const used = new Set(cats.map((c) => c.color));
+  const color = EXPENSE_CAT_COLORS.find((c) => !used.has(c)) || EXPENSE_CAT_COLORS[cats.length % EXPENSE_CAT_COLORS.length];
+  return [...cats, { key, label: l, color, glyph: EXPENSE_GLYPHS[cats.length % EXPENSE_GLYPHS.length] }];
+}
+
+function renameExpenseCat(cats, key, label) {
+  const l = String(label || "").trim().slice(0, 16);
+  if (!l) return cats;
+  return cats.map((c) => (c.key === key ? { ...c, label: l } : c));
+}
+
+function recolourExpenseCat(cats, key, color) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) return cats;
+  return cats.map((c) => (c.key === key ? { ...c, color } : c));
+}
+
+/** Removing a category must not orphan the spending filed under it, or that
+ *  money silently vanishes from every total. Entries are MOVED, never
+ *  deleted -- a category is a label, not a container. */
+function removeExpenseCat(state, key, moveTo) {
+  if (state.cats.length <= 1) return state;
+  const target = state.cats.find((c) => c.key === moveTo && c.key !== key)
+    || state.cats.find((c) => c.key !== key);
+  return {
+    ...state,
+    cats: state.cats.filter((c) => c.key !== key),
+    items: state.items.map((e) => (e.cat === key ? { ...e, cat: target.key } : e)),
+  };
+}
+
+// ---- recurring entries (v54) ----------------------------------------------
+//
+// "every 1st of the month add 4000 as education" -- his words. There is no
+// server to run a cron on, and a PWA is not running when it is closed, so a
+// rule cannot fire on time. It fires on the next OPEN, and it back-dates the
+// entry to the day it was due, because the rent left on the 1st whether or
+// not the app was looking.
+//
+// Two failure modes this is built to avoid:
+//   * double-firing. The rule records the last date it fired; nothing on or
+//     before that ever fires again, however many times the app re-opens or
+//     React re-runs an effect.
+//   * a brand-new rule back-filling a year of history it was never there
+//     for. Nothing before `createdOn` ever fires.
+
+const STORAGE_KEY_RECURRING = "tasksh.recurring.v1";
+const RECUR_MAX_CATCHUP = 24;     // occurrences one open may add
+const RECUR_MAX_SCAN = 400;       // days to look back, so a stale rule is bounded
+
+function isoAddDays(iso, n) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + n * 86400000).toISOString().slice(0, 10);
+}
+function isoDayOfWeek(iso) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+function isoDaysInMonth(iso) {
+  const [y, m] = String(iso).split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** Does this rule fire on this date?
+ *
+ *  Monthly rules clamp: "the 31st" in February is the 28th (or 29th). The
+ *  alternative -- skipping February entirely -- means a monthly bill is paid
+ *  eleven times a year, which is worse and much harder to notice. */
+function recurFiresOn(rule, iso) {
+  if (!rule || rule.active === false) return false;
+  if (rule.every === "day") return true;
+  if (rule.every === "week") return isoDayOfWeek(iso) === Number(rule.day);
+  if (rule.every === "month") {
+    const dom = Number(String(iso).slice(8, 10));
+    return dom === Math.min(Math.max(1, Number(rule.day) || 1), isoDaysInMonth(iso));
+  }
+  return false;
+}
+
+/** Every date this rule owes, oldest first. Pure: the caller decides what to
+ *  do with them, which is what makes this testable without a clock. */
+function recurDueDates(rule, todayIso) {
+  if (!rule || rule.active === false) return [];
+  const floor = [rule.lastRun ? isoAddDays(rule.lastRun, 1) : null, rule.createdOn, isoAddDays(todayIso, -RECUR_MAX_SCAN)]
+    .filter(Boolean)
+    .sort()
+    .pop();
+  const out = [];
+  for (let d = floor; d <= todayIso; d = isoAddDays(d, 1)) {
+    if (recurFiresOn(rule, d)) out.push(d);
+    if (out.length >= RECUR_MAX_CATCHUP) break;
+  }
+  return out;
+}
+
+/** One due date -> one expense entry. Stamped with the rule id so the row
+ *  can say where it came from and a deleted rule's history stays readable. */
+function recurToExpense(rule, iso) {
+  return {
+    id: makeId(),
+    amt: Math.round(rule.amount),
+    cat: rule.cat,
+    note: rule.name || "",
+    d: iso,
+    at: 0,
+    rule: rule.id,
+  };
+}
+
+/** Fire everything owed. Returns the new rule list AND the new entries, so
+ *  the caller writes each store exactly once. */
+function runRecurring(rules, todayIso) {
+  const added = [];
+  const next = (rules || []).map((r) => {
+    const due = recurDueDates(r, todayIso);
+    if (!due.length) return r;
+    for (const iso of due) added.push(recurToExpense(r, iso));
+    return { ...r, lastRun: due[due.length - 1] };
+  });
+  return { rules: next, added };
+}
+
+function loadRecurring() {
+  const raw = loadStored(STORAGE_KEY_RECURRING, []);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((r) => r && Number.isFinite(Number(r.amount)) && Number(r.amount) > 0)
+    .map((r) => ({
+      id: r.id || makeId(),
+      kind: "expense",
+      every: ["day", "week", "month"].includes(r.every) ? r.every : "month",
+      day: Number(r.day) || 1,
+      amount: Math.round(Number(r.amount)),
+      cat: typeof r.cat === "string" ? r.cat : "other",
+      name: typeof r.name === "string" ? r.name.slice(0, 40) : "",
+      active: r.active !== false,
+      createdOn: typeof r.createdOn === "string" ? r.createdOn : getISTDateString(0),
+      lastRun: typeof r.lastRun === "string" ? r.lastRun : null,
+    }))
+    .slice(0, 40);
+}
+
+/** Human sentence for a rule, used in the list and in the AI diff.
+ *
+ *  `rule.amount` is in MINOR units (paise), like every other amount in this
+ *  tool -- see parseAmount. Interpolating it raw printed "\u20b9400000" for a
+ *  \u20b94000 rule, which is the kind of mistake a money tracker only has to
+ *  make once. */
+function recurLabel(rule, cats = [], currency = "₹") {
+  const cat = cats.find((c) => c.key === rule.cat);
+  const when = rule.every === "day" ? "every day"
+    : rule.every === "week" ? `every ${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][Number(rule.day) || 0]}`
+    : `every ${ordinal(Number(rule.day) || 1)} of the month`;
+  return `${formatMoney(rule.amount, currency)} ${cat ? cat.label : rule.cat}${rule.name ? ` · ${rule.name}` : ""} — ${when}`;
+}
+
+/** The model talks in rupees, the store keeps paise.
+ *
+ *  "add 4000 as education" means \u20b94000, and storing 4000 would file
+ *  \u20b940. One conversion, in one place, so the two never meet unconverted. */
+const AI_MAJOR_TO_MINOR = 100;
+function aiAmountToMinor(n) {
+  return Math.round(Number(n) * AI_MAJOR_TO_MINOR);
+}
+
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+/** One shared money store (v54).
+ *
+ *  Expenses used to live in `useState` inside ExpensesTool, which was fine
+ *  while the tool was the only thing that touched them. Three things need
+ *  them now: the tool, the recurring runner that fires on app open, and the
+ *  companion, which could not see a single rupee. Prop-drilling through
+ *  ToolsView for all three would be worse than a twelve-line store.
+ *
+ *  Rules persist to their own key rather than inside the expenses blob, so a
+ *  backup keeps one key per concern.
+ */
+const expenseStore = (() => {
+  let state = null;
+  const subs = new Set();
+  const read = () => ({ ...loadExpenses(), rules: loadRecurring() });
+  const get = () => (state || (state = read()));
+  const set = (next) => {
+    const v = typeof next === "function" ? next(get()) : next;
+    state = v;
+    saveExpenses({ items: v.items, cats: v.cats, currency: v.currency });
+    try { localStorage.setItem(STORAGE_KEY_RECURRING, JSON.stringify(v.rules || [])); } catch {}
+    subs.forEach((f) => f(v));
+  };
+  return {
+    get, set,
+    reload() { state = null; subs.forEach((f) => f(get())); },
+    sub(f) { subs.add(f); return () => subs.delete(f); },
+  };
+})();
+
+function useExpenseStore() {
+  const [, bump] = useState(0);
+  useEffect(() => expenseStore.sub(() => bump((n) => n + 1)), []);
+  return [expenseStore.get(), expenseStore.set];
 }
 
 /** Vertical bars, one per day. Not a library: the whole app is one file with
@@ -12481,15 +12870,190 @@ function ExpenseYearBars({ months, currency, onPick, current }) {
   );
 }
 
+/** Recurring rules + the category editor (v54).
+ *
+ *  Both live behind one tab because they are the two things you set up once
+ *  and then forget -- unlike `add`, which is a ten-second daily action and
+ *  must not grow a settings panel.
+ */
+function ExpenseRules({ state, setState, today, showCats, setShowCats, catDraft, setCatDraft, catArmed, setCatArmed }) {
+  const [amount, setAmount] = useState("");
+  const [cat, setCat] = useState(state.cats[0]?.key || "other");
+  const [name, setName] = useState("");
+  const [every, setEvery] = useState("month");
+  const [day, setDay] = useState(1);
+  const [flash, triggerFlash] = useFlash();
+
+  const catOf = (k) => state.cats.find((c) => c.key === k) || { key: k, label: k, color: "#9AA4B2", glyph: "·" };
+  const rules = state.rules || [];
+
+  const addRule = () => {
+    const amt = parseAmount(amount);
+    if (!amt || amt <= 0) { triggerFlash(); sound.error(); return; }
+    setState((m) => ({ ...m, rules: [...(m.rules || []), {
+      id: makeId(), kind: "expense", every, day: Number(day) || 1,
+      amount: Math.round(amt), cat, name: name.trim().slice(0, 40),
+      active: true, createdOn: today, lastRun: null,
+    }] }));
+    setAmount(""); setName("");
+    sound.success();
+  };
+
+  const toggle = (id) => {
+    setState((m) => ({ ...m, rules: m.rules.map((r) => (r.id === id ? { ...r, active: !r.active } : r)) }));
+    sound.toggle();
+  };
+  const drop = (id) => {
+    setState((m) => ({ ...m, rules: m.rules.filter((r) => r.id !== id) }));
+    sound.delete();
+  };
+
+  const addCat = () => {
+    const l = catDraft.trim();
+    if (!l) { sound.error(); return; }
+    setState((m) => ({ ...m, cats: addExpenseCat(m.cats, l) }));
+    setCatDraft(""); sound.success();
+  };
+
+  return (
+    <>
+      <div className="xp-section">
+        <span>AUTOMATIC</span>
+        <span className="xp-section-note">added on the day it is due</span>
+      </div>
+
+      <div className={`xp-rule-form ${flash ? "shake" : ""}`}>
+        <div className="xp-rule-row">
+          <input className="xp-rule-amt" inputMode="decimal" placeholder="4000"
+                 value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Amount" />
+          <input className="xp-rule-name" placeholder="what for…" maxLength={40}
+                 value={name} onChange={(e) => setName(e.target.value)} aria-label="Name" />
+        </div>
+        <div className="duration-chips xp-rule-cats">
+          {state.cats.map((c) => (
+            <button key={c.key} className={cat === c.key ? "active" : ""} style={{ "--ac": c.color }}
+                    onClick={() => { setCat(c.key); sound.click(); }}>{c.glyph} {c.label}</button>
+          ))}
+        </div>
+        <div className="duration-chips">
+          {[["month", "monthly"], ["week", "weekly"], ["day", "daily"]].map(([k, l]) => (
+            <button key={k} className={every === k ? "active" : ""}
+                    onClick={() => { setEvery(k); setDay(k === "week" ? 1 : 1); sound.click(); }}>{l}</button>
+          ))}
+        </div>
+        {every !== "day" && (
+          <div className="duration-chips xp-rule-days">
+            {every === "week"
+              ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => (
+                  <button key={d} className={Number(day) === i ? "active" : ""}
+                          onClick={() => { setDay(i); sound.click(); }}>{d}</button>
+                ))
+              : [1, 5, 10, 15, 20, 25, 28, 31].map((d) => (
+                  <button key={d} className={Number(day) === d ? "active" : ""}
+                          onClick={() => { setDay(d); sound.click(); }}>{ordinal(d)}</button>
+                ))}
+          </div>
+        )}
+        <div className="xp-rule-preview">
+          {recurLabel({ amount: parseAmount(amount) || 0, cat, name, every, day }, state.cats, state.currency)}
+        </div>
+        <button className="note-btn save xp-rule-add" onClick={addRule}>add rule</button>
+      </div>
+
+      {rules.length === 0 ? (
+        <div className="empty-state">
+          <div className="glyph">{"{ }"}</div>
+          <div className="msg">no automatic entries yet</div>
+        </div>
+      ) : (
+        <div className="xp-rule-list">
+          {rules.map((r) => (
+            <div key={r.id} className={`xp-rule-card ${r.active ? "" : "off"}`} style={{ "--cc": catOf(r.cat).color }}>
+              <button className="xp-rule-main" onClick={() => toggle(r.id)}>
+                <span className="xp-rule-label">{recurLabel(r, state.cats, state.currency)}</span>
+                <span className="xp-rule-meta">
+                  {r.active ? "on" : "paused"}
+                  {r.lastRun ? ` · last ${r.lastRun}` : " · not fired yet"}
+                </span>
+              </button>
+              <button className="del-btn" onClick={() => drop(r.id)} aria-label="Delete rule">
+                <svg viewBox="0 0 24 24" width="13" height="13">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="xp-section">
+        <span>CATEGORIES</span>
+        <button className="note-btn" onClick={() => { setShowCats(!showCats); sound.click(); }}>
+          {showCats ? "done" : "edit"}
+        </button>
+      </div>
+
+      {!showCats ? (
+        <div className="duration-chips xp-cat-preview">
+          {state.cats.map((c) => (
+            <span key={c.key} className="xp-cat-chip" style={{ "--cc": c.color }}>{c.glyph} {c.label}</span>
+          ))}
+        </div>
+      ) : (
+        <div className="xp-cat-edit">
+          {state.cats.map((c) => {
+            const used = state.items.filter((e) => e.cat === c.key).length;
+            return (
+              <div className="tag-row" key={c.key}>
+                <button className="tag-dot swatch" style={{ background: c.color }} aria-label={`Recolour ${c.label}`}
+                        onClick={() => {
+                          const i = EXPENSE_CAT_COLORS.indexOf(c.color);
+                          setState((m) => ({ ...m, cats: recolourExpenseCat(m.cats, c.key, EXPENSE_CAT_COLORS[(i + 1) % EXPENSE_CAT_COLORS.length]) }));
+                          sound.click();
+                        }} />
+                <input className="tag-input" value={c.label} maxLength={16}
+                       onChange={(e) => setState((m) => ({ ...m, cats: renameExpenseCat(m.cats, c.key, e.target.value) }))} />
+                <span className="tag-use">{used}</span>
+                {catArmed === c.key ? (
+                  <button className="tag-del armed" onClick={() => {
+                    setState((m) => removeExpenseCat(m, c.key));
+                    setCatArmed(null); sound.delete();
+                  }}>sure?</button>
+                ) : (
+                  <button className="tag-del" disabled={state.cats.length <= 1}
+                          onClick={() => { setCatArmed(c.key); sound.click(); }}>×</button>
+                )}
+              </div>
+            );
+          })}
+          <div className="tag-row">
+            <input className="tag-input" placeholder="new category…" maxLength={16}
+                   value={catDraft} onChange={(e) => setCatDraft(e.target.value)}
+                   onKeyDown={(e) => e.key === "Enter" && addCat()} />
+            <button className="tag-add" disabled={state.cats.length >= MAX_EXPENSE_CATS} onClick={addCat}>add</button>
+          </div>
+          <div className="xp-cat-note">
+            deleting a category moves its spending to another one — the money is never thrown away.
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ExpensesTool() {
-  const [state, setState] = useState(loadExpenses);
+  // v54: one shared store, because the recurring runner and the companion
+  // write here too. Writing is still "set the whole object", same as the
+  // useState it replaced.
+  const [state, setState] = useExpenseStore();
   const [month, setMonth] = useState(() => expenseMonthKey(getISTDateString(0)));
   const [view, setView] = useState("add");
   const [pickedDay, setPickedDay] = useState(null);
   const [armed, setArmed] = useState(null);
+  const [showCats, setShowCats] = useState(false);
+  const [catDraft, setCatDraft] = useState("");
+  const [catArmed, setCatArmed] = useState(null);
   const today = getISTDateString(0);
-
-  useEffect(() => { saveExpenses(state); }, [state]);
 
   const catOf = useCallback(
     (key) => state.cats.find((c) => c.key === key) || { key, label: key, color: "#9AA4B2", glyph: "·" },
@@ -12572,10 +13136,21 @@ function ExpensesTool() {
       </div>
 
       <div className="xp-tabs">
-        {[["add", "add"], ["report", "month"], ["year", "year"], ["list", "history"]].map(([k, l]) => (
+        {[["add", "add"], ["report", "month"], ["year", "year"], ["list", "history"], ["rules", "auto"]].map(([k, l]) => (
           <button key={k} className={view === k ? "on" : ""} onClick={() => { setView(k); sound.whoosh(); }}>{l}</button>
         ))}
       </div>
+
+      {view === "rules" && (
+        <ExpenseRules
+          state={state}
+          setState={setState}
+          today={today}
+          showCats={showCats} setShowCats={setShowCats}
+          catDraft={catDraft} setCatDraft={setCatDraft}
+          catArmed={catArmed} setCatArmed={setCatArmed}
+        />
+      )}
 
       {view === "add" && (
         <>
@@ -13220,6 +13795,30 @@ function TodoApp() {
   const [vaultHabits, setVaultHabits] = useState(() => loadStored(STORAGE_KEY_VAULT_HABITS, seedVaultHabits));
   const [projects, setProjects] = useState(() => loadStored(STORAGE_KEY_PROJECTS, seedProjects));
   const [notes, setNotes] = useState(() => loadStored(STORAGE_KEY_NOTES, seedNotes));
+
+  // v54: money lives in a shared store so the companion can read it and
+  // recurring rules can fire here, on open, rather than inside a tool the
+  // user may not have visited for a week.
+  const [money, setMoney] = useExpenseStore();
+  const [recurNote, setRecurNote] = useState(null);
+
+  /** Fire anything the recurring rules owe.
+   *
+   *  Keyed on the IST date string, not a timer: the app is usually resumed
+   *  from the background rather than launched, and a setInterval that was
+   *  suspended for three days is not going to notice the 1st went past.
+   *  runRecurring is idempotent, so a re-render, a re-mount or a double
+   *  effect in StrictMode cannot charge the same month twice. */
+  const todayStrForRecur = getISTDateString(0);
+  useEffect(() => {
+    const { rules, added } = runRecurring(expenseStore.get().rules, todayStrForRecur);
+    if (!added.length) return;
+    setMoney((m) => ({ ...m, rules, items: [...m.items, ...added] }));
+    const total = added.reduce((n, e) => n + e.amt, 0);
+    setRecurNote(`${added.length} recurring ${added.length === 1 ? "entry" : "entries"} added · ${total}`);
+    const t = setTimeout(() => setRecurNote(null), 6000);
+    return () => clearTimeout(t);
+  }, [todayStrForRecur]);
 
   // v36: the Tasks tab became an inventory + a daily draw. On the first launch
   // after upgrading, the old task list is folded in rather than discarded --
@@ -16764,6 +17363,58 @@ function TodoApp() {
         .xp-month-label { font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
         .xp-month-total { font-size: 17px; color: var(--accent); font-variant-numeric: tabular-nums; }
 
+        /* ---- recurring rules + category editor (v54) ---- */
+        .xp-rule-form {
+          display: flex; flex-direction: column; gap: 7px;
+          background: var(--panel); border: var(--border-w) solid var(--border);
+          border-radius: var(--r-card); padding: 11px; margin-bottom: 11px;
+        }
+        .xp-rule-row { display: flex; gap: 7px; }
+        .xp-rule-amt, .xp-rule-name {
+          font-family: var(--font-mono); font-size: 12.5px; color: var(--text);
+          background: var(--bg); border: var(--border-w) solid var(--border);
+          border-radius: 6px; padding: 8px 9px; min-width: 0;
+        }
+        .xp-rule-amt { width: 92px; flex: none; font-variant-numeric: tabular-nums; }
+        .xp-rule-name { flex: 1; }
+        .xp-rule-amt:focus, .xp-rule-name:focus { outline: none; border-color: var(--accent); }
+        .xp-rule-cats, .xp-rule-days { flex-wrap: wrap; }
+        .xp-rule-preview {
+          font-family: var(--font-mono); font-size: 9.5px; color: var(--muted);
+          border-top: var(--border-w) solid var(--border); padding-top: 7px;
+        }
+        .xp-rule-add { align-self: flex-start; }
+        .xp-rule-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 13px; }
+        .xp-rule-card {
+          display: flex; align-items: center; gap: 9px;
+          background: var(--panel); border: var(--border-w) solid var(--border);
+          border-left: 3px solid var(--cc); border-radius: var(--r-card); padding: 10px 11px;
+        }
+        .xp-rule-card.off { opacity: 0.45; }
+        .xp-rule-main {
+          flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+          background: none; border: none; text-align: left; cursor: pointer; padding: 0;
+          font-family: var(--font-mono);
+        }
+        .xp-rule-label { font-size: 11.5px; color: var(--text); }
+        .xp-rule-meta { font-size: 9px; color: var(--muted); }
+        .xp-cat-preview { flex-wrap: wrap; margin-bottom: 12px; }
+        .xp-cat-chip {
+          font-family: var(--font-mono); font-size: 10px; color: var(--cc);
+          border: var(--border-w) solid var(--cc); border-radius: 4px;
+          padding: 4px 8px; opacity: 0.9;
+        }
+        .xp-cat-edit { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        .xp-cat-note { font-family: var(--font-mono); font-size: 8.5px; color: var(--muted); margin-top: 4px; }
+        .recur-note {
+          position: fixed; left: 50%; transform: translateX(-50%);
+          bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+          background: var(--panel); border: var(--border-w) solid var(--accent2);
+          border-radius: 6px; padding: 7px 13px; z-index: 60;
+          font-family: var(--font-mono); font-size: 10px; color: var(--accent2);
+          pointer-events: none;
+        }
+
         .xp-tabs { display: flex; gap: 5px; margin-bottom: 11px; }
         .xp-tabs button {
           flex: 1; padding: 7px 3px; cursor: pointer;
@@ -18752,8 +19403,17 @@ pet, wallet and themes are always included.
         ) : (
           <CompanionView
             petCtl={petCtl}
-            state={{ routines, vaultHabits, habits, rewards, totalXP }}
-            setters={{ setRoutines, setVaultHabits, setHabits, setRewards }}
+            state={{
+              routines, vaultHabits, habits, rewards, totalXP,
+              tags: tagCtl.tags, inventory, notes,
+              expenses: money.items, expenseCats: money.cats,
+              recurring: money.rules, currency: money.currency,
+              coins: achCtl.coins,
+            }}
+            setters={{
+              setRoutines, setVaultHabits, setHabits, setRewards,
+              setInventory, setNotes, setMoney, tagCtl,
+            }}
             showDataMsg={showDataMsg}
             ctx={{
               pet: petCtl.pet,
@@ -18769,6 +19429,8 @@ pet, wallet and themes are always included.
           />
         )}
         </div>
+
+        {recurNote && <div className="recur-note">{recurNote}</div>}
 
         <div className="tabs" role="tablist" aria-label="Sections">
           {[
