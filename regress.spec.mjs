@@ -1619,6 +1619,64 @@ await test("the vault reports storage without writing to it", async () => {
   await ctx.close();
 });
 
+// ------------------------------------------------ no gradient surfaces (v62)
+//
+// The house rule is flat terminal colour: no gradients, no blur, no glass.
+// A CSS grep cannot enforce that, because the bundle is minified and the same
+// rule can arrive through a computed style. So this walks the real DOM on
+// every tab and fails on any gradient that is decorating a surface.
+//
+// Deliberately allowed, because none of them is decoration:
+//   - repeating-linear-gradient: the 1px Conky grid and scanline texture
+//   - mask-image: the scroll edge fade, which has to ramp or it isn't a fade
+//   - .screen-pulse: one 1.1s light bloom on level-up, never at rest
+await test("no tab paints a decorative gradient", async () => {
+  const { ctx, page } = await open();
+  const offenders = [];
+  for (const tab of ["today", "tasks", "routines", "vault", "quest", "tools"]) {
+    await gotoTab(page, tab);
+    const hits = await page.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll("*")) {
+        const cls = (el.className || "").toString();
+        if (cls.includes("screen-pulse")) continue;          // transient bloom
+        const bg = getComputedStyle(el).backgroundImage || "";
+        if (!/gradient/.test(bg)) continue;
+        if (/repeating-/.test(bg)) continue;                 // texture, not a ramp
+        out.push(`${cls.slice(0, 30) || el.tagName}: ${bg.slice(0, 46)}`);
+      }
+      return out;
+    });
+    for (const h of hits) offenders.push(`${tab} → ${h}`);
+  }
+  assert.deepEqual(offenders, [], `gradient surfaces found:\n${offenders.join("\n")}`);
+  await ctx.close();
+});
+
+await test("the theme swatch shows three real colours, not a blend", async () => {
+  const { ctx, page } = await open();
+  await page.locator('[aria-label="Themes"]').first().click();
+  await page.waitForTimeout(500);
+  const info = await page.evaluate(() => {
+    const s = document.querySelector(".theme-swatch");
+    if (!s) return null;
+    const bands = [...s.querySelectorAll(".sw-band")];
+    return {
+      image: getComputedStyle(s).backgroundImage,
+      count: bands.length,
+      colours: bands.map((b) => getComputedStyle(b).backgroundColor),
+      widths: bands.map((b) => Math.round(b.getBoundingClientRect().width)),
+    };
+  });
+  assert.ok(info, "no theme swatch");
+  assert.equal(info.image, "none", "the swatch is still a gradient");
+  assert.equal(info.count, 3, `expected 3 bands, got ${info.count}`);
+  assert.equal(new Set(info.colours).size, 3, "bands are not three distinct colours");
+  // equal thirds: a preview that lies about proportion is still a lie
+  assert.equal(new Set(info.widths).size, 1, `uneven bands: ${info.widths.join(",")}`);
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 

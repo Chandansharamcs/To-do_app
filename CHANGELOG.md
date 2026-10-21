@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v62`** | 2026-10-20 | Nine decorative gradients flattened to flat terminal colour |
 | **`v61`** | 2026-10-20 | Every tool card now reports what it actually holds |
 | **`v60`** | 2026-10-20 | Tasks says what is left to claim, inventory says when it was last done, vault says what is using the space |
 | **`v59`** | 2026-10-20 | Quest cards show their last seven days; the radar names both ends |
@@ -84,6 +85,59 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v62 ───────────────────────────────────────────────────────────┐
+│  2026-10-20 · no gradients, measured rather than claimed         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 18 declarations, 9 of them surfaces
+
+The house rule has always been flat colour -- no gradients, no blur, no glass.
+Grepping for `gradient` found 18 hits, but flattening all 18 would have broken
+things that are not decoration.
+
+**Flattened (9):**
+
+| Where | Was | Now |
+|---|---|---|
+| `cardWash` | 3-stop hsla ramp | **deleted** -- no call sites since v43 |
+| hero card | `160deg #171B21 → panel` | `var(--panel)` |
+| timeline fill | `accent → #79C0FF` | `var(--accent)` |
+| progress fill | `accent → #7BF0DD` | `var(--accent)` |
+| xp fill | `#8B9CF7 → #B4C0FA` | `#8B9CF7` |
+| header rule | `track → transparent` | `var(--track)` |
+| app root (desktop) | 2 ambient radial blooms | removed; scanlines kept |
+| theme swatch | 3-colour blend | 3 flat bands |
+
+**Kept (9), with reasons:** 2 `mask-image` lines (the scroll edge fade has to
+ramp or it isn't a fade), 6 `repeating-linear-gradient` 1px textures (the
+Conky grid and scanlines -- a texture, not a ramp), and 1 `radial-gradient` on
+`.screen-pulse`, the 1.1s level-up bloom, which is a light falloff and never
+at rest.
+
+The theme swatch was the only one worth redesigning rather than flattening: a
+blend promises a colour the app never shows. It is now three equal flat bands
+in the order the theme uses them (`bg`, `panel`, `accent`), 51px each.
+
+**Dead code found on the way:** `cardWash` had exactly one reference -- its own
+definition. v43 replaced it with `cardStateVars` and left it behind, carrying
+the app's only multi-stop gradient for 19 versions. `gradientColor`,
+`gradientHue`, `THEME_RAMP` and `hslToHex` are now a dead chain off the same
+roots; **not** removed, because that is a bigger change than a colour sweep.
+
+**Verified:** 664 unit, 189 browser (11 gate + 96 regress + 8 cloud + 74
+tools), 0 failed. Computed-style scan across all six tabs leaves **one**
+gradient: the scroll mask on Today. Desktop 1280px `.app-root` carries only
+the two scanline textures. Mutation check: re-adding one gradient to
+`.section-header` turned the new test red.
+
+**A trap worth recording:** the first full browser run passed while testing a
+*stale* `bundle.js` (13:47) against edited source (13:57). Green tests proved
+nothing. Check mtimes before trusting a browser suite.
 
 ---
 

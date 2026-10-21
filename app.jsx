@@ -4293,23 +4293,10 @@ function gradientColor(i, n) {
   return hslToHex(gradientHue(i, n), 0.80, 0.64);
 }
 
-/** v40: the same ramp, as a wash BEHIND a card instead of a line beside it.
- *
- *  Three rules it has to obey:
- *   - it fades out to the right, so long labels always end on flat panel
- *     colour and never sit on the brightest part of the tint;
- *   - alpha stays low (0.16 peak). Measured: the worst case is the amber
- *     middle of the ramp, which at 0.16 over #14171C lands around 9.8:1
- *     against --text. At 0.30 it drops under 7:1 and starts to look like a
- *     highlight rather than a hint;
- *   - lightness is 0.60, not the 0.64 the border uses -- a large area of the
- *     same colour reads brighter than a 3px line of it.
- */
-function cardWash(i, n, alpha = 0.16) {
-  const h = Math.round(gradientHue(i, n));
-  return `linear-gradient(100deg, hsla(${h},80%,60%,${alpha}) 0%, `
-       + `hsla(${h},80%,60%,${(alpha * 0.34).toFixed(3)}) 46%, transparent 80%)`;
-}
+/* v62: the v40 card wash is gone. It had no call sites -- v43 replaced it
+   with cardStateVars and left the function behind, still carrying the only
+   multi-stop gradient in the app. Removed rather than flattened: a wash that
+   nothing renders cannot be justified even as a solid tint. */
 
 /** v43: state only. No position ramp.
  *
@@ -6594,12 +6581,12 @@ function ThemePicker({ ctl, level, totalXP, earned = [], coins = 0, onClose }) {
                 onClick={() => { if (unlocked) { ctl.setThemeId(t.id); sound.success(); } else { sound.error(); } }}
                 disabled={!unlocked}
               >
-                <span
-                  className="theme-swatch"
-                  style={{
-                    background: `linear-gradient(135deg, ${t.colors.bg} 0%, ${t.colors.panel} 45%, ${t.colors.accent} 100%)`,
-                  }}
-                >
+                <span className="theme-swatch">
+                  {/* Three flat bands, in the order the theme uses them. A
+                      blend promised a colour the app never actually shows. */}
+                  <i className="sw-band" style={{ background: t.colors.bg }} />
+                  <i className="sw-band" style={{ background: t.colors.panel }} />
+                  <i className="sw-band" style={{ background: t.colors.accent }} />
                   {!unlocked && (
                     <svg viewBox="0 0 24 24" width="15" height="15" className="theme-lock">
                       <rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
@@ -15303,7 +15290,7 @@ function TodoApp() {
         .hero-card {
           margin: 16px 18px;
           padding: 16px 18px;
-          background: linear-gradient(160deg, #171B21, var(--panel));
+          background: var(--panel);
           border: 1px solid var(--border);
           border-radius: calc(var(--r-card) + 5px);
           display: flex;
@@ -16055,7 +16042,7 @@ function TodoApp() {
 
         .timeline-progress-fill {
           height: 100%;
-          background: linear-gradient(90deg, var(--accent), #79C0FF);
+          background: var(--accent);
           border-radius: 2px;
           transition: width 800ms cubic-bezier(0.22, 1, 0.36, 1);
         }
@@ -16928,7 +16915,12 @@ function TodoApp() {
           width: 100%; height: 46px; border-radius: 7px; position: relative;
           display: flex; align-items: center; justify-content: center;
           border: 1px solid rgba(255,255,255,0.06);
+          overflow: hidden;
         }
+        .sw-band { position: absolute; top: 0; bottom: 0; width: 33.34%; }
+        .sw-band:nth-of-type(1) { left: 0; }
+        .sw-band:nth-of-type(2) { left: 33.33%; }
+        .sw-band:nth-of-type(3) { left: 66.66%; }
         .theme-lock { color: rgba(255,255,255,0.82); }
         .theme-active-dot {
           position: absolute; top: 5px; right: 5px;
@@ -17113,7 +17105,7 @@ function TodoApp() {
 
         .progress-fill {
           height: 100%;
-          background: linear-gradient(90deg, var(--accent), #7BF0DD);
+          background: var(--accent);
           border-radius: 3px;
           transition: width 420ms cubic-bezier(.65,0,.35,1);
           box-shadow: 0 0 12px rgba(94,234,212,0.5);
@@ -17893,7 +17885,7 @@ function TodoApp() {
         }
 
         .progress-track.small { height: 4px; }
-        .progress-fill.xp { background: linear-gradient(90deg, #8B9CF7, #B4C0FA); box-shadow: 0 0 12px rgba(139,156,247,0.5); }
+        .progress-fill.xp { background: #8B9CF7; box-shadow: 0 0 12px rgba(139,156,247,0.5); }
 
         .muted { color: #4B5563; }
 
@@ -19258,7 +19250,7 @@ function TodoApp() {
            line rather than a divider. */
         .section-header:not(.habits-header):not(.tool-header)::after {
           content: ""; flex: 1 1 auto; height: 1px;
-          background: linear-gradient(to right, var(--track), transparent);
+          background: var(--track);
         }
 
         /* ---- captions editor (v41) ---- */
@@ -20252,8 +20244,6 @@ function TodoApp() {
           .app-root {
             padding: 5vh 5vw;
             background:
-              radial-gradient(circle at 15% 0%, rgba(94,234,212,0.07), transparent 45%),
-              radial-gradient(circle at 85% 100%, rgba(245,166,35,0.06), transparent 45%),
               repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 28px),
               repeating-linear-gradient(90deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 28px),
               var(--bg);
