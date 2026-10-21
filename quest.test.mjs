@@ -53,7 +53,7 @@ const NAMES = [
   "habitNet", "habitDoneOn", "habitSlipOn", "markHabit", "habitTags",
   "migrateAreaToTag", "computeTagXP", "computeTagXPRaw",
   "axisBreakdown", "habitMonthGrid", "habitHistoryStats", "longestRun", "shiftMonth",
-  "MONTH_NAMES", "computeTotalXP",
+  "MONTH_NAMES", "computeTotalXP", "questSortRank", "sortQuests",
 ];
 const STUBS = `
   const getISTDateString = (o = 0) => {
@@ -287,6 +287,53 @@ T("stepping months never produces a month 0 or 13", () => {
 T("every month index has a name", () => {
   assert.equal(M.MONTH_NAMES.length, 12);
   for (let m = 1; m <= 12; m++) assert.ok(M.MONTH_NAMES[m - 1]);
+});
+
+// ---------------------------------------------------------- v63: ordering --
+//
+// The list is now a view: pending first (A-Z), then done (A-Z), then slipped
+// (A-Z). It must never write back to the stored array -- reordering used to be
+// a manual, persisted operation and that is exactly what was removed.
+
+const Q = (id, label, history) => ({ id, label, history: hist(...history) });
+
+T("untouched quests sort alphabetically, case-insensitively", () => {
+  const list = [Q(1, "zebra", []), Q(2, "Apple", []), Q(3, "mango", []), Q(4, "Banana", [])];
+  const got = M.sortQuests(list, TODAY).map((q) => q.label);
+  assert.deepEqual(got, ["Apple", "Banana", "mango", "zebra"]);
+});
+
+T("done drops below pending, slipped drops below done", () => {
+  const list = [
+    Q(1, "Apple", []),
+    Q(2, "Banana", [TODAY]),
+    Q(3, "Cherry", [slip(TODAY)]),
+    Q(4, "Damson", []),
+  ];
+  const got = M.sortQuests(list, TODAY).map((q) => q.label);
+  assert.deepEqual(got, ["Apple", "Damson", "Banana", "Cherry"]);
+});
+
+T("the rank is the state, not the history length", () => {
+  // a quest slipped 40 times and slipped today still ranks as slipped today
+  const many = Q(1, "Heavy", Array.from({ length: 40 }, (_, i) => slip(`2026-08-${String((i % 28) + 1).padStart(2, "0")}`)));
+  many.history.push(slip(TODAY));
+  assert.equal(M.questSortRank(many, TODAY), 2);
+  assert.equal(M.questSortRank(Q(2, "Clear", [TODAY]), TODAY), 1);
+  assert.equal(M.questSortRank(Q(3, "Fresh", []), TODAY), 0);
+});
+
+T("sorting returns a copy and never rewrites the input", () => {
+  const list = [Q(1, "Zebra", []), Q(2, "Apple", [])];
+  const before = list.map((q) => q.label);
+  const sorted = M.sortQuests(list, TODAY);
+  assert.deepEqual(list.map((q) => q.label), before, "the input array was reordered");
+  assert.notEqual(sorted, list, "sortQuests returned the same array");
+});
+
+T("a tie in label falls back to id, so the order is total", () => {
+  const list = [Q(9, "Same", []), Q(3, "Same", []), Q(7, "Same", [])];
+  assert.deepEqual(M.sortQuests(list, TODAY).map((q) => q.id), [3, 7, 9]);
 });
 
 for (const [name, fn] of tests) {

@@ -61,9 +61,21 @@ function getISTDateLabel() {
   return fmt.format(new Date());
 }
 
+// Minutes past IST midnight at which one day becomes the next. 03:00 is the
+// "still awake, still yesterday" line: a quest finished at 01:30 belongs to
+// the day you were up for, and the board does not reshuffle under your thumb
+// at midnight.
+const DAY_ROLLOVER_MINUTES = 3 * 60;
+
 // "YYYY-MM-DD" for the IST calendar day at `offsetDays` from now (can be negative)
 function getISTDateString(offsetDays = 0) {
-  const d = new Date(Date.now() + offsetDays * 86400000);
+  // v63: the day rolls over at 03:00 IST, not at midnight. Subtracting the
+  // rollover before formatting means everything downstream -- streaks, the
+  // seven-day strips, the daily board, expense dates, "yesterday" labels --
+  // inherits the rule for free, because they all ask this one function what
+  // day it is. Two of them used to answer for themselves; that is how a
+  // habit and a streak end up disagreeing about the day you were awake for.
+  const d = new Date(Date.now() - DAY_ROLLOVER_MINUTES * 60000 + offsetDays * 86400000);
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
 }
 
@@ -82,7 +94,7 @@ function last7Days(history) {
 }
 
 function getISTWeekdayShort(offsetDays = 0) {
-  const d = new Date(Date.now() + offsetDays * 86400000);
+  const d = new Date(Date.now() - DAY_ROLLOVER_MINUTES * 60000 + offsetDays * 86400000);
   return new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata", weekday: "narrow" }).format(d);
 }
 
@@ -4796,7 +4808,6 @@ function HabitWeek({ habit }) {
 }
 
 function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelete, onSave, onHistory,
-                    reorder = false, onMove, canUp = false, canDown = false,
                     index = 0, total = 1 }) {
   const today = getISTDateString(0);
   const doneToday = habitDoneOn(habit, today);
@@ -4948,26 +4959,6 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
     );
   }
 
-  // Reorder is a MODE rather than two more buttons on the row. The card
-  // already carries link, ✗, ✓, edit and delete; a sixth and seventh control
-  // pushed delete off the edge of a 360px screen when this was tried inline.
-  // Swapping the whole row out keeps every target finger-sized.
-  if (reorder) {
-    return (
-      <div className="quest-habit-card good reordering">
-        <span className="area-dot" style={{ background: area.color }} />
-        <div className="quest-habit-main">
-          <span className="quest-habit-label">{habit.label}</span>
-          <span className="quest-habit-meta">{area.label}</span>
-        </div>
-        <button className="keypool-move" disabled={!canUp}
-                onClick={() => onMove(habit.id, -1)} aria-label="Move up">↑</button>
-        <button className="keypool-move" disabled={!canDown}
-                onClick={() => onMove(habit.id, 1)} aria-label="Move down">↓</button>
-      </div>
-    );
-  }
-
   const meta = [];
   if (habitXP(habit) > 0) meta.push(`+${habitXP(habit)}`);
   if (habitPenalty(habit) > 0) meta.push(`−${habitPenalty(habit)}`);
@@ -5035,34 +5026,20 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
         </svg>
       </button>
 
-      <button
-        className={`quest-slip ${slipToday ? "on" : ""}`}
-        onClick={() => onMark(habit.id, "slip")}
-        aria-label="Mark slipped today"
-        title="did the opposite"
-      >
-        <svg viewBox="0 0 24 24" width="13" height="13">
-          <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        </svg>
-      </button>
-
-      <button
-        className={`quest-check ${doneToday ? "done" : ""}`}
-        onClick={() => { fireFx(); onMark(habit.id, "done"); }}
-        aria-label="Mark done today"
-      >
-        <svg viewBox="0 0 24 24" width="14" height="14">
-          <polyline
-            points="4,13 9,18 20,6"
-            fill="none"
-            stroke="#0B0D10"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ strokeDasharray: 24, strokeDashoffset: doneToday ? 0 : 24, transition: "stroke-dashoffset 220ms ease" }}
-          />
-        </svg>
-      </button>
+      {/* v63: no buttons. A quest is answered by swiping the row -- two
+          controls per row competed with the gesture that already does the
+          job, and on a 360px screen they were squeezing delete. What remains
+          is the receipt, not the control: nothing to tap, does not swallow a
+          swipe, it just says which way the row went. */}
+      {(doneToday || slipToday) && (
+        <span
+          className={`quest-state ${doneToday ? "done" : "slip"}`}
+          aria-label={doneToday ? "done today" : "slipped today"}
+          title={doneToday ? "done today" : "slipped today"}
+        >
+          {doneToday ? "✓" : "✗"}
+        </span>
+      )}
       <button className="vault-card-edit" onClick={openEdit} aria-label="Edit habit">
         <svg viewBox="0 0 24 24" width="13" height="13">
           <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -5274,30 +5251,6 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     }
   };
 
-  const [reorderMode, setReorderMode] = useState(false);
-
-  /**
-   * Swaps a habit with its nearest VISIBLE neighbour.
-   *
-   * Skipping hidden rows matters: with an area filter on, a naive index swap
-   * trades places with a habit the user cannot see, so the list appears not to
-   * move at all and their order silently changes elsewhere.
-   */
-  const moveHabit = (id, dir) => {
-    setHabits((prev) => {
-      const i = prev.findIndex((h) => h.id === id);
-      if (i < 0) return prev;
-      const shown = (h) => areaFilter === "all" || habitTags(h, tags).includes(areaFilter);
-      let j = i + dir;
-      while (j >= 0 && j < prev.length && !shown(prev[j])) j += dir;
-      if (j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-    sound.click();
-  };
-
   const delHabit = (id) => { setHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
   const saveHabit = (id, patch) => setHabits((prev) => prev.map((h) => (h.id === id ? { ...h, ...patch } : h)));
 
@@ -5398,12 +5351,17 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     [inventory, tags]
   );
 
-  const visibleHabits = areaFilter === "all" ? habits : habits.filter((h) => habitTags(h, tags).includes(areaFilter));
+  const todayStr = getISTDateString(0);
+  // v63: display order is alphabetical, then done, then slipped. The stored
+  // array keeps its own order; nothing here writes back.
+  const visibleHabits = sortQuests(
+    areaFilter === "all" ? habits : habits.filter((h) => habitTags(h, tags).includes(areaFilter)),
+    todayStr,
+  );
   const earnedXP = habits.reduce((s, h) => s + habitXP(h) * countHist(h, "done"), 0)
                  + computeDailyTotalXP(inventory);
   const lostXP = habits.reduce((s, h) => s + habitPenalty(h) * countHist(h, "slip"), 0);
   const spentXP = rewards.reduce((s, r) => s + r.cost * (r.claimed?.length || 0), 0);
-  const todayStr = getISTDateString(0);
   const habitsDoneToday = habits.filter((h) => habitDoneOn(h, todayStr)).length;
   const habitsSlippedToday = habits.filter((h) => habitSlipOn(h, todayStr)).length;
 
@@ -5576,12 +5534,6 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
           {habitsDoneToday} of {habits.length} done today
           {habitsSlippedToday > 0 ? ` · ${habitsSlippedToday} slipped` : ""}
         </span>
-        <button
-          className={`radar-edit ${reorderMode ? "on" : ""}`}
-          onClick={() => { setReorderMode((v) => !v); sound.click(); }}
-        >
-          {reorderMode ? "done" : "reorder"}
-        </button>
       </div>
       <div className="quest-habit-list">
         {habits.length === 0 ? (
@@ -5600,10 +5552,6 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
               onHistory={(h) => setHistoryFor(h)}
               onDelete={delHabit}
               onSave={saveHabit}
-              reorder={reorderMode}
-              onMove={moveHabit}
-              canUp={i > 0}
-              canDown={i < visibleHabits.length - 1}
               index={i}
               total={visibleHabits.length}
             />
@@ -5755,18 +5703,38 @@ function migrateInventory(inv, tags) {
 /**
  * Which day the quest board belongs to.
  *
- * The board rolls over when the FIRST routine of the day starts, not at
- * midnight. Finishing something at 01:00 should still count for the day you
- * were awake for, and their first routine is 05:30 -- so between midnight and
- * 05:30 the board deliberately still shows yesterday's draw.
+ * v63: this used to roll the board at the first routine's start time (05:30
+ * for him), which meant the "day" began whenever the routine list said so.
+ * There is now one rollover -- 03:00 IST -- living in getISTDateString, so
+ * this is just "what day is it". The arguments stay for the call site.
  */
 function questDayString(routines, nowMinutes) {
-  const starts = (routines || [])
-    .map((r) => (typeof r.time === "string" && /^\d{2}:\d{2}$/.test(r.time)
-      ? Number(r.time.slice(0, 2)) * 60 + Number(r.time.slice(3, 5)) : null))
-    .filter((n) => n !== null);
-  const reset = starts.length ? Math.min(...starts) : 0;
-  return nowMinutes < reset ? getISTDateString(-1) : getISTDateString(0);
+  return getISTDateString(0);
+}
+
+/**
+ * Where a quest sits once it has been answered.
+ *
+ * 0 pending, 1 done, 2 slipped. Done above slipped, and pending on top: the
+ * list you work through first, then proof of what you did, then the one state
+ * that wants attention. Alphabetical inside each band, so an untouched list
+ * is stable and predictable rather than whatever order rows were created in.
+ */
+function questSortRank(habit, dayStr) {
+  if (habitSlipOn(habit, dayStr)) return 2;
+  if (habitDoneOn(habit, dayStr)) return 1;
+  return 0;
+}
+
+/** Sorted COPY. The stored order is never rewritten -- sorting is a view. */
+function sortQuests(list, dayStr) {
+  return [...(list || [])].sort((a, b) => {
+    const ra = questSortRank(a, dayStr);
+    const rb = questSortRank(b, dayStr);
+    if (ra !== rb) return ra - rb;
+    const byName = String(a.label || "").localeCompare(String(b.label || ""), "en", { sensitivity: "base" });
+    return byName !== 0 ? byName : (a.id - b.id);
+  });
 }
 
 /** One random task per difficulty. Tiers with an empty pool simply draw nothing. */
@@ -15608,26 +15576,6 @@ function TodoApp() {
           margin-top: 3px;
         }
 
-        .quest-check {
-          width: 22px;
-          height: 22px;
-          border-radius: 6px;
-          border: 1.5px solid #2A2F37;
-          background: transparent;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          margin-top: 4px;
-          transition: background 200ms ease, border-color 200ms ease;
-        }
-
-        .quest-check.done {
-          background: var(--accent2);
-          border-color: var(--accent2);
-        }
-
         /* inline edit form */
         .routine-edit {
           flex: 1;
@@ -18057,7 +18005,11 @@ function TodoApp() {
         .swipe-hint.show { opacity: 0.75; }
         .swipe-hint.armed { opacity: 1; }
         .swipe-hint.armed span { text-shadow: 0 0 10px currentColor; }
-        .swipe-rail .quest-habit-card { touch-action: pan-y; }
+        /* v63: dragging the row with a mouse used to start a text selection,
+           and Chromium cancels the pointer stream the moment that happens --
+           the swipe died after about 15px and the row stayed where it was.
+           The row is a swipe surface, not prose. */
+        .swipe-rail .quest-habit-card { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
         .swipe-rail .today-task-row { touch-action: pan-y; }
 
         .hist-btn {
@@ -19400,17 +19352,17 @@ function TodoApp() {
           display: flex; flex-direction: column; gap: 5px;
         }
 
-        /* ---- habit slip button + paired edit fields (v35) ---- */
-        .quest-slip {
-          background: transparent; border: 1px solid var(--border);
-          border-radius: 6px; color: var(--muted); cursor: pointer;
-          width: 26px; height: 26px; display: flex; align-items: center;
-          justify-content: center; transition: all 140ms ease; flex: none;
+        /* v63: the swipe's receipt. Sized like the old glyph buttons so the
+           row height does not move when a quest is answered. */
+        .quest-state {
+          width: 22px; height: 22px; flex: none; margin-top: 4px;
+          display: flex; align-items: center; justify-content: center;
+          border-radius: 6px; font-size: 12px; font-weight: 700; line-height: 1;
+          pointer-events: none;
         }
-        .quest-slip:hover { border-color: var(--danger); color: var(--danger); }
-        .quest-slip.on {
-          background: var(--danger); border-color: var(--danger); color: var(--bg);
-        }
+        .quest-state.done { background: var(--accent2); color: var(--bg); }
+        .quest-state.slip { background: var(--danger); color: var(--bg); }
+
         /* a slipped day reads as a deficit, not as an untouched row */
         .quest-habit-card.slipped { border-left: 2px solid var(--danger); }
 
@@ -19546,8 +19498,6 @@ function TodoApp() {
         .habits-header .habits-today { flex: 1 1 auto; margin-left: 0; }
         .habits-header .radar-edit { flex: 0 0 auto; }
         .radar-edit.on { border-color: var(--accent); color: var(--accent); }
-        .quest-habit-card.reordering { border-style: dashed; }
-
         .note-empty {
           font-family: var(--font-mono); font-size: 10px;
           color: var(--muted); padding: 10px 18px 14px;
@@ -19827,7 +19777,6 @@ function TodoApp() {
           color: var(--muted);
         }
 
-        .quest-check.bad-check.done {
           background: var(--danger);
           border-color: var(--danger);
         }

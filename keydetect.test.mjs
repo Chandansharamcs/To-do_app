@@ -550,9 +550,15 @@ test("opposite pairing is stored on the habit", () => {
   assert.ok(/const partnerId = cur\.opposite/.test(APP), "markToday ignores the pairing");
 });
 
-test("both marks reach the UI", () => {
-  assert.ok(/onMark\(habit\.id, "slip"\)/.test(APP), "no slip button");
-  assert.ok(/onMark\(habit\.id, "done"\)/.test(APP), "no done button");
+test("both marks reach the UI -- through the swipe, now", () => {
+  // v63 removed the ✓/✗ buttons: the gesture is the only way in, so this pins
+  // the wiring rather than the controls, and pins that the controls stay gone.
+  assert.ok(/onRight: \(\) => \{[^}]*onMark\(habit\.id, "done", true\)/.test(APP),
+    "swipe right does not complete");
+  assert.ok(/onLeft: \(\) => \{[^}]*onMark\(habit\.id, "slip", true\)/.test(APP),
+    "swipe left does not slip");
+  assert.ok(!/className=\{`quest-check/.test(APP), "the done button is back");
+  assert.ok(!/className=\{`quest-slip/.test(APP), "the slip button is back");
 });
 
 test("the bad-habits section is gone", () => {

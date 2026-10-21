@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v63`** | 2026-10-21 | Quests sort themselves; the day turns over at 03:00 |
 | **`v62`** | 2026-10-20 | Nine decorative gradients flattened to flat terminal colour |
 | **`v61`** | 2026-10-20 | Every tool card now reports what it actually holds |
 | **`v60`** | 2026-10-20 | Tasks says what is left to claim, inventory says when it was last done, vault says what is using the space |
@@ -85,6 +86,61 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v63 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · quests sort themselves, and the day starts at 3am   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Two buttons and a mode, removed
+
+The ✓ and ✗ buttons are gone. The row already swipes; a second way to do
+the same thing two centimetres apart was competing with the gesture. The
+manual reorder mode is gone for the same reason — order is now a property,
+not a chore.
+
+What replaces them is a **receipt**, not a control: a filled ✓ or ✗ chip
+appears once the row has been answered. It is `pointer-events: none`, so it
+cannot be tapped and cannot swallow a swipe that starts on it — both pinned
+by tests.
+
+### The order is the answer
+
+Pending first (A–Z), then done (A–Z), then slipped (A–Z). Answer a quest and
+it drops below the unanswered ones; slip one and it goes to the very bottom,
+where it is impossible to miss.
+
+**The sort is a view.** It returns a copy; the stored array keeps its own
+order and a test asserts it is never rewritten.
+
+### The day turns over at 03:00, not at midnight
+
+One constant, `DAY_ROLLOVER_MINUTES = 180`, subtracted from the clock inside
+`getISTDateString`. Every consumer — streaks, the seven-day strips, the daily
+board, expense dates, "yesterday" labels — inherits it, because they all ask
+that one function what day it is.
+
+This replaces a second rule: the quest board used to roll over at the first
+routine's start time (05:30), so "the day" began whenever the routine list
+said. Two rules disagreed for three hours a night. Now there is one.
+
+A quest finished at 01:30 belongs to the day you were up for. Nothing is a
+"full reset" — histories, XP and levels are untouched; only the boundary moved.
+
+### A real bug found on the way
+
+Driving the swipe with a mouse showed it dying after ~15px with a
+`pointercancel`. The cause was text selection: dragging across the row started
+a selection and Chromium cancelled the pointer stream. `.quest-habit-card` now
+has `user-select: none`. This was never a test artifact — it was the desktop
+gesture failing intermittently.
+
+**Verified:** 672 unit (20 suites), 96 browser regress, 11 gate, 8 cloud, 0
+failed. Order, receipts, no-buttons and no-reorder all asserted in a seeded
+390x844 page. Screenshot: `v63-quest.png`.
 
 ---
 

@@ -54,8 +54,9 @@ function slice(name) {
   throw new Error("unterminated slice: " + name);
 }
 
-const NAMES = ["istDaysBetween", "daysAgoLabel", "dailyLastDone", "getISTDateString"];
+const NAMES = ["DAY_ROLLOVER_MINUTES", "istDaysBetween", "daysAgoLabel", "dailyLastDone", "getISTDateString"];
 const M = new Function(`${NAMES.map(slice).join("\n\n")}\nreturn {${NAMES.join(",")}};`)();
+
 
 let pass = 0, fail = 0;
 const t = (name, fn) => {
@@ -65,6 +66,54 @@ const t = (name, fn) => {
 
 // ---- istDaysBetween --------------------------------------------------------
 
+// ------------------------------------------------------ v63: the 03:00 line --
+//
+// One rollover rule for the whole app. Before 03:00 IST it is still the day
+// you were awake for; at 03:00 the day turns over. Everything that asks
+// getISTDateString inherits this -- streaks, seven-day strips, the board,
+// expense dates -- so this is the one place it can be wrong.
+
+/** getISTDateString with Date.now() pinned to `ms`. */
+function dayAt(ms) {
+  const Real = Date;
+  function Pinned(...args) {
+    if (args.length === 0) return new Real(ms);
+    return new Real(...args);
+  }
+  Pinned.now = () => ms;
+  const src = `${slice("DAY_ROLLOVER_MINUTES")}\n${slice("getISTDateString")}\nreturn getISTDateString;`;
+  return new Function("Date", src)(Pinned);
+}
+
+const ist = (y, mo, d, h, mi) => Date.UTC(y, mo - 1, d, h - 5, mi - 30); // IST -> epoch ms
+
+t("before 03:00 IST the day is still yesterday", () => {
+  assert.equal(dayAt(ist(2026, 10, 20, 1, 30))(), "2026-10-19");
+  assert.equal(dayAt(ist(2026, 10, 20, 2, 59))(), "2026-10-19");
+});
+
+t("at 03:00 IST the day turns over", () => {
+  assert.equal(dayAt(ist(2026, 10, 20, 3, 0))(), "2026-10-20");
+  assert.equal(dayAt(ist(2026, 10, 20, 3, 1))(), "2026-10-20");
+});
+
+t("midnight no longer changes the day", () => {
+  // the old boundary: 23:59 vs 00:01 were different days, which is exactly
+  // what finishing something at half past midnight used to punish
+  assert.equal(dayAt(ist(2026, 10, 20, 23, 59))(), "2026-10-20");
+  assert.equal(dayAt(ist(2026, 10, 21, 0, 1))(), "2026-10-20");
+});
+
+t("offsets count calendar days from the rolled-over day", () => {
+  assert.equal(dayAt(ist(2026, 10, 20, 1, 30))(-1), "2026-10-18");
+  assert.equal(dayAt(ist(2026, 10, 20, 4, 0))(-1), "2026-10-19");
+  assert.equal(dayAt(ist(2026, 10, 20, 4, 0))(7), "2026-10-27");
+});
+
+t("the rollover works across a month boundary", () => {
+  assert.equal(dayAt(ist(2026, 11, 1, 1, 0))(), "2026-10-31");
+  assert.equal(dayAt(ist(2026, 11, 1, 3, 30))(), "2026-11-01");
+});
 t("a date is zero days from itself", () => {
   assert.equal(M.istDaysBetween("2026-10-20", "2026-10-20"), 0);
 });

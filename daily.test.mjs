@@ -36,19 +36,21 @@ const R=[{time:"05:30"},{time:"07:30"},{time:"22:25"}];
 let pass=0;
 const t=(n,f)=>{try{f();pass++;console.log("  ✓",n);}catch(e){console.log("  ✗",n,"\n     ",e.message);process.exitCode=1;}};
 
-t("before the first routine, still yesterday's board", ()=>{
-  assert.equal(M.questDayString(R, 0),   "YESTERDAY");   // 00:00
-  assert.equal(M.questDayString(R, 329), "YESTERDAY");   // 05:29
+t("the board asks getISTDateString, not the routine list", ()=>{
+  // v63: routines used to decide the rollover -- the board turned over at the
+  // first routine's time (05:30 for him). There is now one rule, 03:00 IST,
+  // living inside getISTDateString. The day arithmetic itself is pinned
+  // against a real clock in store.test.mjs; this only pins that the board
+  // asks for day 0 and does not second-guess the answer.
+  assert.equal(M.questDayString(R, 0),    "TODAY");
+  assert.equal(M.questDayString(R, 329),  "TODAY");
+  assert.equal(M.questDayString(R, 330),  "TODAY");
+  assert.equal(M.questDayString(R, 1439), "TODAY");
 });
-t("at the first routine, the board rolls", ()=>{
-  assert.equal(M.questDayString(R, 330), "TODAY");       // 05:30
-  assert.equal(M.questDayString(R, 1439),"TODAY");       // 23:59
-});
-t("no routines -> rolls at midnight", ()=>{
+t("a different routine list cannot move the board any more", ()=>{
+  // 09:00 as the first routine used to keep 05:00 on yesterday's board
+  assert.equal(M.questDayString([{time:"09:00"}], 300), "TODAY");
   assert.equal(M.questDayString([], 0), "TODAY");
-});
-t("malformed times are ignored, not crashed on", ()=>{
-  assert.equal(M.questDayString([{time:"oops"},{time:"06:00"}], 300), "YESTERDAY");
 });
 t("draw picks one per difficulty", ()=>{
   const inv=[{id:1,diff:"easy"},{id:2,diff:"easy"},{id:3,diff:"mid"},{id:4,diff:"hard"}];

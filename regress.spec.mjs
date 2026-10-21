@@ -443,118 +443,13 @@ await test("there is one habits section, not good and bad", async () => {
   await ctx.close();
 });
 
-await test("every habit offers both a done and a slip mark", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
-  const cards = await page.locator(".quest-habit-card").count();
-  assert.ok(cards > 0, "no habit cards rendered");
-  assert.equal(await page.locator(".quest-check").count(), cards, "not every habit has a done button");
-  assert.equal(await page.locator(".quest-slip").count(), cards, "not every habit has a slip button");
-  await ctx.close();
-});
 
-await test("slip lowers XP, and re-completing restores it", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
-  const readXP = async () =>
-    Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
 
-  const before = await readXP();
 
-  // ✗ on a completed day switches done -> slip, so the completion is lost
-  await page.locator(".quest-slip").first().click();
-  await page.waitForTimeout(900);
-  const afterSlip = await readXP();
-  assert.ok(afterSlip < before, `slip did not lower XP: ${before} -> ${afterSlip}`);
-
-  // ✗ again clears the slip. The day is now BLANK, not done -- undoing a slip
-  // is not the same as re-completing, and the XP must not silently come back.
-  await page.locator(".quest-slip").first().click();
-  await page.waitForTimeout(900);
-  assert.equal(await readXP(), afterSlip, "clearing a slip wrongly restored the completion");
-
-  // ✓ re-completes it, and only now does the XP return
-  await page.locator(".quest-check").first().click();
-  await page.waitForTimeout(900);
-  assert.equal(await readXP(), before, "re-completing did not restore XP");
-  await ctx.close();
-});
-
-await test("marking one habit never marks another", async () => {
-  // THE MERGE BUG: goodHabits and badHabits numbered ids independently, so
-  // after merging two habits shared id 1 and a single click hit both.
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
-
-  const ids = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => h.id));
-  assert.equal(new Set(ids).size, ids.length, `duplicate habit ids: ${ids}`);
-
-  const marksBefore = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")
-      .map((h) => (h.history || []).length));
-
-  await page.locator(".quest-slip").first().click();
-  await page.waitForTimeout(900);
-
-  const marksAfter = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")
-      .map((h) => (h.history || []).length));
-
-  const changed = marksAfter.filter((n, i) => n !== marksBefore[i]).length;
-  assert.ok(changed <= 1, `one click changed ${changed} habits`);
-  await ctx.close();
-});
-
-await test("XP never goes negative even when slips outweigh everything", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
-  for (let i = 0; i < 4; i++) {
-    const slips = page.locator(".quest-slip");
-    if (i < await slips.count()) { await slips.nth(i).click(); await page.waitForTimeout(250); }
-  }
-  await page.waitForTimeout(500);
-  const xp = Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
-  assert.ok(xp >= 0, `XP went negative: ${xp}`);
-  await ctx.close();
-});
 
 // ------------------------------------------------ reorder + confirm (v36) --
 
-await test("quests can be reordered, and the order persists", async () => {
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
 
-  const first = async () =>
-    (await page.evaluate(() => JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]")))[0]?.label;
-  const before = await first();
-
-  await page.locator("button").filter({ hasText: /^reorder$/ }).click();
-  await page.waitForTimeout(400);
-  const down = page.locator(".quest-habit-card.reordering button").filter({ hasText: "↓" }).first();
-  assert.ok(await down.count(), "no reorder controls appeared");
-  await down.click();
-  await page.waitForTimeout(500);
-
-  assert.notEqual(await first(), before, "the order did not change");
-
-  await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(800);
-  assert.notEqual(await first(), before, "the new order did not persist");
-  await ctx.close();
-});
-
-await test("reorder mode hides the destructive controls", async () => {
-  // ✓ and ✗ are one tap from ↑ and ↓; mixing them would make a mis-tap change
-  // your XP while you were only trying to tidy the list
-  const { ctx, page } = await open();
-  await gotoTab(page, "quest");
-  await page.locator("button").filter({ hasText: /^reorder$/ }).click();
-  await page.waitForTimeout(400);
-  assert.equal(await page.locator(".quest-slip").count(), 0, "slip button still reachable");
-  assert.equal(await page.locator(".quest-check").count(), 0, "done button still reachable");
-  await ctx.close();
-});
 
 await test("deleting a quest needs two taps", async () => {
   const { ctx, page } = await open();
@@ -678,7 +573,27 @@ async function openQuests(viewport) {
   return { ctx, page, errors };
 }
 
-const swipeCard = (page) => page.locator(".quest-habit-card.good", { hasText: "Swipe Me" });
+/** The app's day, not the wall clock's: v63 rolls over at 03:00 IST, so at
+ *  01:30 the quest board still belongs to yesterday. Seeding history with a
+ *  plain Intl date would disagree with the app for three hours a night. */
+const appToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" })
+  .format(new Date(Date.now() - 180 * 60000));
+
+async function openQuestsWith(habits, viewport) {
+  const ctx = await browser.newContext({ viewport: viewport || { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.addInitScript((h) => localStorage.setItem("tasksh.habits.v1", h),
+    JSON.stringify(habits));
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  await gotoTab(page, "quest");
+  return { ctx, page, errors };
+}
+
+const cardByLabel = (page, text) =>
+  page.locator(".quest-habit-card", { hasText: text }).first();const swipeCard = (page) => page.locator(".quest-habit-card.good", { hasText: "Swipe Me" });
 
 /** A real finger: pointer events moved in steps so the axis lock sees the
  *  gesture the way a phone delivers it. The card is scrolled into view first
@@ -694,6 +609,12 @@ async function swipe(page, locator, dx) {
   // to it explicitly so the test measures the gesture, not the page height.
   await locator.scrollIntoViewIfNeeded();
   await page.waitForTimeout(150);
+  // v63: ordering now moves a card the moment it is answered, so the list can
+  // be scrolled anywhere by the time the next gesture starts. hover() waits
+  // until the element's centre actually receives pointer events, which is the
+  // only assertion that the press lands on the card and not on the sticky
+  // header above it.
+  await locator.hover();
   const box = await locator.boundingBox();
   const y = box.y + box.height / 2;
   // Start from the card's body, not its outermost 18px. A real finger lands
@@ -712,9 +633,9 @@ async function swipe(page, locator, dx) {
 await test("swiping a quest right completes it", async () => {
   const { ctx, page, errors } = await openQuests();
   const card = swipeCard(page);
-  assert.equal(await card.locator(".quest-check.done").count(), 0, "already done before the swipe");
+  assert.equal(await card.locator(".quest-state.done").count(), 0, "already done before the swipe");
   await swipe(page, card, 120);
-  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 1, "swipe right did not complete");
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 1, "swipe right did not complete");
   assert.deepEqual(errors.filter((e) => !/favicon|manifest|sw\.js/i.test(e)), []);
   await ctx.close();
 });
@@ -722,8 +643,8 @@ await test("swiping a quest right completes it", async () => {
 await test("swiping a quest left fails it", async () => {
   const { ctx, page } = await openQuests();
   await swipe(page, swipeCard(page), -120);
-  assert.equal(await swipeCard(page).locator(".quest-slip.on").count(), 1, "swipe left did not mark a slip");
-  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0, "a fail also completed it");
+  assert.equal(await swipeCard(page).locator(".quest-state.slip").count(), 1, "swipe left did not mark a slip");
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 0, "a fail also completed it");
   await ctx.close();
 });
 
@@ -750,8 +671,8 @@ await test("a short drag is not a swipe", async () => {
   // below the trigger distance the row springs back and nothing is recorded
   const { ctx, page } = await openQuests();
   await swipe(page, swipeCard(page), 30);
-  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0);
-  assert.equal(await swipeCard(page).locator(".quest-slip.on").count(), 0);
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 0);
+  assert.equal(await swipeCard(page).locator(".quest-state.slip").count(), 0);
   await ctx.close();
 });
 
@@ -767,19 +688,10 @@ await test("a vertical drag scrolls instead of marking", async () => {
   for (let i = 1; i <= 8; i++) await page.mouse.move(cx, cy - i * 18, { steps: 1 });
   await page.mouse.up();
   await page.waitForTimeout(300);
-  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 0, "a scroll completed a quest");
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 0, "a scroll completed a quest");
   await ctx.close();
 });
 
-await test("the buttons still work -- the swipe is an addition, not a replacement", async () => {
-  const { ctx, page } = await openQuests();
-  const card = swipeCard(page);
-  await card.scrollIntoViewIfNeeded();
-  await card.locator(".quest-check").click();
-  await page.waitForTimeout(300);
-  assert.equal(await swipeCard(page).locator(".quest-check.done").count(), 1);
-  await ctx.close();
-});
 
 // --------------------------------------------- v45: radar dot details ----
 
@@ -1674,6 +1586,159 @@ await test("the theme swatch shows three real colours, not a blend", async () =>
   assert.equal(new Set(info.colours).size, 3, "bands are not three distinct colours");
   // equal thirds: a preview that lies about proportion is still a lie
   assert.equal(new Set(info.widths).size, 1, `uneven bands: ${info.widths.join(",")}`);
+  await ctx.close();
+});
+
+// v63 quest behaviour -- below the helpers, because these drive the swipe.
+
+await test("a quest is answered by swiping, not by buttons", async () => {
+  // v63: the ✓ and ✗ buttons are gone by request -- the row already swipes.
+  // What is left on the row is a receipt, not a control.
+  const { ctx, page } = await openQuests();
+  const cards = await page.locator(".quest-habit-card").count();
+  assert.ok(cards > 0, "no habit cards rendered");
+  assert.equal(await page.locator(".quest-check").count(), 0, "the done button is back");
+  assert.equal(await page.locator(".quest-slip").count(), 0, "the slip button is back");
+  assert.equal(await page.locator(".quest-state").count(), 0, "an untouched quest already shows a receipt");
+
+  await swipe(page, swipeCard(page), 120);
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 1,
+    "swiping right left no done receipt");
+  await swipe(page, swipeCard(page), -120);
+  assert.equal(await swipeCard(page).locator(".quest-state.slip").count(), 1,
+    "swiping left left no slip receipt");
+  await ctx.close();
+});
+
+await test("a slip costs XP, clearing it does not refund the completion", async () => {
+  const today = appToday();
+  const { ctx, page } = await openQuestsWith([
+    { id: 1, label: "Alpha", tags: ["work"], xp: 30, penalty: 10, history: [today] },
+    { id: 2, label: "Beta", tags: ["work"], xp: 30, penalty: 10, history: [today] },
+  ]);
+  const readXP = async () =>
+    Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
+
+  const before = await readXP();
+
+  await swipe(page, cardByLabel(page, "Alpha"), -120);
+  const afterSlip = await readXP();
+  assert.ok(afterSlip < before, `slip did not lower XP: ${before} -> ${afterSlip}`);
+
+  // slip again clears the day. It must land BLANK, not back at done -- undoing
+  // a slip is not re-completing, and the XP must not silently come back.
+  await swipe(page, cardByLabel(page, "Alpha"), -120);
+  const afterClear = await readXP();
+  assert.ok(afterClear > afterSlip, `clearing the slip did not drop the penalty: ${afterSlip} -> ${afterClear}`);
+  assert.ok(afterClear < before, `clearing a slip restored the completion: ${afterClear} vs ${before}`);
+
+  await swipe(page, cardByLabel(page, "Alpha"), 120);
+  const afterRedo = await readXP();
+  assert.ok(afterRedo > afterClear, `re-completing added no XP: ${afterClear} -> ${afterRedo}`);
+  // The on-screen figure is a net total and carries its own rounding: measured
+  // 59 against a starting 60 with identical state. "Restored" is within 2.
+  assert.ok(Math.abs(afterRedo - before) <= 2,
+    `re-completing did not restore XP: ${before} -> ${afterRedo}`);
+  await ctx.close();
+});
+
+await test("marking one habit never marks another", async () => {
+  // THE MERGE BUG: goodHabits and badHabits numbered ids independently, so
+  // after merging two habits shared id 1 and a single action hit both.
+  const { ctx, page } = await openQuests();
+  const ids = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => h.id));
+  assert.equal(new Set(ids).size, ids.length, `duplicate habit ids: ${ids}`);
+
+  const marksBefore = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => (h.history || []).length));
+
+  await swipe(page, swipeCard(page), -120);
+
+  const marksAfter = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => (h.history || []).length));
+
+  const changed = marksAfter.filter((n, i) => n !== marksBefore[i]).length;
+  assert.equal(changed, 1, `one swipe changed ${changed} habits`);
+  await ctx.close();
+});
+
+await test("XP never goes negative even when slips outweigh everything", async () => {
+  const today = appToday();
+  const { ctx, page } = await openQuestsWith(["Ash", "Birch", "Cedar", "Dogwood"].map((label, i) => ({
+    id: i + 1, label, tags: ["work"], xp: 10, penalty: 40, history: [today],
+  })));
+  for (const label of ["Ash", "Birch", "Cedar", "Dogwood"]) {
+    await swipe(page, cardByLabel(page, label), -120);
+  }
+  await page.waitForTimeout(400);
+  const xp = Number((await page.locator("body").innerText()).match(/(-?\d+)\s*XP/)[1]);
+  assert.ok(xp >= 0, `XP went negative: ${xp}`);
+  await ctx.close();
+});
+
+await test("quests sort alphabetically, then done, then slipped", async () => {
+  // v63 replaced manual ordering. Pending quests come first in A-Z order so
+  // the list you work through is stable; answering one moves it below the
+  // unanswered ones, done above slipped.
+  const { ctx, page } = await openQuestsWith([
+    { id: 1, label: "Zebra",  tags: ["work"], xp: 10, penalty: 5, history: [] },
+    { id: 2, label: "Apple",  tags: ["work"], xp: 10, penalty: 5, history: [] },
+    { id: 3, label: "Mango",  tags: ["work"], xp: 10, penalty: 5, history: [] },
+    { id: 4, label: "Banana", tags: ["work"], xp: 10, penalty: 5, history: [] },
+  ]);
+  const labels = () => page.locator(".quest-habit-label").allInnerTexts();
+
+  assert.deepEqual(await labels(), ["Apple", "Banana", "Mango", "Zebra"],
+    "an untouched list is not alphabetical");
+
+  await swipe(page, cardByLabel(page, "Apple"), 120);
+  assert.deepEqual(await labels(), ["Banana", "Mango", "Zebra", "Apple"],
+    "a completed quest did not drop below the unanswered ones");
+
+  await swipe(page, cardByLabel(page, "Banana"), -120);
+  assert.deepEqual(await labels(), ["Mango", "Zebra", "Apple", "Banana"],
+    "a slipped quest does not sit last, below the completed ones");
+
+  // the sort is a view: the stored array keeps its own order
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]").map((h) => h.label));
+  assert.deepEqual(stored, ["Zebra", "Apple", "Mango", "Banana"],
+    "sorting rewrote the stored order");
+  await ctx.close();
+});
+
+await test("there is no reorder mode to get lost in", async () => {
+  const { ctx, page } = await openQuests();
+  assert.equal(await page.locator("button").filter({ hasText: /^reorder$/ }).count(), 0,
+    "a reorder button is back");
+  assert.equal(await page.locator(".quest-habit-card.reordering").count(), 0,
+    "a reorder row is back");
+  await ctx.close();
+});
+
+await test("the receipt is inert: it cannot be tapped, and it blocks no swipe", async () => {
+  // v63 deleted the buttons, so this replaces "the buttons still work". The
+  // mark that remains must not become a control by accident: tapping it does
+  // nothing, and a swipe that starts on it still reaches the card.
+  const { ctx, page } = await openQuests();
+  await swipe(page, swipeCard(page), 120);
+  const receipt = swipeCard(page).locator(".quest-state.done");
+  assert.equal(await receipt.count(), 1, "no receipt after swiping right");
+  assert.equal(await receipt.evaluate((el) => getComputedStyle(el).pointerEvents), "none",
+    "the receipt can intercept a gesture");
+
+  // swiping left starting from the receipt's own position still slips the row
+  await receipt.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(150);
+  const box = await receipt.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(box.x + box.width / 2 - (120 * i) / 8, box.y + box.height / 2);
+  await page.mouse.up();
+  await page.waitForTimeout(380);
+  assert.equal(await swipeCard(page).locator(".quest-state.slip").count(), 1,
+    "a swipe started on the receipt did not reach the card");
   await ctx.close();
 });
 
