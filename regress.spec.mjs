@@ -1692,11 +1692,15 @@ await test("quests sort alphabetically, then done, then slipped", async () => {
   assert.deepEqual(await labels(), ["Apple", "Banana", "Mango", "Zebra"],
     "an untouched list is not alphabetical");
 
+  // v64 holds the order for 700ms after a mark so the list does not move
+  // under the thumb that just swiped it -- so read the order after the hold.
   await swipe(page, cardByLabel(page, "Apple"), 120);
+  await page.waitForTimeout(900);
   assert.deepEqual(await labels(), ["Banana", "Mango", "Zebra", "Apple"],
     "a completed quest did not drop below the unanswered ones");
 
   await swipe(page, cardByLabel(page, "Banana"), -120);
+  await page.waitForTimeout(900);
   assert.deepEqual(await labels(), ["Mango", "Zebra", "Apple", "Banana"],
     "a slipped quest does not sit last, below the completed ones");
 
@@ -1739,6 +1743,118 @@ await test("the receipt is inert: it cannot be tapped, and it blocks no swipe", 
   await page.waitForTimeout(380);
   assert.equal(await swipeCard(page).locator(".quest-state.slip").count(), 1,
     "a swipe started on the receipt did not reach the card");
+  await ctx.close();
+});
+
+// ---------------------------------------------------------- v64: the polish --
+
+await test("level-up is a notification, not a screen", async () => {
+  // it used to be a full-screen backdrop with a continue button, and the
+  // backdrop ate the next tap on whatever was underneath
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    localStorage.setItem("tasksh.meta.v1", JSON.stringify({ seenLevel: 1 }));
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([
+      { id: 1, label: "Banked", tags: ["work"], xp: 40, penalty: 0,
+        history: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((o) => ({
+          d: new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" })
+            .format(new Date(Date.now() - 180 * 60000 - o * 86400000)), t: "done" })),
+      },
+    ]));
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
+  assert.equal(await page.locator(".lvl-backdrop").count(), 0, "the level-up backdrop is back");
+  assert.equal(await page.locator(".lvl-card").count(), 0, "the level-up card is back");
+  assert.equal(await page.locator(".lvl-toast").count(), 1, "no level-up notification");
+  const text = await page.locator(".lvl-toast").innerText();
+  assert.match(text, /level up/i, `toast does not say level up: ${text}`);
+  // and it must not intercept anything: the titlebar buttons live right there
+  const blocked = await page.evaluate(() => {
+    const t = document.querySelector(".lvl-toast");
+    const r = t.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.right - 6, r.top + r.height / 2);
+    return hit && t.contains(hit) ? hit.className.toString() : null;
+  });
+  assert.equal(blocked, null, `the level toast intercepts pointer events: ${blocked}`);
+  await ctx.close();
+});
+
+await test("notes are reachable on the today tab", async () => {
+  // v44 moved notes out of the vault and the section component was never
+  // rendered anywhere -- the data was there, the UI was not
+  const { ctx, page } = await open();
+  const has = await page.locator(".note-card, .note-empty").count();
+  assert.ok(has > 0, "no notes section on the today tab");
+  const before = await page.locator(".note-card").count();
+  await page.locator('input[aria-label="New note"]').fill("watch the roof");
+  await page.locator('button[aria-label="Add note"]').click();
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".note-card").count(), before + 1, "the new note did not appear");
+  await ctx.close();
+});
+
+await test("ctrl+k finds a quest and jumps to it", async () => {
+  const { ctx, page } = await openQuests();
+  await page.keyboard.press("Control+k");
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".pal").count(), 1, "ctrl+k opened nothing");
+  await page.locator(".pal-input").fill("other");
+  await page.waitForTimeout(250);
+  const labels = await page.locator(".pal-label").allInnerTexts();
+  assert.ok(labels.includes("Other One"), `palette did not find the quest: ${labels}`);
+  await page.locator(".pal-row").first().click();
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator(".pal").count(), 0, "the palette stayed open");
+  await ctx.close();
+});
+
+await test("a mark can be undone, and the undo puts the board back", async () => {
+  const { ctx, page } = await openQuests();
+  await swipe(page, swipeCard(page), 120);
+  assert.equal(await swipeCard(page).locator(".quest-state.done").count(), 1, "no done receipt");
+  const undo = page.locator(".undo-toast-btn");
+  assert.equal(await undo.count(), 1, "no undo offered after marking");
+  await undo.click();
+  await page.waitForTimeout(500);
+  assert.equal(await swipeCard(page).locator(".quest-state").count(), 0,
+    "undo left the mark in place");
+  const hist = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.habits.v1")).find((h) => h.label === "Swipe Me").history);
+  assert.equal(hist.length, 0, `undo left history behind: ${JSON.stringify(hist)}`);
+  await ctx.close();
+});
+
+await test("a marked quest holds its place before the list re-sorts", async () => {
+  // the sort used to run on the same tick as the swipe, so the list moved
+  // under the thumb that had just swiped it
+  const { ctx, page } = await openQuestsWith([
+    { id: 1, label: "Alpha", tags: ["work"], xp: 10, penalty: 5, history: [] },
+    { id: 2, label: "Beta", tags: ["work"], xp: 10, penalty: 5, history: [] },
+    { id: 3, label: "Gamma", tags: ["work"], xp: 10, penalty: 5, history: [] },
+  ]);
+  const labels = () => page.locator(".quest-habit-label").allInnerTexts();
+  assert.deepEqual(await labels(), ["Alpha", "Beta", "Gamma"]);
+  await swipe(page, cardByLabel(page, "Alpha"), 120);
+  const immediately = await labels();
+  assert.deepEqual(immediately, ["Alpha", "Beta", "Gamma"], "the row jumped instantly");
+  await page.waitForTimeout(900);
+  assert.deepEqual(await labels(), ["Beta", "Gamma", "Alpha"], "the row never re-sorted");
+  await ctx.close();
+});
+
+await test("the xp sparkline reports the last fortnight", async () => {
+  const today = appToday();
+  const { ctx, page } = await openQuestsWith([
+    { id: 1, label: "Alpha", tags: ["work"], xp: 25, penalty: 5, history: [{ d: today, t: "done" }] },
+  ]);
+  const card = page.locator(".spark-card");
+  assert.equal(await card.count(), 1, "no sparkline");
+  const meta = await page.locator(".spark-meta").innerText();
+  assert.match(meta, /last 14 days/, `sparkline meta reads wrong: ${meta}`);
+  assert.equal(await page.locator(".spark-svg circle").count(), 14, "not fourteen points");
+  assert.match(meta, /\+25/, `today's +25 is not in the total: ${meta}`);
   await ctx.close();
 });
 

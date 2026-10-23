@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v64`** | 2026-10-21 | Undo, ctrl+k, notes found, sparkline, and level-up as a notification |
 | **`v63`** | 2026-10-21 | Quests sort themselves; the day turns over at 03:00 |
 | **`v62`** | 2026-10-20 | Nine decorative gradients flattened to flat terminal colour |
 | **`v61`** | 2026-10-20 | Every tool card now reports what it actually holds |
@@ -86,6 +87,66 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v64 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · the three items from ideas.md, plus one found bug   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Notes existed, and nothing rendered them
+
+`VaultNotesSection` was defined and **never used**. v44 moved habits,
+projects and notes out of the vault, put habits back on the quest tab, and
+left notes with no home — the data kept syncing and backing up, invisibly.
+The vault's own footnote said they were "still in your backups", which was
+true and useless. They are now a section on Today, under the reward shelf.
+
+### Level-up is a notification
+
+The full-screen backdrop and its continue button are gone. It stopped the app
+to report something that had already happened, and the backdrop swallowed the
+next tap — every browser test in this repo had to click at `{5,5}` to get rid
+of it. Same facts, one line, top of the screen, gone in 5.2s.
+
+It deliberately has **no dismiss button**: one would sit exactly where the
+titlebar's theme and search buttons are.
+
+### Undo
+
+There was none anywhere — line 4835 said so in a comment. One slot, not a
+stack: you act, you take it back, you move on. Covers quest marks, task
+delete, and clear-done.
+
+The stored value is a **function that puts the old array back**, not a
+replayed inverse. Replayed inverses are how a slip ends up restoring XP it
+never had.
+
+### The order holds
+
+v63 sorted the moment a mark landed, so the list re-ordered under the thumb
+that had just swiped it — a fast second swipe hit a different quest. The row
+now holds its place for 700ms.
+
+First attempt at this was wrong: freezing the sort showed the raw storage
+order, which is a different jump. It freezes the **rendered** order.
+
+### ctrl+k
+
+Type a quest, tab, tool or open task. The area chips only filter by tag, so
+finding one row among 29 meant scrolling and reading. Search button in the
+titlebar for phones.
+
+### XP sparkline
+
+Fourteen days of net XP. The radar shows which areas you feed and the donut
+shows the total; neither showed direction.
+
+### Verified
+672 unit, 102 regress, 11 gate, 8 cloud, 74 tools — 0 failed. Six new browser
+tests, one of which proves the level toast does not intercept pointer events.
 
 ---
 

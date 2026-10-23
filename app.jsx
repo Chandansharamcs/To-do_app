@@ -477,6 +477,38 @@ const petBus = {
 
 const STORAGE_KEY_PET = "tasksh.pet.v1";
 
+/**
+ * One undo slot for the whole app.
+ *
+ * v64: there was no undo anywhere -- a mis-swipe on a quest was final, and
+ * delete was final too. There is one slot rather than a stack, on purpose:
+ * you act, you take it back, you move on. A history of undos invites poking
+ * at it, and every extra entry is another snapshot held in memory.
+ *
+ * The stored value is a function, so undoing is "put the old array back",
+ * not a replayed inverse -- replayed inverses are how a slip ends up
+ * restoring XP it never had.
+ */
+const undoBus = {
+  ticket: null,
+  listeners: new Set(),
+  offer(fn, label) {
+    this.ticket = { fn, label, at: Date.now() };
+    this.listeners.forEach((l) => { try { l(this.ticket); } catch {} });
+  },
+  fire() {
+    const t = this.ticket;
+    this.ticket = null;
+    this.listeners.forEach((l) => { try { l(null); } catch {} });
+    if (t && t.fn) t.fn();
+  },
+  clear() {
+    this.ticket = null;
+    this.listeners.forEach((l) => { try { l(null); } catch {} });
+  },
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
+};
+
 // Seven forms rather than twenty: each one gets real craft, and the
 // milestones stay meaningful against the v22 XP curve (level 20 ~ 103 days).
 const PET_FORMS = [
@@ -3934,8 +3966,8 @@ function VaultView() {
       <SoundRow />
       <StoreRow />
       <pre className="cap-note">
-        habits, projects and notes moved out of here in v44. nothing was
-        deleted — they are still in your backups.
+        habits, projects and notes moved out of here in v44. habits live on
+        the quest tab; notes are on today. nothing was ever deleted.
       </pre>
     </div>
   );
@@ -4974,6 +5006,7 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
     <div
       className={`quest-habit-card good edge ${fx ? "just-completed" : ""} ${slipToday ? "slipped" : ""}`}
       key={`h${habit.id}`}
+      data-qid={habit.id}
       style={{
         ...cardStateVars(doneToday ? "done" : slipToday ? "failed" : null),
         transform: swipe.dx ? `translateX(${swipe.dx}px)` : undefined,
@@ -5218,6 +5251,9 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     const had = type === "done" ? habitDoneOn(cur, today) : habitSlipOn(cur, today);
     const willBeOn = !had;
     const partnerId = cur.opposite ? String(cur.opposite) : null;
+    // v64: everything needed to put the board back exactly as it was
+    const snapshot = habits;
+    const undoLabel = `${cur.label} · ${had ? "cleared" : type === "done" ? "done" : "slipped"}`;
 
     setHabits((prev) => prev.map((h) => {
       if (h.id === id) return markHabit(h, today, type);
@@ -5249,6 +5285,12 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
       if (!quiet) sound.error();
       petBus.emit("badHabit");
     }
+
+    // v64: the row holds its place for a moment before the sort moves it.
+    // Without this the list re-orders under your thumb and the next swipe
+    // lands on a different quest than the one you were looking at.
+    holdSort();
+    undoBus.offer(() => setHabits(snapshot), undoLabel);
   };
 
   const delHabit = (id) => { setHabits((prev) => prev.filter((h) => h.id !== id)); sound.delete(); };
@@ -5351,13 +5393,45 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
     [inventory, tags]
   );
 
+  // v64: after a mark the row stays put for 700ms before the sort runs, so
+  // the list never re-orders between your finger leaving the screen and your
+  // next swipe arriving.
+  // Holds the ORDER ON SCREEN, not just "stop sorting" -- freezing the sort
+  // alone drops back to the stored array order, which is a different jump.
+  const [frozenIds, setFrozenIds] = useState(null);
+  const freezeTimer = useRef(null);
+  const holdSort = () => {
+    setFrozenIds(visibleHabits.map((h) => h.id));
+    clearTimeout(freezeTimer.current);
+    freezeTimer.current = setTimeout(() => setFrozenIds(null), 700);
+  };
+  useEffect(() => () => clearTimeout(freezeTimer.current), []);
+
   const todayStr = getISTDateString(0);
   // v63: display order is alphabetical, then done, then slipped. The stored
   // array keeps its own order; nothing here writes back.
-  const visibleHabits = sortQuests(
-    areaFilter === "all" ? habits : habits.filter((h) => habitTags(h, tags).includes(areaFilter)),
-    todayStr,
-  );
+  const habitsForView = areaFilter === "all" ? habits : habits.filter((h) => habitTags(h, tags).includes(areaFilter));
+  const visibleHabits = (frozenIds
+    ? [...habitsForView].sort((a, b) => {
+        const ia = frozenIds.indexOf(a.id);
+        const ib = frozenIds.indexOf(b.id);
+        return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib);
+      })
+    : sortQuests(habitsForView, todayStr));
+
+  // v64: net XP per day for the last fortnight. The radar shows shape, the
+  // donut shows totals -- neither shows whether you are going up.
+  const spark = useMemo(() => {
+    const days = Array.from({ length: 14 }, (_, i) => getISTDateString(i - 13));
+    return days.map((d) => ({
+      d,
+      v: habits.reduce((n, h) => {
+        const done = (h.history || []).some((x) => x.d === d && x.t === "done");
+        const slip = (h.history || []).some((x) => x.d === d && x.t === "slip");
+        return n + (done ? habitXP(h) : 0) - (slip ? habitPenalty(h) : 0);
+      }, 0),
+    }));
+  }, [habits]);
   const earnedXP = habits.reduce((s, h) => s + habitXP(h) * countHist(h, "done"), 0)
                  + computeDailyTotalXP(inventory);
   const lostXP = habits.reduce((s, h) => s + habitPenalty(h) * countHist(h, "slip"), 0);
@@ -5444,6 +5518,7 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
       {(earnedXP > 0 || lostXP > 0) && (
         <>
           <div className="section-header"><span>XP SOURCE</span></div>
+          <XPSpark data={spark} />
           <div className="donut-card">
             <DonutChart
               size={120}
@@ -6438,46 +6513,164 @@ function AchievementToast({ id, onDone }) {
  * Level-up reward screen. Replaces the old silent level change with a
  * moment: what you gained, what it unlocked, what's next.
  */
+/** Level-up is a notification now, not a screen.
+ *
+ *  v64: it used to be a full-screen backdrop with a continue button. It
+ *  stopped the whole app to report something that had already happened, and
+ *  on a phone that backdrop swallowed the next tap -- every test in the suite
+ *  had to click at {5,5} to dismiss it. Same information, one line, and it
+ *  leaves on its own. */
 function LevelRewardScreen({ level, coins, unlockedTheme, extraThemes = 0, evolvedTo, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 5200);
+    return () => clearTimeout(t);
+  }, [level, onDone]);
   const next = THEMES.find((t) => t.unlockLevel > level);
-  const nextForm = nextFormAfter(level);
+  const bits = [`+${coins} coins`];
+  if (unlockedTheme) bits.push(`${unlockedTheme.name} theme`);
+  if (extraThemes > 0) bits.push(`+${extraThemes} more`);
+  if (evolvedTo != null) bits.push("pet evolving");
   return (
-    <div className="lvl-backdrop" onClick={onDone}>
-      <div className="screen-pulse" />
-      <div className="burst" />
-      <div className="lvl-card" onClick={(e) => e.stopPropagation()}>
-        <div className="lvl-kicker">level up</div>
-        <div className="lvl-num">{level}</div>
-        <div className="lvl-title">{titleForLevel(level)}</div>
+    <div className="lvl-toast" role="status" aria-live="polite">
+      <span className="lvl-toast-num">{level}</span>
+      <span className="lvl-toast-body">
+        <span className="lvl-toast-kicker">level up</span>
+        <span className="lvl-toast-title">{titleForLevel(level)}</span>
+        <span className="lvl-toast-meta">
+          {bits.join(" · ")}
+          {next ? <span className="lvl-toast-next"> · next theme at {next.unlockLevel}</span> : null}
+        </span>
+      </span>
+      {/* no dismiss button on purpose: it would sit exactly where the
+          titlebar's theme and search buttons are, and swallow them for five
+          seconds. It leaves on its own. */}
+    </div>
+  );
+}
 
-        <div className="lvl-rewards">
-          <div className="lvl-reward">
-            <span className="lvl-reward-icon">◉</span>
-            <span className="lvl-reward-text">+{coins} coins</span>
+/** Bring one quest row into view after the palette jumps to the quest tab. */
+function scrollToQuest(id) {
+  const el = document.querySelector(`[data-qid="${id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.add("pal-hit");
+  setTimeout(() => el.classList.remove("pal-hit"), 1200);
+}
+
+/** Ctrl+K: type a quest, a tab, a tool.
+ *
+ *  v64. Filtering, not browsing: with 29 quests plus six tabs, the chips only
+ *  narrow by tag, so finding one row meant scrolling and reading. This is the
+ *  keyboard way in; it also works on a phone via the titlebar magnifier.
+ */
+function CommandPalette({ onClose, buildItems, onRun }) {
+  const [q, setQ] = useState("");
+  const [idx, setIdx] = useState(0);
+  const inputRef = useRef(null);
+  useEffect(() => { const t = setTimeout(() => inputRef.current?.focus(), 30); return () => clearTimeout(t); }, []);
+  const all = useMemo(() => buildItems(), [buildItems]);
+  const hits = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return all.slice(0, 8);
+    return all.filter((it) => (it.label + " " + (it.hint || "")).toLowerCase().includes(needle)).slice(0, 10);
+  }, [q, all]);
+  useEffect(() => { setIdx(0); }, [q]);
+
+  const run = (item) => { if (!item) return; onClose(); item.run(); };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setIdx((i) => Math.min(hits.length - 1, i + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setIdx((i) => Math.max(0, i - 1)); }
+    else if (e.key === "Enter") { e.preventDefault(); run(hits[idx]); }
+  };
+
+  return (
+    <div className="pal-backdrop" onClick={onClose}>
+      <div className="pal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Command palette">
+        <input
+          ref={inputRef}
+          className="pal-input"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={onKey}
+          placeholder="jump to a quest, tab or tool…"
+          aria-label="Search"
+        />
+        {hits.length === 0 ? (
+          <div className="pal-empty">nothing matches "{q}"</div>
+        ) : (
+          <div className="pal-list">
+            {hits.map((it, i) => (
+              <button
+                key={it.key}
+                className={`pal-row ${i === idx ? "on" : ""}`}
+                onMouseEnter={() => setIdx(i)}
+                onClick={() => run(it)}
+              >
+                <span className="pal-kind">{it.kind}</span>
+                <span className="pal-label">{it.label}</span>
+                {it.hint && <span className="pal-hint">{it.hint}</span>}
+              </button>
+            ))}
           </div>
-          {unlockedTheme && (
-            <div className="lvl-reward">
-              <span className="lvl-reward-icon" style={{ color: unlockedTheme.colors.accent }}>◐</span>
-              <span className="lvl-reward-text">
-                theme unlocked · <b>{unlockedTheme.name}</b>
-                {extraThemes > 0 ? ` +${extraThemes} more` : ""}
-              </span>
-            </div>
-          )}
-          {evolvedTo != null && (
-            <div className="lvl-reward">
-              <span className="lvl-reward-icon">✧</span>
-              <span className="lvl-reward-text">your pet is evolving…</span>
-            </div>
-          )}
-        </div>
+        )}
+        <div className="pal-foot">↑↓ move · enter open · esc close</div>
+      </div>
+    </div>
+  );
+}
 
-        <div className="lvl-next">
-          {next ? `next theme at level ${next.unlockLevel}` : "all themes unlocked"}
-          {nextForm ? ` · next form at ${nextForm.minLevel}` : ""}
-        </div>
+/** The undo affordance. Top of the screen, not the bottom: the bottom is
+ *  where cards are swiped, and v52 already established that a toast sitting
+ *  in that lane eats gestures. */
+function UndoToast() {
+  const [ticket, setTicket] = useState(null);
+  useEffect(() => undoBus.on(setTicket), []);
+  useEffect(() => {
+    if (!ticket) return;
+    const t = setTimeout(() => undoBus.clear(), 6000);
+    return () => clearTimeout(t);
+  }, [ticket]);
+  if (!ticket) return null;
+  return (
+    <div className="undo-toast" role="status" aria-live="polite">
+      <span className="undo-toast-label">{ticket.label}</span>
+      <button className="undo-toast-btn" onClick={() => undoBus.fire()}>undo</button>
+    </div>
+  );
+}
 
-        <button className="evo-btn" onClick={onDone}>continue</button>
+/** Fourteen days of net XP as a line.
+ *
+ *  v64: the radar shows which areas you feed and the donut shows the total,
+ *  but nothing showed direction. A flat line at zero is a real answer, so it
+ *  is drawn rather than hidden. */
+function XPSpark({ data }) {
+  const W = 300, H = 54, PAD = 4;
+  const vals = data.map((d) => d.v);
+  const hi = Math.max(1, ...vals);
+  const lo = Math.min(0, ...vals);
+  const span = hi - lo || 1;
+  const x = (i) => PAD + (i * (W - PAD * 2)) / Math.max(1, data.length - 1);
+  const y = (v) => H - PAD - ((v - lo) / span) * (H - PAD * 2);
+  const line = data.map((d, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(d.v).toFixed(1)}`).join(" ");
+  const zeroY = y(0);
+  const best = Math.max(0, ...vals);
+  const total = vals.reduce((a, b) => a + b, 0);
+  return (
+    <div className="spark-card">
+      <svg className="spark-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
+           aria-label={`net XP per day, last 14 days, best ${best}`}>
+        <line x1={PAD} x2={W - PAD} y1={zeroY} y2={zeroY} className="spark-zero" />
+        <path d={line} className="spark-line" fill="none" />
+        {data.map((d, i) => (
+          <circle key={d.d} cx={x(i)} cy={y(d.v)} r={d.v > 0 ? 1.9 : 1.2}
+                  className={d.v > 0 ? "spark-dot" : "spark-dot idle"} />
+        ))}
+      </svg>
+      <div className="spark-meta">
+        <span>net xp · last 14 days</span>
+        <span className="spark-nums">{total >= 0 ? `+${total}` : total} · best {best}</span>
       </div>
     </div>
   );
@@ -14225,7 +14418,8 @@ function TodayQuestRow({ quest, index, onComplete }) {
 // any rewards currently affordable -- so none of that requires switching
 // tabs to check
 function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits, rewards, setRewards, totalXP, setTab, coins = 0,
-                     daily, inventory, onQuestComplete, spend, tags = DEFAULT_TAGS }) {
+                     daily, inventory, onQuestComplete, spend, tags = DEFAULT_TAGS,
+                     notes = [], setNotes }) {
   const spendableXP = coins;   // v41: rewards cost coins, XP is progression only
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
@@ -14465,12 +14659,30 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
           ))}
         </div>
       )}
+
+      {/* v64: the notes lived in a component nobody rendered -- v44 moved
+          them out of the vault and never put them anywhere. They are here
+          now, under the reward shelf, where a scratchpad belongs. */}
+      <VaultNotesSection notes={notes} setNotes={setNotes} />
     </div>
   );
 }
 
 function TodoApp() {
   const [tab, setTab] = useState("today");
+  // v64: Ctrl+K / Cmd+K opens the palette. Escape closes it. Registered once,
+  // on the window, so it works from any tab and from inside an input.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [soundOn, toggleSound] = useSoundToggle();
   const changeTab = (t) => {
     if (t !== tab) sound.whoosh();
@@ -14955,15 +15167,28 @@ function TodoApp() {
     if (willBeDone) { sound.success(); petBus.emit("taskDone"); } else { sound.click(); }
   };
 
-  const deleteTask = (id) => { setTasks((prev) => prev.filter((t) => t.id !== id)); sound.delete(); };
+  const deleteTask = (id) => {
+    const snapshot = tasks;
+    const gone = tasks.find((t) => t.id === id);
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    sound.delete();
+    undoBus.offer(() => setTasks(snapshot), gone ? `deleted "${gone.text}"` : "deleted a task");
+  };
 
-  const clearDone = () => { setTasks((prev) => prev.filter((t) => !t.done)); sound.whoosh(); };
+  const clearDone = () => {
+    const snapshot = tasks;
+    const n = tasks.filter((t) => t.done).length;
+    setTasks((prev) => prev.filter((t) => !t.done));
+    sound.whoosh();
+    if (n > 0) undoBus.offer(() => setTasks(snapshot), `cleared ${n} done task${n === 1 ? "" : "s"}`);
+  };
 
   return (
     <div className="app-root">
       {achCtl.current && (
         <AchievementToast id={achCtl.current} onDone={achCtl.shift} />
       )}
+      <UndoToast />
       {levelReward && (
         <LevelRewardScreen
           level={levelReward.level}
@@ -16594,39 +16819,159 @@ function TodoApp() {
         }
 
         /* level reward */
-        .lvl-backdrop {
-          position: fixed; inset: 0; z-index: 85;
-          background: rgba(0,0,0,0.8);
-          display: flex; align-items: center; justify-content: center;
-          animation: fadeIn 300ms ease;
+        /* v64: level-up is a toast. The full-screen backdrop and its card are
+           gone -- they stopped the app to report something that had already
+           happened, and the backdrop ate the next tap. */
+        .lvl-toast {
+          position: fixed; top: calc(14px + env(safe-area-inset-top, 0px));
+          left: 50%; transform: translateX(-50%);
+          z-index: 92; width: calc(100% - 28px); max-width: 380px;
+          display: flex; align-items: center; gap: 11px;
+          padding: 10px 12px;
+          pointer-events: none;
+          background: var(--panel);
+          border: 1px solid var(--accent2);
+          border-radius: 12px;
+          box-shadow: 0 8px 30px -8px var(--glow);
+          animation: lvlIn 380ms cubic-bezier(.16,1,.3,1);
         }
-        .lvl-card {
-          text-align: center; padding: 28px 22px; width: 88%; max-width: 340px;
-          background: var(--panel); border: 1px solid var(--border);
-          border-radius: 18px;
-          animation: sheetUp 520ms cubic-bezier(.16,1,.3,1);
+        @keyframes lvlIn {
+          from { transform: translate(-50%, -14px); opacity: 0; }
+          to   { transform: translate(-50%, 0);     opacity: 1; }
         }
-        .lvl-kicker {
-          font-family: var(--font-mono); font-size: 9.5px;
-          letter-spacing: 0.3em; text-transform: uppercase; color: var(--accent2);
+        .lvl-toast-num {
+          font-family: var(--font-mono); font-size: 22px; font-weight: 700;
+          line-height: 1; color: var(--accent); min-width: 26px; text-align: center;
+          font-variant-numeric: tabular-nums;
         }
-        .lvl-num {
-          font-family: var(--font-mono); font-size: 62px; font-weight: 700;
-          line-height: 1.05; color: var(--accent);
-          text-shadow: 0 0 26px var(--glow); margin: 6px 0 2px;
+        .lvl-toast-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+        .lvl-toast-kicker {
+          font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.22em;
+          text-transform: uppercase; color: var(--accent2);
         }
-        .lvl-title { font-size: 13px; color: var(--text); margin-bottom: 18px; }
-        .lvl-rewards {
-          display: flex; flex-direction: column; gap: 8px;
-          padding: 14px 0; border-top: 1px solid var(--track); border-bottom: 1px solid var(--track);
+        .lvl-toast-title { font-size: 12.5px; color: var(--text); }
+        .lvl-toast-meta {
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        .lvl-reward { display: flex; align-items: center; gap: 9px; justify-content: center; }
-        .lvl-reward-icon { font-size: 14px; color: var(--accent2); }
-        .lvl-reward-text { font-size: 12px; color: var(--text); }
-        .lvl-reward-text b { color: var(--accent); }
-        .lvl-next {
-          font-family: var(--font-mono); font-size: 9px;
-          color: var(--muted); margin-top: 12px;
+        .lvl-toast-next { color: var(--accent2); }
+
+        /* v64: undo. At the top, like level-up -- the bottom of the screen is
+           the swipe lane, and v52 already learned what happens when a toast
+           parks there. */
+        .undo-toast {
+          position: fixed; top: calc(70px + env(safe-area-inset-top, 0px));
+          left: 50%; transform: translateX(-50%);
+          z-index: 91; width: calc(100% - 28px); max-width: 380px;
+          display: flex; align-items: center; gap: 10px;
+          padding: 8px 10px 8px 12px;
+          pointer-events: none;
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          box-shadow: 0 8px 24px -10px rgba(0,0,0,0.8);
+          animation: lvlIn 260ms cubic-bezier(.16,1,.3,1);
+        }
+        .undo-toast-label {
+          flex: 1 1 auto; min-width: 0;
+          font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .undo-toast-btn {
+          pointer-events: auto; flex: none;
+          background: transparent; border: 1px solid var(--accent); border-radius: 7px;
+          color: var(--accent); cursor: pointer;
+          font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+          padding: 4px 12px;
+        }
+        .undo-toast-btn:active { background: rgba(94,234,212,0.12); }
+
+        /* v64: the 14-day XP line */
+        .spark-card {
+          margin: 0 18px 12px;
+          padding: 10px 12px 8px;
+          border: 1px solid var(--border); border-radius: 12px;
+          background: var(--panel);
+        }
+        .spark-svg { width: 100%; height: 54px; display: block; overflow: visible; }
+        .spark-zero { stroke: var(--track); stroke-width: 1; stroke-dasharray: 3 4; }
+        .spark-line { stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+        .spark-dot { fill: var(--accent); }
+        .spark-dot.idle { fill: var(--track); }
+        .spark-meta {
+          display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+          margin-top: 5px;
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+          letter-spacing: 0.04em;
+        }
+        .spark-nums { color: var(--accent2); font-variant-numeric: tabular-nums; }
+
+        /* v64: Ctrl+K palette */
+        .pal-backdrop {
+          position: fixed; inset: 0; z-index: 95;
+          background: rgba(0,0,0,0.62);
+          display: flex; align-items: flex-start; justify-content: center;
+          padding-top: 12vh;
+          animation: fadeIn 160ms ease;
+        }
+        .pal {
+          width: calc(100% - 28px); max-width: 420px;
+          background: var(--panel);
+          border: 1px solid var(--accent);
+          border-radius: 12px;
+          box-shadow: 0 24px 60px -20px rgba(0,0,0,0.9);
+          overflow: hidden;
+        }
+        .pal-input {
+          width: 100%; box-sizing: border-box;
+          background: transparent; border: none; outline: none;
+          border-bottom: 1px solid var(--track);
+          padding: 13px 14px;
+          color: var(--text);
+          font-family: var(--font-mono); font-size: 12px;
+        }
+        .pal-input::placeholder { color: var(--muted); }
+        .pal-list { max-height: 46vh; overflow-y: auto; }
+        .pal-row {
+          width: 100%; display: flex; align-items: center; gap: 9px;
+          background: transparent; border: none; cursor: pointer;
+          padding: 9px 14px; text-align: left;
+          color: var(--text); font-size: 12px;
+        }
+        .pal-row.on { background: var(--track); }
+        .pal-kind {
+          font-family: var(--font-mono); font-size: 7.5px; letter-spacing: 0.1em;
+          text-transform: uppercase; color: var(--muted);
+          min-width: 34px; flex: none;
+        }
+        .pal-row.on .pal-kind { color: var(--accent); }
+        .pal-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pal-hint { font-family: var(--font-mono); font-size: 8.5px; color: var(--muted); flex: none; }
+        .pal-empty {
+          padding: 16px 14px; color: var(--muted);
+          font-family: var(--font-mono); font-size: 10px;
+        }
+        .pal-foot {
+          padding: 7px 14px; border-top: 1px solid var(--track);
+          font-family: var(--font-mono); font-size: 8px; color: var(--muted);
+          letter-spacing: 0.05em;
+        }
+        .pal-hit { animation: palHit 1200ms ease-out; }
+        @keyframes palHit {
+          0%   { box-shadow: 0 0 0 2px var(--accent); }
+          100% { box-shadow: 0 0 0 2px transparent; }
+        }
+
+        /* v64 polish: one focus ring for the whole app. Buttons lost the
+           default outline and nothing replaced it, so tabbing through the app
+           was invisible. */
+        :focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+          border-radius: 4px;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .lvl-toast, .undo-toast, .pal-backdrop, .pal-hit { animation: none !important; }
         }
 
         /* gallery */
@@ -20346,6 +20691,17 @@ function TodoApp() {
             </button>
             <button
               className="titlebar-icon-btn"
+              onClick={() => { setPaletteOpen(true); sound.click(); }}
+              aria-label="Search"
+              title="Search (ctrl+k)"
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15">
+                <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M16.5 16.5L21 21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
+              className="titlebar-icon-btn"
               onClick={() => { setShowThemes(true); sound.click(); }}
               aria-label="Themes"
               title="Themes"
@@ -20433,6 +20789,8 @@ pet, wallet and themes are always included.
             coins={achCtl.coins}
             spend={(n) => achCtl.addCoins(-n)}
             setTab={changeTab}
+            notes={notes}
+            setNotes={setNotes}
           />
         ) : tab === "tasks" ? (
           <DailyView
@@ -20495,6 +20853,35 @@ pet, wallet and themes are always included.
         </div>
 
         {recurNote && <div className="recur-note">{recurNote}</div>}
+
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => setPaletteOpen(false)}
+            onRun={(fn) => fn()}
+            buildItems={() => {
+              const items = [];
+              for (const [id, label] of [["today","today"],["tasks","tasks"],["routines","routines"],
+                                         ["vault","vault"],["quest","quest"],["tools","tools"],
+                                         ["pet", petCtl.pet.name.toLowerCase()]]) {
+                items.push({ key: `tab-${id}`, kind: "tab", label, run: () => changeTab(id) });
+              }
+              for (const h of habits) {
+                items.push({
+                  key: `q-${h.id}`, kind: "quest", label: h.label,
+                  hint: (habitTags(h, tagCtl.tags)[0] || ""),
+                  run: () => { changeTab("quest"); setTimeout(() => scrollToQuest(h.id), 260); },
+                });
+              }
+              for (const t of TOOLS) {
+                items.push({ key: `t-${t.id}`, kind: "tool", label: t.name, run: () => changeTab("tools") });
+              }
+              for (const t of tasks.filter((x) => !x.done).slice(0, 40)) {
+                items.push({ key: `task-${t.id}`, kind: "task", label: t.text, run: () => changeTab("tasks") });
+              }
+              return items;
+            }}
+          />
+        )}
 
         <div className="tabs" role="tablist" aria-label="Sections">
           {[
