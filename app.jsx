@@ -6521,10 +6521,20 @@ function AchievementToast({ id, onDone }) {
  *  had to click at {5,5} to dismiss it. Same information, one line, and it
  *  leaves on its own. */
 function LevelRewardScreen({ level, coins, unlockedTheme, extraThemes = 0, evolvedTo, onDone }) {
+  // v64.1: the dismiss timer lived in an effect that depended on `onDone`,
+  // which is a fresh arrow function on every render of the app -- so the
+  // effect tore down and restarted the timeout several times a second and it
+  // never fired. The toast stayed up until it was manually closed, and there
+  // is no close button, so it stayed up forever.
+  //
+  // The timer now depends only on the level, and reaches the callback through
+  // a ref so a new function identity cannot restart it.
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
   useEffect(() => {
-    const t = setTimeout(onDone, 5200);
+    const t = setTimeout(() => { if (doneRef.current) doneRef.current(); }, 5200);
     return () => clearTimeout(t);
-  }, [level, onDone]);
+  }, [level]);
   const next = THEMES.find((t) => t.unlockLevel > level);
   const bits = [`+${coins} coins`];
   if (unlockedTheme) bits.push(`${unlockedTheme.name} theme`);

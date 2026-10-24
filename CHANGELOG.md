@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v65`** | 2026-10-21 | The level-up notification actually goes away |
 | **`v64`** | 2026-10-21 | Undo, ctrl+k, notes found, sparkline, and level-up as a notification |
 | **`v63`** | 2026-10-21 | Quests sort themselves; the day turns over at 03:00 |
 | **`v62`** | 2026-10-20 | Nine decorative gradients flattened to flat terminal colour |
@@ -87,6 +88,38 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v65 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · a timer that could never fire                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+v64's level-up notification never dismissed itself. It appeared, and then
+stayed on screen until the page was reloaded -- and it has no dismiss button,
+so there was no way out of it.
+
+The cause was mine: the timer lived in a `useEffect` whose dependency list
+included `onDone`. That callback is written inline in the parent
+(`onDone={() => setLevelReward(null)}`), so it is a **new function identity on
+every render** -- and the app re-renders several times a second because of the
+clock. React tore the effect down and restarted the timeout each time, so the
+five seconds never elapsed.
+
+The effect now depends only on the level, and reaches the callback through a
+ref, so a new function identity cannot restart the timer.
+
+Caught by the user, not by the suite: v64's test asserted the toast *appears*
+and that it does not intercept pointer events, but never that it leaves. There
+is now a test that waits past the deadline and fails if it is still there --
+plus an earlier assertion at 3s so the timer cannot be "fixed" by shortening
+it to nothing.
+
+**Verified:** 672 unit, 103 regress (+1), 11 gate, 0 failed. Measured on the
+real page: present at 0.6s and 3.0s, gone at 6.2s, quest tab still reachable
+afterwards.
 
 ---
 

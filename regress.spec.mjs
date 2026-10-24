@@ -1858,6 +1858,33 @@ await test("the xp sparkline reports the last fortnight", async () => {
   await ctx.close();
 });
 
+await test("the level-up notification dismisses itself", async () => {
+  // v64 shipped this toast with its timer in an effect that depended on the
+  // onDone callback. That callback is a fresh arrow on every app render, so
+  // the effect restarted the timeout constantly and it never fired -- the
+  // notification stayed up with no way to close it.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  const offs = [1,2,3,4,5,6,7,8,9,10].map((o) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" })
+    .format(new Date(Date.now() - 180 * 60000 - o * 86400000)));
+  await page.addInitScript((days) => {
+    localStorage.setItem("tasksh.meta.v1", JSON.stringify({ seenLevel: 1 }));
+    localStorage.setItem("tasksh.habits.v1", JSON.stringify([
+      { id: 1, label: "Banked", tags: ["work"], xp: 40, penalty: 0,
+        history: days.map((d) => ({ d, t: "done" })) },
+    ]));
+  }, offs);
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  assert.equal(await page.locator(".lvl-toast").count(), 1, "no level-up notification to test");
+  await page.waitForTimeout(3000);
+  assert.equal(await page.locator(".lvl-toast").count(), 1, "it vanished too early to be the timer");
+  await page.waitForTimeout(3200);
+  assert.equal(await page.locator(".lvl-toast").count(), 0,
+    "the level-up notification never dismissed itself");
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 
