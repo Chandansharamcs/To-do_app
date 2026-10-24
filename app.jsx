@@ -1337,6 +1337,7 @@ function saveSoundCfg(cfg) {
 
 let __audioCtx = null;
 let __buses = null;
+let __audioUnlocked = false;
 
 function getAudioCtx() {
   if (!__audioCtx) {
@@ -1348,15 +1349,72 @@ function getAudioCtx() {
   return __audioCtx;
 }
 
+/**
+ * v66: one unlock, on the first real gesture, for the whole app.
+ *
+ * A browser may only start an AudioContext from a user gesture. Because the
+ * context was created lazily on the first *sound*, that first sound decided
+ * the fate of every later one: if it happened to fire from a timer or an
+ * effect (a toast, a level-up, the pomodoro alarm) instead of from a tap, the
+ * context came up suspended and everything scheduled afterwards landed on a
+ * frozen clock and was silently dropped. Touching anything that eventually
+ * ran a gesture -- opening the sound settings, for instance -- resumed it,
+ * which is why the audio looked like it "only worked after the vault tab".
+ *
+ * Unlocking on the first pointer or key event anywhere removes the ordering
+ * dependency: by the time any sound is asked for, the context is already
+ * running.
+ */
+function unlockAudio() {
+  if (__audioUnlocked) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const done = () => { __audioUnlocked = true; };
+  if (ctx.state === "running") { done(); return; }
+  const p = ctx.resume();
+  if (p && typeof p.then === "function") p.then(done).catch(() => {});
+  else done();
+}
+
+// Guarded on addEventListener as well as on window: the audio tests drive
+// this module with a fake window that has no event system, and a bare
+// window check is not the same question.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  const kick = () => { unlockAudio(); };
+  for (const ev of ["pointerdown", "touchstart", "keydown", "click"]) {
+    window.addEventListener(ev, kick, { capture: true, passive: true });
+  }
+}
+
 /** Master → { ui, ambient, alarm }. Built once, lazily. */
 function getBuses() {
   const ctx = getAudioCtx();
   if (!ctx) return null;
   if (__buses && __buses.ctx === ctx) return __buses;
+  // v66: the old chain was raw oscillators straight into the speakers, which
+  // is why the palette read as "beeps" -- nothing softened the top end and
+  // nothing gave the notes a room. A gentle lowpass plus one short feedback
+  // delay is most of the difference between a test tone and a terminal that
+  // sounds like it has a body.
   const master = ctx.createGain();
+  const soft = ctx.createBiquadFilter();
+  soft.type = "lowpass";
+  soft.frequency.value = 7200;
+  soft.Q.value = 0.4;
+  soft.connect(master);
   master.connect(ctx.destination);
-  const mk = (g) => { const n = ctx.createGain(); n.gain.value = g; n.connect(master); return n; };
-  __buses = { ctx, master, ui: mk(1), ambient: mk(0), alarm: mk(1) };
+
+  const mk = (g) => { const n = ctx.createGain(); n.gain.value = g; n.connect(soft); return n; };
+
+  const delay = ctx.createDelay(0.5);
+  delay.delayTime.value = 0.085;
+  const fb = ctx.createGain(); fb.gain.value = 0.19;
+  const wetGain = ctx.createGain(); wetGain.gain.value = 0.5;
+  const wetLp = ctx.createBiquadFilter(); wetLp.type = "lowpass"; wetLp.frequency.value = 3200;
+  delay.connect(wetLp); wetLp.connect(fb); fb.connect(delay);
+  wetLp.connect(wetGain); wetGain.connect(soft);
+
+  __buses = { ctx, master, soft, delay, ui: mk(1), ambient: mk(0), alarm: mk(1) };
   applySoundCfg(loadSoundCfg());
   return __buses;
 }
@@ -1391,14 +1449,32 @@ function setSoundOn(on) {
  *  square-edged gain change on a sine is an audible click, and a UI that
  *  clicks on every tap is the thing people mute.
  */
+/** Runs `fn` once the context is actually running.
+ *
+ * v66: scheduling on a suspended context is not "a sound that arrives late",
+ * it is a sound placed at a `currentTime` that never advances, so it is lost.
+ * Everything that makes noise goes through here first. */
+function withAudio(fn) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === "running") { fn(); return; }
+  const p = ctx.resume();
+  if (p && typeof p.then === "function") p.then(() => { if (ctx.state === "running") fn(); }).catch(() => {});
+  else fn();
+}
+
 function playTone(specs, busName = "ui") {
   if (!isSoundOn()) return;
+  withAudio(() => playToneNow(specs, busName));
+}
+
+function playToneNow(specs, busName = "ui") {
   const buses = getBuses();
   if (!buses) return;
   const { ctx } = buses;
   const out = buses[busName] || buses.ui;
   const now = ctx.currentTime;
-  specs.forEach(({ freq, start = 0, dur = 0.08, type = "sine", gain = 0.05, detune = 0, slideTo = 0 }) => {
+  specs.forEach(({ freq, start = 0, dur = 0.08, type = "sine", gain = 0.05, detune = 0, slideTo = 0, space = 0 }) => {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.type = type;
@@ -1410,6 +1486,13 @@ function playTone(specs, busName = "ui") {
     g.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
     osc.connect(g);
     g.connect(out);
+    // `space` feeds the same note into the room as well as the bus
+    if (space > 0 && buses.delay) {
+      const send = ctx.createGain();
+      send.gain.value = space;
+      g.connect(send);
+      send.connect(buses.delay);
+    }
     osc.start(now + start);
     osc.stop(now + start + dur + 0.02);
   });
@@ -1417,7 +1500,12 @@ function playTone(specs, busName = "ui") {
 
 /** A short burst of filtered noise — the percussive half of the palette.
  *  Oscillators alone cannot do a "tick" or a paper-shuffle "whoosh". */
-function playNoise({ dur = 0.08, gain = 0.03, type = "highpass", freq = 1200, q = 1 } = {}, busName = "ui") {
+function playNoise(spec, busName = "ui") {
+  if (!isSoundOn()) return;
+  withAudio(() => playNoiseNow(spec, busName));
+}
+
+function playNoiseNow({ dur = 0.08, gain = 0.03, type = "highpass", freq = 1200, q = 1 } = {}, busName = "ui") {
   if (!isSoundOn()) return;
   const buses = getBuses();
   if (!buses) return;
@@ -1442,61 +1530,77 @@ function playNoise({ dur = 0.08, gain = 0.03, type = "highpass", freq = 1200, q 
 }
 
 const sound = {
+  // v66: rewritten. The old palette was square and sawtooth tones between
+  // 165 and 720Hz at tiny gains -- thin, buzzy, and it read as "beeping"
+  // rather than as a terminal. Two changes carry most of the improvement:
+  // an octave up (small speakers reproduce 1-2kHz far better than 300Hz),
+  // and every note now lands in the room instead of stopping dead.
+  //
   // --- taps and navigation
-  click: () => playTone([{ freq: 720, dur: 0.045, type: "sine", gain: 0.035 }]),
-  tick: () => playNoise({ dur: 0.02, gain: 0.018, freq: 2600, type: "highpass" }),
-  toggle: () => playTone([{ freq: 560, dur: 0.06, type: "sine", gain: 0.04 }]),
-  whoosh: () => playNoise({ dur: 0.09, gain: 0.016, freq: 900, type: "bandpass", q: 0.7 }),
+  click: () => {
+    playNoise({ dur: 0.012, gain: 0.02, freq: 5200, type: "highpass" });
+    playTone([{ freq: 1180, dur: 0.05, type: "sine", gain: 0.05,
+                slideTo: 880, space: 0.12 }]);
+  },
+  tick: () => playNoise({ dur: 0.018, gain: 0.022, freq: 3800, type: "highpass" }),
+  toggle: () => playTone([{ freq: 880, dur: 0.055, type: "triangle", gain: 0.045,
+                            slideTo: 1320, space: 0.14 }]),
+  whoosh: () => {
+    playNoise({ dur: 0.11, gain: 0.018, freq: 1500, type: "bandpass", q: 0.6 });
+    playTone([{ freq: 660, dur: 0.09, type: "sine", gain: 0.022, slideTo: 990, space: 0.2 }]);
+  },
 
   // --- outcomes
   success: () =>
     playTone([
-      { freq: 660, start: 0, dur: 0.09, type: "sine", gain: 0.045 },
-      { freq: 990, start: 0.07, dur: 0.13, type: "sine", gain: 0.05 },
+      { freq: 880,  start: 0,    dur: 0.1,  type: "sine", gain: 0.05, space: 0.3 },
+      { freq: 1320, start: 0.075, dur: 0.16, type: "sine", gain: 0.045, space: 0.3 },
     ]),
   error: () =>
     playTone([
-      { freq: 220, start: 0, dur: 0.1, type: "square", gain: 0.03 },
-      { freq: 165, start: 0.08, dur: 0.14, type: "square", gain: 0.03 },
+      { freq: 320, start: 0, dur: 0.09, type: "triangle", gain: 0.05, slideTo: 240 },
+      { freq: 240, start: 0.07, dur: 0.13, type: "triangle", gain: 0.04, slideTo: 190 },
     ]),
-  delete: () => playTone([{ freq: 300, start: 0, dur: 0.09, type: "sawtooth", gain: 0.025 }]),
+  delete: () => {
+    playNoise({ dur: 0.06, gain: 0.02, freq: 900, type: "lowpass" });
+    playTone([{ freq: 420, dur: 0.1, type: "triangle", gain: 0.035, slideTo: 260, space: 0.1 }]);
+  },
 
-  /** Swipe right. Deliberately a major third up — the shape of the gesture
-   *  and the shape of the sound should agree. */
+  /** Swipe right. A major third up, in the room rather than on top of it. */
   complete: () => {
-    playNoise({ dur: 0.07, gain: 0.014, freq: 1400, type: "bandpass", q: 0.8 });
+    playNoise({ dur: 0.05, gain: 0.012, freq: 2400, type: "bandpass", q: 0.9 });
     playTone([
-      { freq: 587, start: 0.02, dur: 0.1, type: "sine", gain: 0.04 },
-      { freq: 880, start: 0.09, dur: 0.16, type: "sine", gain: 0.045 },
+      { freq: 1046, start: 0,    dur: 0.1,  type: "sine", gain: 0.045, space: 0.28 },
+      { freq: 1568, start: 0.065, dur: 0.17, type: "sine", gain: 0.04,  space: 0.32 },
     ]);
   },
   /** Swipe left. A minor second down: wrong-sounding on purpose, but short
-   *  enough not to feel like a telling-off. */
+   *  and low enough that it never reads as a telling-off. */
   fail: () =>
     playTone([
-      { freq: 392, start: 0, dur: 0.1, type: "triangle", gain: 0.035 },
-      { freq: 370, start: 0.07, dur: 0.16, type: "triangle", gain: 0.032 },
+      { freq: 523, start: 0,   dur: 0.1,  type: "triangle", gain: 0.04, slideTo: 494, space: 0.18 },
+      { freq: 392, start: 0.07, dur: 0.16, type: "triangle", gain: 0.035, slideTo: 370, space: 0.18 },
     ]),
 
-  // --- rewards
+  // --- money and milestones
   coin: () =>
     playTone([
-      { freq: 1320, start: 0, dur: 0.05, type: "square", gain: 0.022 },
-      { freq: 1760, start: 0.04, dur: 0.1, type: "square", gain: 0.022 },
+      { freq: 1568, start: 0,    dur: 0.05, type: "sine", gain: 0.035, space: 0.22 },
+      { freq: 2093, start: 0.035, dur: 0.1,  type: "sine", gain: 0.03,  space: 0.22 },
     ]),
   levelUp: () =>
     playTone([
-      { freq: 523, start: 0.00, dur: 0.12, type: "sine", gain: 0.045 },
-      { freq: 659, start: 0.10, dur: 0.12, type: "sine", gain: 0.045 },
-      { freq: 784, start: 0.20, dur: 0.14, type: "sine", gain: 0.05 },
-      { freq: 1047, start: 0.32, dur: 0.30, type: "sine", gain: 0.055 },
-      { freq: 1047, start: 0.32, dur: 0.30, type: "sine", gain: 0.02, detune: 8 },
+      { freq: 523,  start: 0.00, dur: 0.12, type: "sine", gain: 0.05,  space: 0.3 },
+      { freq: 659,  start: 0.10, dur: 0.12, type: "sine", gain: 0.05,  space: 0.3 },
+      { freq: 784,  start: 0.20, dur: 0.14, type: "sine", gain: 0.055, space: 0.34 },
+      { freq: 1047, start: 0.32, dur: 0.34, type: "sine", gain: 0.06,  space: 0.4 },
+      { freq: 1047, start: 0.32, dur: 0.34, type: "sine", gain: 0.02,  detune: 9, space: 0.4 },
     ]),
   achievement: () =>
     playTone([
-      { freq: 880, start: 0, dur: 0.1, type: "triangle", gain: 0.04 },
-      { freq: 1175, start: 0.08, dur: 0.1, type: "triangle", gain: 0.04 },
-      { freq: 1568, start: 0.16, dur: 0.22, type: "triangle", gain: 0.045 },
+      { freq: 880,  start: 0,    dur: 0.1,  type: "triangle", gain: 0.045, space: 0.25 },
+      { freq: 1175, start: 0.08, dur: 0.1,  type: "triangle", gain: 0.045, space: 0.25 },
+      { freq: 1568, start: 0.16, dur: 0.24, type: "triangle", gain: 0.05,  space: 0.34 },
     ]),
 
   /** The rngdle reveal: a rising sweep whose length matches the reveal, and
@@ -1504,7 +1608,7 @@ const sound = {
    *  before you have finished reading the word. */
   reveal: (ms = 600) => {
     const dur = Math.max(0.12, Math.min(3, ms / 1000));
-    playTone([{ freq: 220, dur, type: "triangle", gain: 0.02, slideTo: 760 }]);
+    playTone([{ freq: 260, dur, type: "triangle", gain: 0.022, slideTo: 900, space: 0.2 }]);
   },
   land: (tier = 0) => {
     // Number.isFinite first: [..][NaN] is undefined, and an undefined
@@ -1512,15 +1616,16 @@ const sound = {
     const t = Number.isFinite(tier) ? Math.max(0, Math.min(5, Math.round(tier))) : 0;
     const base = [392, 494, 587, 698, 880, 1175][t];
     playTone([
-      { freq: base, start: 0, dur: 0.14, type: "sine", gain: 0.05 },
-      { freq: base * 1.5, start: 0.1, dur: 0.22, type: "sine", gain: 0.04 },
-      ...(t >= 4 ? [{ freq: base * 2, start: 0.22, dur: 0.34, type: "sine", gain: 0.045 }] : []),
+      { freq: base, start: 0, dur: 0.14, type: "sine", gain: 0.05, space: 0.25 },
+      { freq: base * 1.5, start: 0.1, dur: 0.22, type: "sine", gain: 0.04, space: 0.3 },
+      ...(t >= 4 ? [{ freq: base * 2, start: 0.22, dur: 0.34, type: "sine", gain: 0.045, space: 0.38 }] : []),
     ]);
   },
   cash: () => {
-    playNoise({ dur: 0.05, gain: 0.02, freq: 3000, type: "highpass" });
-    playTone([{ freq: 1047, start: 0.03, dur: 0.12, type: "triangle", gain: 0.03 }]);
+    playNoise({ dur: 0.05, gain: 0.02, freq: 3400, type: "highpass" });
+    playTone([{ freq: 1047, start: 0.03, dur: 0.12, type: "triangle", gain: 0.032, space: 0.2 }]);
   },
+
 };
 
 // ---- the alarm -------------------------------------------------------------
@@ -6532,6 +6637,11 @@ function LevelRewardScreen({ level, coins, unlockedTheme, extraThemes = 0, evolv
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
   useEffect(() => {
+    // v66: sound.levelUp existed but nothing ever called it -- the old
+    // full-screen version was silent, which is a strange thing for a
+    // celebration to be. `level` is the dependency, not a callback, so this
+    // cannot repeat the bug that stopped the dismiss timer from firing.
+    sound.levelUp();
     const t = setTimeout(() => { if (doneRef.current) doneRef.current(); }, 5200);
     return () => clearTimeout(t);
   }, [level]);
@@ -14683,6 +14793,7 @@ function TodoApp() {
   // v64: Ctrl+K / Cmd+K opens the palette. Escape closes it. Registered once,
   // on the window, so it works from any tab and from inside an input.
   const [paletteOpen, setPaletteOpen] = useState(false);
+
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "k") {
@@ -14817,6 +14928,16 @@ function TodoApp() {
   }, [currentLevel, tasks, habits, routines, vaultHabits, petCtl.pet, todayStr]);
 
   const achCtl = useAchievements(achSnapshot);
+
+  // v66: the nav needs to know where the selection sits, not just which tab
+  // is on, because the magnification and the travelling puck are both
+  // functions of distance from it.
+  const TAB_DEFS = useMemo(
+    () => TAB_DEFS_BASE.map(([id, label]) => [id, id === "pet" ? petCtl.pet.name.toLowerCase() : label]),
+    [petCtl.pet.name],
+  );
+  const activeTabIndex = Math.max(0, TAB_DEFS.findIndex(([id]) => id === tab));
+
 
   /** v45: a quest can now be completed from the Tasks board or from Today,
    *  so the rule about paying for it lives in exactly one place. Two buttons
@@ -15471,23 +15592,107 @@ function TodoApp() {
           white-space: nowrap;
         }
 
-        .tabs button.active { color: var(--text); }
+        /* ---- v66: the nav bar as a dock ---------------------------------
+           Every tab is scaled by its distance from the selection, so moving
+           between tabs is a wave travelling along the bar rather than a
+           single underline switching sides. Only transform and opacity
+           animate, so this stays off the layout path. */
+        .tabs button {
+          --mag: 0.865;
+          transition: color 180ms ease, opacity 220ms ease;
+          opacity: calc(1 - var(--dist) * 0.055);
+        }
+        .tabs button.active { color: var(--text); opacity: 1; }
 
-        .tabs button.active::after {
-          content: "";
-          position: absolute;
-          left: 14px;
-          right: 14px;
-          bottom: -1px;
-          height: 2px;
-          background: var(--accent);
-          box-shadow: 0 0 8px rgba(94,234,212,0.6);
-          animation: tabIn 220ms ease;
+        .tab-inner {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 3px;
+          transform: translateY(0) scale(var(--mag));
+          transform-origin: 50% 100%;
+          transition: transform 420ms cubic-bezier(.22, 1.35, .36, 1);
+          will-change: transform;
+        }
+        .tabs button.active .tab-inner { transform: translateY(-5px) scale(1); }
+        @media (hover: hover) and (pointer: fine) {
+          .tabs button:hover .tab-inner { transform: translateY(-3px) scale(1.04); }
+          .tabs button.active:hover .tab-inner { transform: translateY(-6px) scale(1.03); }
         }
 
-        @keyframes tabIn {
-          from { transform: scaleX(0); }
-          to { transform: scaleX(1); }
+        /* the travelling puck */
+        .tab-puck {
+          position: absolute;
+          left: 0;
+          bottom: 0;
+          height: 2px;
+          background: var(--accent);
+          box-shadow: 0 0 10px 1px var(--glow);
+          transition: transform 420ms cubic-bezier(.22, 1.35, .36, 1);
+          pointer-events: none;
+          z-index: 3;
+        }
+
+        /* one tick crossing the bar every few seconds: cheap, quiet, and it
+           makes an idle screen feel powered on rather than paused */
+        .tab-sweep {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 26px;
+          height: 1px;
+          background: var(--accent);
+          opacity: 0.35;
+          animation: tabSweep 9s linear infinite;
+          pointer-events: none;
+          z-index: 3;
+        }
+        @keyframes tabSweep {
+          0%   { transform: translateX(-30px); opacity: 0; }
+          8%   { opacity: 0.35; }
+          92%  { opacity: 0.35; }
+          100% { transform: translateX(calc(100vw + 30px)); opacity: 0; }
+        }
+
+        /* the activity diode above each icon */
+        .tab-dot {
+          position: absolute;
+          top: 3px;
+          left: 50%;
+          margin-left: -1.5px;
+          width: 3px;
+          height: 3px;
+          border-radius: 1px;
+          background: var(--track);
+          animation: tabDot 4.2s steps(1, end) infinite;
+        }
+        .tabs button.active .tab-dot {
+          background: var(--accent);
+          animation: tabDotOn 1.6s steps(1, end) infinite;
+        }
+        @keyframes tabDot {
+          0%, 88%  { background: var(--track); }
+          90%, 94% { background: var(--accent2); opacity: 0.85; }
+          96%, 100% { background: var(--track); opacity: 1; }
+        }
+        @keyframes tabDotOn {
+          0%, 45%  { opacity: 1; }
+          50%, 95% { opacity: 0.25; }
+          100%     { opacity: 1; }
+        }
+
+        /* the glyph answers the selection: it lifts and brightens a touch */
+        .tabs button svg {
+          transition: transform 420ms cubic-bezier(.22, 1.35, .36, 1), filter 260ms ease;
+        }
+        .tabs button.active svg { transform: translateY(-1px) scale(1.06); }
+        .tabs button.active .tab-label { letter-spacing: 0.06em; }
+        .tab-label { transition: letter-spacing 320ms ease; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .tab-inner, .tab-puck, .tabs button svg, .tab-label { transition: none !important; }
+          .tab-sweep, .tab-dot, .tabs button.active .tab-dot { animation: none !important; }
         }
 
         .hero-card {
@@ -20894,35 +21099,65 @@ pet, wallet and themes are always included.
         )}
 
         <div className="tabs" role="tablist" aria-label="Sections">
-          {[
-            ["today", "today"],
-            ["tasks", "tasks"],
-            ["routines", "routines"],
-            ["vault", "vault"],
-            ["quest", "quest"],
-            ["tools", "tools"],
-            ["pet", petCtl.pet.name.toLowerCase()],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              role="tab"
-              id={`tab-${id}`}
-              aria-selected={tab === id}
-              aria-controls="tab-panel"
-              aria-label={label}
-              title={label}
-              className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
-              onClick={() => changeTab(id)}
-            >
-              <TabIcon id={id} />
-              <span className="tab-label">{label}</span>
-            </button>
-          ))}
+          {TAB_DEFS.map(([id, label], i) => {
+            const dist = Math.abs(i - activeTabIndex);
+            // the magnification ladder: the selected tab stands up, its
+            // neighbours lean in, the far ends settle back
+            // 1, 0.955, 0.91, 0.865 -- a real falloff at every step, not a
+            // single hard step with a flat tail
+            const mag = 1 - Math.min(dist, 3) * 0.045;
+            return (
+              <button
+                key={id}
+                role="tab"
+                id={`tab-${id}`}
+                aria-selected={tab === id}
+                aria-controls="tab-panel"
+                aria-label={label}
+                title={label}
+                style={{ "--mag": mag, "--dist": dist }}
+                className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
+                onClick={() => changeTab(id)}
+              >
+                <span className="tab-dot" style={{ animationDelay: `${i * 0.21}s` }} />
+                {/* the magnification scales this wrapper, not the button:
+                    transform shrinks the hit area too, and at 360px the far
+                    tabs fell to 43.99px -- under the 44px minimum */}
+                <span className="tab-inner">
+                  <TabIcon id={id} />
+                  <span className="tab-label">{label}</span>
+                </span>
+              </button>
+            );
+          })}
+          {/* one puck that travels, so switching tabs reads as a move rather
+              than as one underline vanishing and another appearing */}
+          <span
+            className="tab-puck"
+            aria-hidden="true"
+            style={{
+              width: `${100 / TAB_DEFS.length}%`,
+              transform: `translateX(${activeTabIndex * 100}%)`,
+            }}
+          />
+          {/* a slow tick crossing the bar: the only thing here that moves
+              when you are not touching it */}
+          <span className="tab-sweep" aria-hidden="true" />
         </div>
       </div>
     </div>
   );
 }
+
+const TAB_DEFS_BASE = [
+  ["today", "today"],
+  ["tasks", "tasks"],
+  ["routines", "routines"],
+  ["vault", "vault"],
+  ["quest", "quest"],
+  ["tools", "tools"],
+  ["pet", "pet"],
+];
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(React.createElement(TodoApp));

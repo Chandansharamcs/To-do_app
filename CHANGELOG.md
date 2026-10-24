@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v66`** | 2026-10-21 | Sound actually plays on the first tap; a new palette; a nav bar that moves |
 | **`v65`** | 2026-10-21 | The level-up notification actually goes away |
 | **`v64`** | 2026-10-21 | Undo, ctrl+k, notes found, sparkline, and level-up as a notification |
 | **`v63`** | 2026-10-21 | Quests sort themselves; the day turns over at 03:00 |
@@ -88,6 +89,76 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v66 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · audio that starts, and a bar that answers           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### "Sound only works after I open the vault"
+
+The audio context was created lazily on the first *sound*. If that first
+sound came from a timer or an effect -- a toast, a level-up -- the context was
+created without a user gesture, came up **suspended**, and every note
+scheduled afterwards landed on a clock that never advanced and was dropped.
+Anything that eventually ran a gesture resumed it, which is why it looked
+like the vault tab was somehow the key.
+
+`resume()` was also called and never awaited, so even a resume could lose the
+note that triggered it.
+
+Now: one unlock on the **first pointer or key event anywhere**, and every
+sound goes through a helper that waits for the context to actually be
+running before scheduling.
+
+### The palette was thin
+
+Square and sawtooth tones between 165 and 720Hz, straight into the speakers,
+is a test tone, not a UI. Rewritten:
+
+- an octave up -- phone speakers reproduce 1-2kHz far better than 300Hz
+- no square waves; sine and triangle only
+- a gentle 7.2kHz lowpass on the master
+- one short feedback delay (85ms, 0.19) so notes land in a room
+- `space` per note, so a level-up sits in more air than a click
+
+`sound.levelUp` also existed but **nothing had ever called it** -- the
+celebration was silent. Wired to the level toast.
+
+**On ambient beds:** these remain synthesised, not recorded. Sampled audio
+would be megabytes against a 1MB budget, and no public-domain file ships
+without a licence question. If you want real recordings, send the files or
+pick a source and I will wire them as an optional layer.
+
+### The nav bar
+
+- **Magnification ladder**: every tab scales by distance from the selection
+  (1, 0.955, 0.91, 0.865), so switching tabs is a wave travelling along the
+  bar.
+- **Travelling puck** instead of an underline appearing in place.
+- **Activity diodes** above each icon, the active one blinking on a slow step
+  timer.
+- **A tick sweeping the bar** every 9 seconds -- the only thing on screen that
+  moves when idle.
+- All of it is transform/opacity only, and all of it stops under
+  `prefers-reduced-motion`.
+
+**A regression this caused, caught by an existing test:** scaling the whole
+button shrank its hit area to 43.99px at 360px, under the 44px minimum. The
+ladder now scales an inner wrapper, so the tap target stays full size.
+
+**Verified:** 673 unit, 105 regress, 11 gate, 8 cloud, 74 tools -- 0 failed.
+A new test drives a real AudioContext and asserts sound is produced on the
+*first* gesture, and another pins the ladder and the puck.
+
+**One near-miss worth recording:** rewriting the palette by slicing the old
+object silently deleted six methods (`coin`, `levelUp`, `achievement`,
+`reveal`, `land`, `cash`). The old count-based test would have passed with
+three of them gone. There is now a test that derives the required names from
+the call sites in both directions.
 
 ---
 

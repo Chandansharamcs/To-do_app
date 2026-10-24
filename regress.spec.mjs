@@ -1885,6 +1885,78 @@ await test("the level-up notification dismisses itself", async () => {
   await ctx.close();
 });
 
+await test("audio is running before the first sound is asked for", async () => {
+  // v66: the context used to be created lazily on the first sound, so the
+  // first one decided the fate of all later ones. A sound fired from a timer
+  // or an effect created it suspended, everything scheduled after that was
+  // dropped, and the app looked like it "only made noise after the vault tab"
+  // because that screen's controls eventually resumed it. One unlock on the
+  // first gesture removes the ordering dependency.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    window.__osc = 0;
+    const C = window.AudioContext;
+    window.AudioContext = class extends C {
+      constructor(...a) {
+        super(...a);
+        window.__ctx = this;
+        window.__states = [];
+        this.addEventListener("statechange", () => window.__states.push(this.state));
+      }
+    };
+    const co = C.prototype.createOscillator;
+    C.prototype.createOscillator = function () { window.__osc++; return co.apply(this, arguments); };
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => !!window.__ctx), false, "an audio context was built before any gesture");
+  await gotoTab(page, "tasks");
+  await page.waitForTimeout(400);
+  const st = await page.evaluate(() => ({ state: window.__ctx && window.__ctx.state, osc: window.__osc }));
+  assert.equal(st.state, "running", `context is ${st.state} after the first gesture`);
+  assert.ok(st.osc > 0, "the first tap made no sound at all");
+  await ctx.close();
+});
+
+await test("the nav magnifies the selected tab and slides a puck to it", async () => {
+  const { ctx, page } = await open();
+  const read = () => page.evaluate(() => {
+    const tabs = [...document.querySelectorAll(".tabs button")];
+    return {
+      count: tabs.length,
+      active: tabs.findIndex((t) => t.classList.contains("active")),
+      puck: document.querySelector(".tab-puck")?.style.transform,
+      // v66.1: the button box stays full size (hit targets), the ladder is
+      // applied to the inner wrapper -- so measure that
+      scaleX: tabs.map((t) => {
+        const m = getComputedStyle(t.querySelector(".tab-inner")).transform;
+        return m === "none" ? 1 : +m.slice(7, m.indexOf(","));
+      }),
+      dots: document.querySelectorAll(".tab-dot").length,
+      sweep: !!document.querySelector(".tab-sweep"),
+    };
+  });
+  await page.waitForTimeout(600);
+  const a = await read();
+  assert.equal(a.count, 7, `expected 7 tabs, got ${a.count}`);
+  assert.equal(a.dots, 7, "not every tab has an activity dot");
+  assert.ok(a.sweep, "the ambient sweep is missing");
+  assert.equal(a.puck, `translateX(${a.active * 100}%)`, `puck is not under the active tab: ${a.puck}`);
+
+  await gotoTab(page, "vault");
+  await page.waitForTimeout(700);
+  const b = await read();
+  assert.equal(b.active, 3, `active tab index is ${b.active}`);
+  assert.equal(b.puck, "translateX(300%)", `the puck did not travel: ${b.puck}`);
+  // the ladder: the selected tab is the largest, and size falls off with
+  // distance rather than switching to a single hard "active" style
+  assert.ok(b.scaleX[3] > b.scaleX[2], `active tab is not magnified: ${b.scaleX.join(",")}`);
+  assert.ok(b.scaleX[2] > b.scaleX[1], `no falloff with distance: ${b.scaleX.join(",")}`);
+  assert.ok(b.scaleX[0] < b.scaleX[1], `the far end is not settled back: ${b.scaleX.join(",")}`);
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 

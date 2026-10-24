@@ -60,6 +60,9 @@ function fakeAudio() {
     createGain: () => node("gain"),
     createBiquadFilter: () => node("filter"),
     createBufferSource: () => node("src"),
+    // v66: the output chain grows a delay line for the room send, so the fake
+    // has to know about one or every sound fails on a missing node type.
+    createDelay: () => { const n = node("delay"); n.delayTime = param(0); log.delay = n; return n; },
     createBuffer: (ch, frames) => {
       const d = new Float32Array(frames);
       log.buffers.push({ frames });
@@ -322,6 +325,20 @@ T("a muted app does not ring, but still buzzes", () => {
 });
 
 // ---- the palette -----------------------------------------------------------
+
+T("every sound the app asks for exists in the palette", () => {
+  // v66 shipped a rewrite that silently dropped six methods -- coin, levelUp,
+  // achievement, reveal, land and cash -- because the edit replaced a slice of
+  // the object. A count is not enough: deleting three would still clear it.
+  // This derives the requirement from the call sites instead.
+  const palette = new Set(Object.keys(soundModule().sound));
+  const called = new Set([...SRC.matchAll(/sound\.([a-zA-Z]+)\(/g)].map((m) => m[1]));
+  const missing = [...called].filter((n) => !palette.has(n));
+  assert.deepEqual(missing, [], `the app calls sound.${missing.join(", sound.")} but they do not exist`);
+  // and the reverse: a method nothing calls is dead weight in a shipped app
+  const unused = [...palette].filter((n) => !called.has(n));
+  assert.deepEqual(unused, [], `unused sounds in the palette: ${unused.join(", ")}`);
+});
 
 T("every sound in the palette is callable and makes something", () => {
   const names = Object.keys(soundModule().sound);
