@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v68`** | 2026-10-21 | rngdle: auto-roll unlocked, faster pace, a shop that shows the next rung |
 | **`v67`** | 2026-10-21 | Ambient beds rebuilt as layers instead of one filtered hiss |
 | **`v66`** | 2026-10-21 | Sound actually plays on the first tap; a new palette; a nav bar that moves |
 | **`v65`** | 2026-10-21 | The level-up notification actually goes away |
@@ -90,6 +91,64 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v68 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · the game loop, and a layer that asked too much      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Auto-roll was a button that lied
+
+It existed, but two things gated it: a 1.6M shop item **and** a toggle. With
+the item unbought the button still rendered, still flipped to "on", and did
+nothing whatsoever. That is worse than not having the feature.
+
+Auto-roll is now free and the toggle is always live. Verified: a fresh save
+with nothing owned rolls twice in twelve seconds on its own.
+
+### The black flash
+
+Not reproduced in a headless run, so the fix is aimed at the most likely
+cause rather than a confirmed one -- and it is stated as such.
+
+`.screen-pulse` -- the level-up breath -- **scaled a fullscreen fixed element
+to 26x**. On a phone that is a compositor layer tens of thousands of pixels
+wide; when allocation fails, the rect is painted black. It is now an opacity
+breath with `contain: paint`: same effect, one screen-sized layer. There is a
+test that fails if anything on the roll screen asks for a layer more than 4x
+with a large area.
+
+**If the black flash persists, it is something else and I need to know
+whether it happens on a roll or on a level-up.**
+
+### Pace
+
+| | before | after |
+|---|---|---|
+| reveal | 3.0s | 2.2s |
+| cooldown | 4.0s | 2.6s |
+| gap between rolls | ~7.0s | ~4.8s |
+
+A game of chance that gives you a decision every seven seconds is mostly
+waiting.
+
+### The near miss
+
+Under the score: `1,222 EP short of UNCOMMON`. A number is a number until you
+know what you missed by.
+
+### Shop
+
+- **The next rung**: what this shelf is saving for, with a live progress bar
+  and the exact amount left, so the question is "how much more" rather than
+  "how much"
+- owned count per shelf
+- auto-roll marked as included rather than a dead purchase
+
+**Verified:** 676 unit, 105 regress, 11 gate, 8 cloud, 77 tools (+3), 0 failed.
 
 ---
 

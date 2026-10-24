@@ -70,6 +70,14 @@ async function phone(seed) {
   return { ctx, page, timers, errors };
 }
 
+/** Opens the tools tab, then the rngdle card. v68 tests need this twice. */
+const gotoTools = async (page, tool) => {
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(250);
+  await page.locator(".tool-card", { hasText: tool }).first().click();
+  await page.waitForTimeout(500);
+};
+
 const openPomodoro = async (page) => {
   await page.getByRole("tab", { name: "tools" }).click();
   await page.waitForTimeout(250);
@@ -1531,6 +1539,85 @@ await test("a tool with nothing stored says nothing rather than guessing", async
   // the captions tool has no state to report, so it must not invent one
   const captionCard = page.locator(".tool-card", { hasText: "ai captions" });
   assert.equal(await captionCard.locator(".tool-status").count(), 0, "captions invented a status");
+  await ctx.close();
+});
+
+// ------------------------------------------------ rngdle v68 -------------
+
+await test("auto-roll needs no purchase and actually fires", async () => {
+  // it used to be a 1.6M shop item AND a toggle: with the item unbought the
+  // button still rendered, still flipped to "on", and did nothing at all
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({
+      ep: 3000000, earned: 3000000, lifetime: 3000000, owned: [], autoRoll: false, totalRolls: 0,
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await gotoTools(page, "rngdle");
+  const auto = page.locator(".rngi-auto");
+  assert.equal(await auto.count(), 1, "no auto-roll toggle without buying it");
+  await auto.click();
+  await page.waitForTimeout(100);
+  assert.match(await auto.innerText(), /on/, "the toggle did not switch on");
+  const before = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.rngdle.v2") || "{}").totalRolls || 0);
+  await page.waitForTimeout(9000);
+  const after = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("tasksh.rngdle.v2") || "{}").totalRolls || 0);
+  assert.ok(after > before, `auto-roll never rolled: ${before} -> ${after}`);
+  await ctx.close();
+});
+
+await test("the shop shows how far away the next rung is", async () => {
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({
+      ep: 12000, earned: 12000, lifetime: 12000, owned: [], totalRolls: 5,
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await gotoTools(page, "rngdle");
+  await page.locator(".rngi-tabs button", { hasText: /shop/i }).first().click();
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator(".rngi-next").count(), 1, "no next-up strip in the shop");
+  const left = await page.locator(".rngi-next-left").innerText();
+  assert.ok(/to go|affordable/i.test(left), `the strip does not say how far away it is: ${left}`);
+  const width = await page.locator(".rngi-next-bar i").evaluate((el) => el.style.width);
+  assert.match(width, /^\d+(\.\d+)?%$/, `the progress bar has no real width: ${width}`);
+  const pct = parseFloat(width);
+  assert.ok(pct >= 0 && pct <= 100, `progress outside 0-100: ${pct}`);
+  await ctx.close();
+});
+
+await test("the roll stage survives repeated rolls with no giant scaled layer", async () => {
+  // the black flash reported on a real phone was most likely the level-up
+  // pulse scaling a fullscreen layer to 26x: past what the GPU will allocate,
+  // and the compositor paints the rect black when it refuses. Nothing on the
+  // roll screen may ask for a layer bigger than a few screens.
+  const { ctx, page } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({
+      ep: 900000000, earned: 900000000, lifetime: 900000000, owned: [], totalRolls: 0,
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await gotoTools(page, "rngdle");
+  const big = async () => page.evaluate(() => {
+    const out = [];
+    for (const el of document.querySelectorAll("*")) {
+      const cs = getComputedStyle(el);
+      const m = cs.transform;
+      if (!m || m === "none") continue;
+      const scale = Math.max(...m.replace("matrix(", "").split(",").map(Number).filter((n) => Number.isFinite(n)).slice(0, 1));
+      const r = el.getBoundingClientRect();
+      if (scale > 4 && r.width * r.height > 400000) out.push(`${el.className} scale=${scale.toFixed(1)}`);
+    }
+    return out;
+  });
+  for (let i = 0; i < 3; i++) {
+    await page.locator(".rngi-btn").first().click({ force: true });
+    await page.waitForTimeout(700);
+    const b = await big();
+    assert.deepEqual(b, [], `an oversized scaled layer appeared: ${b.join(", ")}`);
+  }
   await ctx.close();
 });
 

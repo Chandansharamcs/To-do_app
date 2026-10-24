@@ -350,10 +350,13 @@ T("a lucky roll banks more on average than an unlucky one", () => {
 // ---- pace ------------------------------------------------------------------
 
 T("the base clock is the snappy one, not the original's 45s", () => {
-  assert.equal(M.RNGI_BASE_REVEAL_MS, 3000);
-  assert.equal(M.RNGI_BASE_COOLDOWN_MS, 4000);
+  // v68 shortened it: 3s reveal / 4s cooldown meant a roll every seven
+  // seconds, which is a lot of waiting for a game of chance. The numbers are
+  // pinned so a change to the feel is a decision, not a side effect.
+  assert.equal(M.RNGI_BASE_REVEAL_MS, 2200);
+  assert.equal(M.RNGI_BASE_COOLDOWN_MS, 2600);
   const s = M.rngiRollSettings([]);
-  assert.deepEqual(s, { revealMS: 3000, cooldownMS: 4000 });
+  assert.deepEqual(s, { revealMS: 2200, cooldownMS: 2600 });
 });
 
 T("timing upgrades take the best value, in any order", () => {
@@ -371,7 +374,7 @@ T("a fully upgraded clock is the fastest the ladder allows", () => {
 });
 
 T("an unknown id in a save does not change the pace", () => {
-  assert.deepEqual(M.rngiRollSettings(["not-a-thing"]), { revealMS: 3000, cooldownMS: 4000 });
+  assert.deepEqual(M.rngiRollSettings(["not-a-thing"]), { revealMS: 2200, cooldownMS: 2600 });
 });
 
 T("flywheel pays for a streak and stops at its cap", () => {
@@ -486,7 +489,7 @@ T("a waive skill removes the cooldown but not the reveal", () => {
   const s = blank({ skills: ["bounce"], armed: ["bounce"], charges: { bounce: 99 } });
   const r = M.rngiRoll(s, 1000, seeded(3));
   assert.equal(r.outcome.cooldownMS, 0);
-  assert.equal(r.state.revealUntil, 1000 + 3000, "the reveal still has to play");
+  assert.equal(r.state.revealUntil, 1000 + 2200, "the reveal still has to play");
   assert.equal(r.state.cooldownUntil, r.state.revealUntil, "no wait beyond the reveal");
 });
 

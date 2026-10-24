@@ -11065,7 +11065,7 @@ const RNGI_PRODUCT_ROWS = [
   ["offline-vault-1", "offline-cap", "Offline Vault I", 6000000, 216, 144, "offline-clock-1", "a bigger store, so a long absence is not wasted."],
   ["offline-vault-2", "offline-cap", "Offline Vault II", 11000000, 288, 216, "offline-vault-1", "bigger again."],
   ["offline-vault-3", "offline-cap", "Offline Vault III", 18000000, 360, 288, "offline-vault-2", "the largest store. a weekend away still fills it."],
-  ["auto-roll", "utility", "Auto-Roll", 1600000, 0, 0, "", "fires the next roll the moment the cooldown clears. off by default — an idle game that plays itself is a screensaver."],
+  ["auto-roll", "utility", "Auto-Roll", 0, 0, 0, "", "included in this build: fires the next roll as soon as the cooldown clears. off by default — an idle game that plays itself is a screensaver."],
   ["persistence-core", "utility", "Persistence Core", 4800000, 0, 0, "auto-roll", "auto-roll keeps running while you are on another tab of the app."],
   ["archive-lens", "utility", "Archive Lens", 120000, 0, 0, "", "keeps a longer history of your rolls on the stats page."],
 
@@ -11173,8 +11173,8 @@ const RNGI_SKILL_ROWS = [
 //     versions of all of those, or they make no sense inside one tool.
 // ============================================================
 
-const RNGI_BASE_REVEAL_MS = 3000;
-const RNGI_BASE_COOLDOWN_MS = 4000;
+const RNGI_BASE_REVEAL_MS = 2200;
+const RNGI_BASE_COOLDOWN_MS = 2600;
 const RNGI_BASE_OFFLINE_MS = 120000;     // one offline roll every two minutes
 const RNGI_BASE_OFFLINE_CAP = 144;       // ...up to this many while away
 const RNGI_PET_DROP_CHANCE = 0.004;      // 1 in 250 rolls
@@ -12286,8 +12286,12 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   // shop item, not a default: an idle game that plays itself by default is
   // a screensaver.
   useEffect(() => {
-    if (!state.autoRoll || !(state.owned || []).includes("auto-roll")) return;
-    if (Date.now() >= state.cooldownUntil) { const t = setTimeout(roll, 120); return () => clearTimeout(t); }
+    // v68: no longer gated behind a shop unlock. It was a 1.6M purchase that
+    // silently made the toggle do nothing, which reads as a broken button.
+    if (!state.autoRoll) return;
+    // v68: 120ms of dead air between rolls read as lag when the whole point
+    // of the switch is a continuous machine
+    if (Date.now() >= state.cooldownUntil) { const t = setTimeout(roll, 30); return () => clearTimeout(t); }
     const t = setTimeout(roll, state.cooldownUntil - Date.now() + 60);
     return () => clearTimeout(t);
   }, [state.autoRoll, state.owned, state.cooldownUntil, roll]);
@@ -12295,6 +12299,18 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   const mult = rngiWalletMult(state);
   const fly = rngiFlywheel(state.owned, state.streak);
   const result = outcome && outcome.result;
+
+  // v68: how far this roll landed from the next band up. A number is a number
+  // until you know what you missed by; RNG_BANDS runs high to low and is keyed
+  // on EP, so "next up" is the previous entry and the gap is in EP.
+  const nearMiss = (() => {
+    if (!result) return null;
+    const i = RNG_BANDS.findIndex((b) => b.key === result.band.key);
+    if (i <= 0) return null;
+    const up = RNG_BANDS[i - 1];
+    const gap = up.min - result.ep;
+    return gap > 0 ? { label: up.label, gap } : null;
+  })();
 
   // The reveal is choreographed, not faded in: digits land one at a time and
   // accelerating, then the badges arrive in groups, then the EP, then the
@@ -12380,6 +12396,11 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
             {rv.showSummary && (
               <>
                 <div className="rngi-scored rise">{rngGroup(result.ep)} EP scored</div>
+                {nearMiss && (
+                  <div className="rngi-near rise">
+                    {rngGroup(nearMiss.gap)} EP short of {nearMiss.label}
+                  </div>
+                )}
                 <div className="rngi-banked rise">
                   <span className="rngi-banked-v">+{rngiEP(outcome.banked)}</span>
                   <span className="rngi-banked-l">banked</span>
@@ -12458,7 +12479,7 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
           reveal {rngiDuration(settings.revealMS)} · cooldown {rngiDuration(settings.cooldownMS)}
           {fly.tier > 0 && <> · flywheel ×{fly.bonus.toFixed(2)}{fly.bonus < fly.cap ? ` (${fly.next} to next)` : ""}</>}
         </div>
-        {(state.owned || []).includes("auto-roll") && (
+        {(
           <button
             className={`rngi-auto ${state.autoRoll ? "on" : ""}`}
             onClick={() => { setState((s) => ({ ...s, autoRoll: !s.autoRoll })); sound.toggle(); }}
@@ -12615,6 +12636,21 @@ function RngiShop({ state, setState }) {
   const wear = (id) => { setState((s) => ({ ...s, wearing: s.wearing === id ? null : id })); sound.toggle(); };
   const skin = (id) => { setState((s) => ({ ...s, aura: s.aura === id ? null : id })); sound.toggle(); };
 
+  // v68: what this shelf is saving FOR. A wall of prices with no sense of the
+  // next rung is the least motivating possible shop: the useful question is
+  // "how much more", not "how much".
+  const nextBuy = useMemo(() => {
+    const buyable = items
+      .filter((it) => !it.owned && !it.locked && !it.free && it.price > 0)
+      .sort((a, b) => a.price - b.price);
+    if (!buyable.length) return null;
+    const it = buyable.find((x) => x.price > state.ep) || buyable[buyable.length - 1];
+    const frac = Math.max(0, Math.min(1, state.ep / it.price));
+    return { it, frac, left: Math.max(0, it.price - state.ep) };
+  }, [items, state.ep]);
+
+  const ownedCount = items.filter((it) => it.owned).length;
+
   return (
     <>
       <div className="rngi-shelves">
@@ -12637,6 +12673,22 @@ function RngiShop({ state, setState }) {
         </div>
       )}
 
+      {nextBuy && (
+        <div className={`rngi-next ${nextBuy.frac >= 1 ? "ready" : ""}`}>
+          <div className="rngi-next-top">
+            <span className="rngi-next-name">
+              {nextBuy.frac >= 1 ? "ready to buy" : "next up"} · {nextBuy.it.name}
+            </span>
+            <span className="rngi-next-left">
+              {nextBuy.frac >= 1 ? "affordable" : `${rngiEP(nextBuy.left)} to go`}
+            </span>
+          </div>
+          <div className="rngi-next-bar"><i style={{ width: `${(nextBuy.frac * 100).toFixed(1)}%` }} /></div>
+        </div>
+      )}
+      {ownedCount > 0 && shelf !== "skills" && (
+        <div className="rngi-owned-line">{ownedCount} owned on this shelf</div>
+      )}
       <div className="rngi-items">
         {items.length === 0 && <div className="rngi-empty">nothing on this shelf yet</div>}
         {items.map((it) => {
@@ -16770,11 +16822,17 @@ function TodoApp() {
           100% { transform: scale(26); opacity: 0; }
         }
 
-        /* whole-screen breath on level up */
+        /* whole-screen breath on level up.
+           v68: this used to SCALE to 26x. On a phone that asks the GPU for a
+           layer tens of thousands of pixels wide, and when allocation fails
+           the compositor paints the rect black -- which is the flash of black
+           seen mid-animation. It is an opacity breath now: same effect, one
+           layer the size of the screen. */
         .screen-pulse {
           position: fixed; inset: 0; z-index: 65; pointer-events: none;
           background: radial-gradient(circle at 50% 45%, var(--glow), transparent 62%);
           animation: screenPulse 1100ms ease-out forwards;
+          contain: paint;
         }
         @keyframes screenPulse {
           0%   { opacity: 0; }
@@ -19601,6 +19659,44 @@ function TodoApp() {
         .rngi-shelves button { flex: 1 1 28%; }
         .rngi-shelf-blurb { font-size: 8.5px; color: var(--muted); margin-bottom: 9px; }
         .rngi-shelf-blurb.dim { opacity: 0.7; margin-top: -6px; }
+
+        /* ---- v68: the next rung ---- */
+        .rngi-next {
+          border: 1px solid var(--border); border-radius: 9px;
+          padding: 8px 10px; margin-bottom: 9px;
+          background: rgba(94,234,212,0.03);
+        }
+        .rngi-next.ready {
+          border-color: var(--accent);
+          background: rgba(94,234,212,0.07);
+        }
+        .rngi-next-top {
+          display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.03em;
+        }
+        .rngi-next-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .rngi-next-left { color: var(--accent2); flex: none; font-variant-numeric: tabular-nums; }
+        .rngi-next.ready .rngi-next-left { color: var(--accent); }
+        .rngi-next-bar {
+          height: 3px; margin-top: 6px; border-radius: 2px;
+          background: var(--track); overflow: hidden;
+        }
+        .rngi-next-bar i {
+          display: block; height: 100%; border-radius: 2px;
+          background: var(--accent);
+          transition: width 320ms cubic-bezier(.22,1,.36,1);
+        }
+        .rngi-owned-line {
+          font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.06em;
+          color: var(--muted); opacity: 0.75; margin: 0 0 8px;
+        }
+
+        /* the near miss: quiet, and never a lie -- it states the real gap */
+        .rngi-near {
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.04em;
+          color: var(--muted); margin-top: 3px;
+          font-variant-numeric: tabular-nums;
+        }
         .rngi-items { display: flex; flex-direction: column; gap: 6px; }
         .rngi-item {
           padding: 9px 10px; border-radius: var(--r-chip);
