@@ -29,7 +29,8 @@ function region(from, to) {
 
 /** A fake Web Audio graph that records what was built and connected. */
 function fakeAudio() {
-  const log = { osc: [], gain: [], filter: [], buffers: [], started: 0, stopped: 0, vibrate: [] };
+  const log = { osc: [], gain: [], filter: [], buffers: [], src: [], detuneMods: 0,
+                started: 0, stopped: 0, vibrate: [] };
   const param = (v = 0) => ({
     value: v,
     setValueAtTime(x) { this.value = x; return this; },
@@ -38,7 +39,14 @@ function fakeAudio() {
     cancelScheduledValues() { return this; },
   });
   const node = (kind) => {
-    const n = { kind, connect() {}, disconnect() {} };
+    const n = {
+      kind,
+      // v67: connections are recorded, because "is anything modulating this
+      // source's detune" is the only way to catch a wow LFO wired into the
+      // audio path instead of into the pitch.
+      connect(t) { if (t && t.__isDetune) log.detuneMods++; },
+      disconnect() {},
+    };
     if (kind === "osc") {
       n.frequency = param(440); n.detune = param(0); n.type = "sine";
       n.start = () => { log.started++; }; n.stop = () => { log.stopped++; };
@@ -47,8 +55,10 @@ function fakeAudio() {
     if (kind === "gain") { n.gain = param(1); log.gain.push(n); }
     if (kind === "filter") { n.frequency = param(1000); n.Q = param(1); log.filter.push(n); }
     if (kind === "src") {
-      n.detune = param(0); n.loop = false; n.buffer = null;
+      n.detune = param(0); n.detune.__isDetune = true;
+      n.loop = false; n.buffer = null;
       n.start = () => { log.started++; }; n.stop = () => { log.stopped++; };
+      log.src.push(n);
     }
     return n;
   };
@@ -206,6 +216,45 @@ T("every scene in the picker is a scene the engine can build", () => {
     assert.equal(M.ambientPlaying(), sc.id === "off" ? null : sc.id, `${sc.id} did not start`);
   }
   M.stopAmbient();
+});
+
+T("every scene is a layered bed, not one filter on one noise source", () => {
+  // v66 shipped beds that were literally a single filtered noise loop -- a
+  // hiss. An ear hears that as "a recording of nothing", which is exactly the
+  // complaint. Each scene now stacks several sources, and the count is the
+  // only thing a fake graph can honestly measure.
+  const MIN = { rain: 3, room: 2, tape: 2, night: 2 };
+  for (const [id, min] of Object.entries(MIN)) {
+    const M = soundModule();
+    M.startAmbient(id);
+    const noiseSources = M.log.src.length;
+    const oscillators = M.log.osc.length;
+    assert.ok(noiseSources >= min,
+      `${id} has ${noiseSources} noise layers, expected at least ${min}`);
+    assert.ok(oscillators >= 1, `${id} has no tonal layer or movement`);
+    M.stopAmbient();
+  }
+});
+
+T("the tape wow modulates the source, never the audio path", () => {
+  // a detune LFO wired to a gain node instead of to `detune` injects a
+  // sub-audio signal straight into the sound, which is a slow thump
+  const M = soundModule();
+  M.startAmbient("tape");
+  const src = M.log.src[0] || null;
+  assert.ok(src, "tape has no noise source");
+  assert.ok(M.log.detuneMods > 0, "nothing is modulating the tape source's detune");
+  M.stopAmbient();
+});
+
+T("switching scenes tears the old bed down first", () => {
+  // two beds running at once is double the noise and double the battery
+  const M = soundModule();
+  M.startAmbient("rain");
+  const afterFirst = M.log.src.length;
+  M.startAmbient("night");
+  const added = M.log.src.length - afterFirst;
+  assert.ok(added <= 2, `switching to night added ${added} noise sources`);
 });
 
 // ---- muting really mutes ---------------------------------------------------

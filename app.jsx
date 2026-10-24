@@ -1800,59 +1800,131 @@ function startAmbient(sceneId) {
 
   const { ctx } = buses;
   const nodes = [];
-  const src = ctx.createBufferSource();
-  src.buffer = ambientNoiseBuffer(ctx);
-  src.loop = true;
-  nodes.push(src);
+  const now = ctx.currentTime;
 
-  const filt = ctx.createBiquadFilter();
-  const level = ctx.createGain();
-  level.gain.value = 0;
-  nodes.push(filt, level);
+  // v67: every scene is now a bed of LAYERS rather than one filter on one
+  // noise source. That is the whole difference between "hiss" and "rain":
+  // a single band of noise has no body and no movement, and the ear hears a
+  // recording of nothing. Each helper below adds one layer and returns its
+  // own gain so it can fade in with the rest.
+  const bed = ctx.createGain();
+  bed.gain.value = 0;
+  bed.connect(buses.ambient);
+  nodes.push(bed);
+
+  /** Filtered noise: the body of every scene. */
+  const noise = ({ type = "bandpass", freq = 1000, q = 0.7, gain = 0.2, lfo = 0, depth = 0, rate = 0.08 }) => {
+    const src = ctx.createBufferSource();
+    src.buffer = ambientNoiseBuffer(ctx);
+    src.loop = true;
+    const filt = ctx.createBiquadFilter();
+    filt.type = type;
+    filt.frequency.value = freq;
+    filt.Q.value = q;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(filt); filt.connect(g); g.connect(bed);
+    src.start(now);
+    nodes.push(src, filt, g);
+    if (lfo) {
+      // a slow wander on the filter: this is what stops a bed sounding like
+      // a loop. rate is in Hz, depth in Hz of filter travel.
+      const o = ctx.createOscillator();
+      const og = ctx.createGain();
+      o.frequency.value = lfo;
+      og.gain.value = depth;
+      o.connect(og); og.connect(filt.frequency);
+      o.start(now);
+      nodes.push(o, og);
+    }
+    // the source comes back too: the tape scene has to reach its detune
+    return { gain: g, src, filt };
+  };
+
+  /** A steady tone: hum, drone, the floor under the noise. */
+  const tone = ({ freq = 60, type = "sine", gain = 0.05, detune = 0, wobble = 0, wobbleDepth = 0 }) => {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    if (detune) o.detune.value = detune;
+    g.gain.value = gain;
+    o.connect(g); g.connect(bed);
+    o.start(now);
+    nodes.push(o, g);
+    if (wobble) {
+      const l = ctx.createOscillator();
+      const lg = ctx.createGain();
+      l.frequency.value = wobble;
+      lg.gain.value = wobbleDepth;
+      l.connect(lg); lg.connect(g.gain);
+      l.start(now);
+      nodes.push(l, lg);
+    }
+    return g;
+  };
+
+  /** Amplitude movement for a layer: what makes rain surge instead of sit. */
+  const swell = (target, rate, depth) => {
+    const l = ctx.createOscillator();
+    const lg = ctx.createGain();
+    l.frequency.value = rate;
+    lg.gain.value = depth;
+    l.connect(lg); lg.connect(target.gain);
+    l.start(now);
+    nodes.push(l, lg);
+  };
 
   if (sceneId === "rain") {
-    filt.type = "bandpass"; filt.frequency.value = 1400; filt.Q.value = 0.5;
-    level.gain.setTargetAtTime(0.55, ctx.currentTime, 1.5);
+    // three bands: the hiss of drops hitting, the body of the fall, and the
+    // low wash of water on a surface. Swells are deliberately out of step so
+    // they never line up into an audible pulse.
+    const hiss = noise({ type: "highpass", freq: 2600, q: 0.5, gain: 0.11, lfo: 0.07, depth: 400 });
+    const body = noise({ type: "bandpass", freq: 900, q: 0.4, gain: 0.16, lfo: 0.05, depth: 180 });
+    noise({ type: "lowpass", freq: 260, q: 0.6, gain: 0.1, lfo: 0.03, depth: 60 });
+    swell(hiss.gain, 0.11, 0.03);
+    swell(body.gain, 0.037, 0.035);
   } else if (sceneId === "room") {
-    filt.type = "lowpass"; filt.frequency.value = 320; filt.Q.value = 0.7;
-    level.gain.setTargetAtTime(0.75, ctx.currentTime, 1.5);
-    const hum = ctx.createOscillator();
-    const humG = ctx.createGain();
-    hum.type = "sine"; hum.frequency.value = 58;
-    humG.gain.value = 0.05;
-    hum.connect(humG); humG.connect(buses.ambient); hum.start();
-    nodes.push(hum, humG);
+    // a fan, and the mains hum of the rack it sits in: 50Hz plus its second
+    // and third harmonics, because a single sine reads as a test tone
+    noise({ type: "bandpass", freq: 620, q: 0.35, gain: 0.1, lfo: 0.04, depth: 120 });
+    const air = noise({ type: "lowpass", freq: 1800, q: 0.5, gain: 0.05, lfo: 0.06, depth: 200 });
+    tone({ freq: 50, gain: 0.035 });
+    tone({ freq: 100, gain: 0.018 });
+    tone({ freq: 150, gain: 0.008 });
+    swell(air.gain, 0.09, 0.018);
   } else if (sceneId === "tape") {
-    filt.type = "lowpass"; filt.frequency.value = 2600; filt.Q.value = 0.4;
-    level.gain.setTargetAtTime(0.4, ctx.currentTime, 1.5);
-    // wow: a very slow detune of the loop, which is what makes tape sound
-    // like tape rather than like noise
-    const lfo = ctx.createOscillator();
-    const lfoG = ctx.createGain();
-    lfo.frequency.value = 0.22; lfoG.gain.value = 14;
-    lfo.connect(lfoG); lfoG.connect(src.detune); lfo.start();
-    nodes.push(lfo, lfoG);
+    // hiss with the top rolled off, plus wow (slow) and flutter (fast and
+    // very shallow). Both act on the source detune, which is what actually
+    // moves the pitch the way a worn capstan does.
+    const tapeLayer = noise({ type: "lowpass", freq: 3400, q: 0.4, gain: 0.14, lfo: 0.02, depth: 300 });
+    noise({ type: "highpass", freq: 5200, q: 0.5, gain: 0.015 });
+    tone({ freq: 62, gain: 0.02, wobble: 0.13, wobbleDepth: 0.012 });
+    // wow acts on the SOURCE's detune, in cents. Connecting it to a gain node
+    // instead would have injected a 0.27Hz signal into the audio path as a
+    // slow DC thump -- audible, and not tape.
+    const wow = ctx.createOscillator();
+    const wowG = ctx.createGain();
+    wow.frequency.value = 0.27;
+    wowG.gain.value = 11;                     // cents
+    wow.connect(wowG);
+    wowG.connect(tapeLayer.src.detune);
+    wow.start(now);
+    nodes.push(wow, wowG);
   } else {
-    filt.type = "lowpass"; filt.frequency.value = 180; filt.Q.value = 0.8;
-    level.gain.setTargetAtTime(0.5, ctx.currentTime, 2);
-    const drone = ctx.createOscillator();
-    const droneG = ctx.createGain();
-    drone.type = "sine"; drone.frequency.value = 72;
-    droneG.gain.value = 0.07;
-    drone.connect(droneG); droneG.connect(buses.ambient); drone.start();
-    nodes.push(drone, droneG);
+    // night: a deep drone with a slow beat between two detuned tones, and
+    // almost nothing else -- the quietest scene, which is the point
+    noise({ type: "lowpass", freq: 220, q: 0.6, gain: 0.07, lfo: 0.02, depth: 30 });
+    // a whisper of air above the drone: without it the scene is a hum alone,
+    // which reads as a fault rather than as quiet
+    noise({ type: "bandpass", freq: 760, q: 0.9, gain: 0.012, lfo: 0.015, depth: 90 });
+    tone({ freq: 55, gain: 0.045 });
+    tone({ freq: 55, gain: 0.03, detune: 7 });   // the beat
+    tone({ freq: 82.5, gain: 0.012 });
   }
 
-  // a slow sweep on the filter so the bed breathes instead of sitting still
-  const sweep = ctx.createOscillator();
-  const sweepG = ctx.createGain();
-  sweep.frequency.value = 0.05;
-  sweepG.gain.value = sceneId === "rain" ? 320 : 60;
-  sweep.connect(sweepG); sweepG.connect(filt.frequency); sweep.start();
-  nodes.push(sweep, sweepG);
-
-  src.connect(filt); filt.connect(level); level.connect(buses.ambient);
-  src.start();
+  // one slow fade for the whole bed, so a swap never clicks
+  bed.gain.setTargetAtTime(1, now, 0.9);
   __ambient = { id: sceneId, nodes };
 }
 

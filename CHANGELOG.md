@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v67`** | 2026-10-21 | Ambient beds rebuilt as layers instead of one filtered hiss |
 | **`v66`** | 2026-10-21 | Sound actually plays on the first tap; a new palette; a nav bar that moves |
 | **`v65`** | 2026-10-21 | The level-up notification actually goes away |
 | **`v64`** | 2026-10-21 | Undo, ctrl+k, notes found, sparkline, and level-up as a notification |
@@ -89,6 +90,43 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v67 ───────────────────────────────────────────────────────────┐
+│  2026-10-21 · the ambient scenes, which were one filter deep      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+v66 fixed *whether* sound plays. It did not fix what the ambient beds
+**were**, and they were thin: one looping noise buffer through one filter,
+plus at most one sine. That is a hiss. An ear reads a single band of
+unmoving noise as a recording of nothing.
+
+Each scene is now a stack of layers with slow movement:
+
+| scene | layers |
+|---|---|
+| rain | bright drop hiss + band-passed fall + low wash, swells out of step |
+| server room | fan body + air, plus 50/100/150Hz mains hum |
+| tape | rolled-off hiss + tape top, wow on the source detune, low flutter |
+| night | deep drone, a 7-cent beat between two 55Hz tones, quiet air |
+
+All gains are conservative (0.07-0.16 per layer into a 0.5 bus), so no scene
+clips, and every layer fades in together over ~1s so a swap never clicks.
+
+**A wiring mistake caught while writing it:** the first version of the tape
+wow connected its LFO to a gain node instead of to the source's `detune`.
+That injects a 0.27Hz signal straight into the audio path — a slow DC thump,
+audible, and not tape.
+
+**Verified:** 676 unit (+3), 105 regress, 11 gate, 0 failed. Measured in a
+real browser: rain 3 noise layers, room 2, tape 2, night 2, off none.
+
+**Still true:** these are synthesised, not recorded. Real ambience needs audio
+files, which cost megabytes against a 1MB bundle and carry a licence question.
+Send files or name a source and they can be layered on top.
 
 ---
 
