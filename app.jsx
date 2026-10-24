@@ -4140,6 +4140,7 @@ function VaultView() {
     <div className="task-list vault-scroll">
       <CloudBackupRow />
       <AppUpdateRow />
+      <LastCrashRow />
       <SoundRow />
       <StoreRow />
       <pre className="cap-note">
@@ -5989,12 +5990,25 @@ function sortQuests(list, dayStr) {
   });
 }
 
+/** A random element, clamped.
+ *
+ *  v69: the picks here used `list[Math.floor(Math.random() * list.length)]`
+ *  and trusted the ceiling. Any drift -- a mocked RNG, a future source of
+ *  randomness, a bad length -- yields `undefined`, and the next property
+ *  access throws during render, which is a blank screen.
+ */
+function pickRandom(list) {
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const i = Math.floor(Math.random() * list.length);
+  return list[Math.min(list.length - 1, Math.max(0, i))];
+}
+
 /** One random task per difficulty. Tiers with an empty pool simply draw nothing. */
 function drawDaily(inventory, day) {
   const picks = {};
   for (const d of DIFFICULTIES) {
     const pool = (inventory || []).filter((t) => t.diff === d.key);
-    picks[d.key] = pool.length ? pool[Math.floor(Math.random() * pool.length)].id : null;
+    picks[d.key] = pool.length ? pickRandom(pool).id : null;
   }
   return { day, picks, done: [] };
 }
@@ -6153,7 +6167,7 @@ function DailyView({ inventory, setInventory, daily, setDaily, routines, onRewar
       const pool = inventory.filter(
         (t) => t.id !== itemId && t.diff === slotKey && !taken.includes(t.id) && !done.includes(t.id)
       );
-      if (pool.length) picks[slotKey] = pool[Math.floor(Math.random() * pool.length)].id;
+      if (pool.length) picks[slotKey] = pickRandom(pool).id;
       else delete picks[slotKey];
       return { ...d, picks };
     });
@@ -8704,6 +8718,55 @@ function AppUpdateRow() {
               reload app code
             </button>
           )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** What the recorder caught, if anything.
+ *
+ *  v69: shown only when there is something to show, so it costs nothing on a
+ *  healthy phone. If the screen ever goes black again, this row is the report
+ *  -- the message, where it was thrown from, and the last roll stage reached.
+ */
+function LastCrashRow() {
+  const [list, setList] = useState(() => lastErrors.read());
+  const [stage, setStage] = useState(() => lastStage());
+  const [copied, setCopied] = useState(false);
+
+  // Quiet unless something actually went wrong: an idle stage with no
+  // recorded error is a healthy phone.
+  if (!list.length && (!stage || stage.name === "idle")) return null;
+  const top = list[0];
+  const when = top && top.at ? new Date(top.at) : null;
+  const text = [
+    top ? `${top.message}  [${top.where || "unknown"}]` : "no error recorded",
+    stage ? `last stage: ${stage.name}` : "last stage: unknown",
+    when ? `at: ${when.toISOString()}` : "",
+  ].filter(Boolean).join("\n");
+
+  return (
+    <>
+      <div className="section-header"><span>LAST-CRASH</span></div>
+      <div className="note-card update-card">
+        <div className="note-head">
+          <span className="note-prompt">~/crash</span>
+          <span className="note-when">{stage ? stage.name : "no stage"}</span>
+        </div>
+        <pre className="note-body">{text}</pre>
+        <div className="note-actions">
+          <button
+            className="note-btn"
+            onClick={() => {
+              sound.click();
+              try { navigator.clipboard.writeText(text); setCopied(true); } catch { /* denied */ }
+            }}
+          >{copied ? "copied" : "copy"}</button>
+          <button
+            className="note-btn danger"
+            onClick={() => { sound.click(); lastErrors.clear(); setList([]); setStage(null); setCopied(false); }}
+          >clear</button>
         </div>
       </div>
     </>
@@ -12103,7 +12166,7 @@ function RngiIdleDigits({ aura }) {
   useEffect(() => {
     if (reduced) return;
     let alive = true;
-    const spin = () => setRow(Array.from({ length: 7 }, () => glyphs[Math.floor(Math.random() * glyphs.length)]));
+    const spin = () => setRow(Array.from({ length: 7 }, () => pickRandom(glyphs)));
     const t = setInterval(() => { if (!document.hidden && alive) spin(); }, 110);
     spin();
     return () => { alive = false; clearInterval(t); };
@@ -12165,7 +12228,7 @@ function RngiDigits({ value, timeline, elapsed, aura, tier }) {
     if (!st.spinning || reduced) return;
     const every = Math.max(40, timeline ? timeline.scrambleMS : 100);
     const t = setInterval(
-      () => setScramble(Array.from({ length: 8 }, () => glyphs[Math.floor(Math.random() * glyphs.length)])),
+      () => setScramble(Array.from({ length: 8 }, () => pickRandom(glyphs))),
       every
     );
     return () => clearInterval(t);
@@ -12219,7 +12282,7 @@ function RngiSlotPanel({ slot, index, kept, elapsed, revealing, reduced }) {
   useEffect(() => {
     if (landed || reduced) return;
     const t = setInterval(
-      () => setScramble(Array.from({ length: 6 }, () => RNGI_SCRAMBLE_GLYPHS[Math.floor(Math.random() * 10)]).join("")),
+      () => setScramble(Array.from({ length: 6 }, () => pickRandom(RNGI_SCRAMBLE_GLYPHS)).join("")),
       90
     );
     return () => clearInterval(t);
@@ -12269,8 +12332,11 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   const roll = useCallback(() => {
     const at = Date.now();
     if (at < state.cooldownUntil) { sound.error(); return; }
+    markStage("roll:start");
     const { state: next, outcome: o } = rngiRoll(state, at);
+    markStage("roll:scored");
     setState({ ...next, charges: rngiChargeTick(next, o.fx.overdrive) });
+    markStage("roll:state-set");
     setOutcome(o);
     // the sweep lasts exactly as long as the reveal, and the chord that ends
     // it is pitched by rarity -- a mythic should sound like one before you
@@ -12329,6 +12395,11 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
   const tierIdx = result
     ? Math.max(0, ["trash","common","uncommon","rare","epic","anomaly","mythic"].indexOf(result.band.key) - 1)
     : 0;
+  // A roll that finishes leaves "idle" behind, so the LAST-CRASH row stays
+  // hidden on a healthy phone and only appears when a roll stopped part-way,
+  // or when something was actually recorded.
+  useEffect(() => { if (rv.done) markStage("idle"); }, [rv.done]);
+
   const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const claim = () => {
@@ -18301,6 +18372,35 @@ function TodoApp() {
           max-width: 100%;
         }
 
+        /* v69: the crash panel. Replaces a blank screen. */
+        .crash {
+          max-width: 520px; margin: 12vh auto; padding: 20px 18px;
+          border: 1px solid var(--danger); border-radius: 12px;
+          background: var(--panel); text-align: left;
+        }
+        .crash-kicker {
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.3em;
+          text-transform: uppercase; color: var(--danger);
+        }
+        .crash-title { font-size: 14px; color: var(--text); margin: 6px 0 12px; }
+        .crash-msg {
+          font-family: var(--font-mono); font-size: 10px; line-height: 1.5;
+          color: var(--accent2); background: var(--track);
+          padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+          margin: 0 0 12px;
+        }
+        .crash-hint {
+          font-family: var(--font-mono); font-size: 9px; line-height: 1.6;
+          color: var(--muted); margin-bottom: 14px;
+        }
+        .crash-actions { display: flex; gap: 8px; }
+        .crash-btn {
+          flex: 1; padding: 9px; border-radius: 8px; cursor: pointer;
+          border: 1px solid var(--accent); background: transparent;
+          color: var(--accent); font-family: var(--font-mono); font-size: 10px;
+        }
+        .crash-btn.ghost { border-color: var(--border); color: var(--muted); }
+
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {
           color: var(--accent2);
@@ -21327,5 +21427,146 @@ const TAB_DEFS_BASE = [
   ["pet", "pet"],
 ];
 
+const LAST_ERROR_KEY = "tasksh.lasterror.v1";
+const STAGE_KEY = "tasksh.stage.v1";
+
+/** Keeps the last few failures, newest first, in localStorage.
+ *
+ *  v69: the point is the NEXT black screen. Every write here is cheap and
+ *  wrapped, and nothing reads it to make a decision -- it exists so that when
+ *  the screen goes dark on his phone, the reload can come back with the stage
+ *  it died on and the message it died with, instead of "it happened again".
+ */
+const lastErrors = {
+  read() {
+    try {
+      const v = JSON.parse(localStorage.getItem(LAST_ERROR_KEY) || "null");
+      if (!v) return [];
+      return Array.isArray(v) ? v : [v];
+    } catch { return []; }
+  },
+  add(message, where) {
+    try {
+      const list = lastErrors.read();
+      list.unshift({ at: Date.now(), message: String(message || "unknown"), where: String(where || "").slice(0, 300) });
+      localStorage.setItem(LAST_ERROR_KEY, JSON.stringify(list.slice(0, 5)));
+    } catch { /* storage full or denied: the visible message still matters more */ }
+  },
+  clear() {
+    try { localStorage.removeItem(LAST_ERROR_KEY); localStorage.removeItem(STAGE_KEY); } catch { /* nothing to clear */ }
+  },
+};
+
+/** Records how far a roll got. */
+function markStage(name) {
+  try { localStorage.setItem(STAGE_KEY, JSON.stringify({ name, at: Date.now() })); }
+  catch { /* see lastErrors.add */ }
+}
+function lastStage() {
+  try { return JSON.parse(localStorage.getItem(STAGE_KEY) || "null"); }
+  catch { return null; }
+}
+
+// Errors thrown outside a render -- an event handler, a timer, a promise --
+// never reach the boundary, and on the phone they are invisible. They are
+// recorded here so the next report carries the actual text.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("error", (e) => {
+    lastErrors.add((e && e.error && e.error.message) || (e && e.message) || "window error",
+                   "window:error" + (e && e.filename ? " " + String(e.filename).split("/").pop() + ":" + e.lineno : ""));
+  }, true);
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e && e.reason;
+    lastErrors.add((r && r.message) || String(r || "unhandled rejection"), "unhandledrejection");
+  });
+}
+
+/** Anything a render can throw lands here instead of taking the app with it.
+ *
+ *  v69: without this, a single throw anywhere in the tree unmounts React and
+ *  leaves the page showing the bare background -- which is what "sometimes a
+ *  black screen appears" actually was. A crash should be legible and
+ *  recoverable, not a black rectangle.
+ *
+ *  The message is also written to localStorage so it survives the reload and
+ *  can be read back out of the vault.
+ */
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    lastErrors.add(
+      (error && error.message) || error,
+      "render" + (info && info.componentStack ? " " + String(info.componentStack).trim().split("\n")[0] : "")
+    );
+    markStage("crash-panel");
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    const msg = String((this.state.error && this.state.error.message) || this.state.error);
+    // Inline, not just classed. The app's whole stylesheet is rendered from
+    // inside TodoApp's subtree -- when that crashes, its <style> unmounts with
+    // it, and a class-only panel came back as unstyled text jammed against the
+    // left edge of a black page (screenshot, v69). The fallback screen has to
+    // survive the loss of the stylesheet, so it carries its own styling.
+    const S = {
+      wrap: {
+        maxWidth: 520, margin: "12vh auto", padding: "20px 18px",
+        border: "1px solid #F0576B", borderRadius: 12, background: "#14171C",
+        textAlign: "left", color: "#E7EAEE",
+        fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: 12, lineHeight: 1.5,
+      },
+      kicker: { fontSize: 9, letterSpacing: "0.3em", textTransform: "uppercase", color: "#F0576B" },
+      title: { fontSize: 14, margin: "6px 0 12px", color: "#E7EAEE", fontFamily: "Inter, system-ui, sans-serif" },
+      msg: {
+        fontSize: 10, lineHeight: 1.5, color: "#F5A623", background: "#0B0D10",
+        padding: 10, borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word",
+        margin: "0 0 12px", border: "1px solid #2A2F38",
+      },
+      hint: { fontSize: 10, color: "#9AA3AE", margin: "0 0 14px" },
+      actions: { display: "flex", gap: 8 },
+      btn: {
+        flex: 1, padding: "10px", borderRadius: 8, cursor: "pointer",
+        border: "1px solid #5EEAD4", background: "transparent", color: "#5EEAD4",
+        fontFamily: "inherit", fontSize: 11, minHeight: 44,
+      },
+      btnGhost: {
+        flex: 1, padding: "10px", borderRadius: 8, cursor: "pointer",
+        border: "1px solid #2A2F38", background: "transparent", color: "#9AA3AE",
+        fontFamily: "inherit", fontSize: 11, minHeight: 44,
+      },
+    };
+    return (
+      <div className="crash" style={S.wrap}>
+        <div className="crash-kicker" style={S.kicker}>something broke</div>
+        <div className="crash-title" style={S.title}>the app stopped drawing this screen</div>
+        <pre className="crash-msg" style={S.msg}>{msg}</pre>
+        <div className="crash-hint" style={S.hint}>
+          your data is safe — it is in local storage and in your backups. this
+          message is saved so it can be reported.
+        </div>
+        <div className="crash-actions" style={S.actions}>
+          <button className="crash-btn" style={S.btn} onClick={() => { location.reload(); }}>reload</button>
+          <button
+            className="crash-btn ghost"
+            style={S.btnGhost}
+            onClick={() => {
+              try { navigator.clipboard.writeText(msg); } catch { /* denied */ }
+            }}
+          >copy error</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(React.createElement(TodoApp));
+root.render(
+  React.createElement(AppErrorBoundary, null, React.createElement(TodoApp))
+);

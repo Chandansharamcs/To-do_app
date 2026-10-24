@@ -27,7 +27,7 @@ function slice(n){
     if(c==="}"){dep--;if(seen&&dep===0)return SRC.slice(m.index,SRC.indexOf("\n",i));}}
 }
 const M=new Function("getISTDateString",
-  [slice("questDayString"),slice("drawDaily"),slice("migrateTasksToInventory"),
+  [slice("questDayString"),slice("pickRandom"),slice("drawDaily"),slice("migrateTasksToInventory"),
    "const DIFFICULTIES=[{key:'easy'},{key:'mid'},{key:'hard'}];",
    "return {questDayString,drawDaily,migrateTasksToInventory};"].join("\n\n")
 )((o)=> o===0?"TODAY":"YESTERDAY");

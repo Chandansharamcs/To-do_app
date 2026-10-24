@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v69`** | 2026-10-24 | A crash shows its message instead of a black screen |
 | **`v68`** | 2026-10-21 | rngdle: auto-roll unlocked, faster pace, a shop that shows the next rung |
 | **`v67`** | 2026-10-21 | Ambient beds rebuilt as layers instead of one filtered hiss |
 | **`v66`** | 2026-10-21 | Sound actually plays on the first tap; a new palette; a nav bar that moves |
@@ -91,6 +92,110 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v69 ───────────────────────────────────────────────────────────┐
+│  2026-10-24 · the black screen gets a face                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### There was no error boundary anywhere
+
+`v68` guessed at the black screen and guessed wrong. The animation theory is
+dead: `.screen-pulse` is an opacity breath, `burstOut`'s `scale(26)` lands on a
+ten-pixel dot, and there is no blur or backdrop filter left in the file.
+
+What the file did have was **zero** of `ErrorBoundary`, `getDerivedStateFromError`,
+`componentDidCatch`. A throw during a render unmounts React, and what is left on
+screen is the page background -- which on this theme is near-black. "Sometimes a
+black screen appears when I click roll" is what that looks like from the
+outside.
+
+So the app now has one. `AppErrorBoundary` wraps `TodoApp`, catches render
+throws, and draws a panel: the error message, a line saying the data is in local
+storage and in the backups, a **reload** button, and **copy error**. The message
+is also written to `tasksh.lasterror.v1` so it survives the reload and can be
+reported afterwards.
+
+Verified by forcing a render throw: the panel renders with the exact message,
+`root` is not empty, and the stored error is present. Without the boundary the
+same throw leaves an empty root.
+
+**The first version of the panel was unstyled.** The app's entire stylesheet is
+rendered from inside `TodoApp`'s subtree, so the crash that unmounts the tree
+also unmounts the `<style>` block -- and the screenshot showed bare text jammed
+against the left edge of a black page. A fallback screen that depends on the
+thing that just failed is not a fallback. Every part of the panel now carries
+inline styling: literal colours, the terminal mono stack, a wrapping `<pre>`,
+and 44 px buttons. Measured on the rendered panel: border `rgb(240,87,107)`,
+`JetBrains Mono`, button height 44 px.
+
+### A black screen that leaves evidence
+
+The boundary catches render throws, but it cannot catch an error thrown in an
+event handler, a timer or a promise -- and it cannot catch the process dying at
+all. So the failure itself now leaves a trail:
+
+- `window` `error` and `unhandledrejection` are both recorded, with the file
+  and line when the browser gives one.
+- `lastErrors` keeps the newest five in `tasksh.lasterror.v1`, written through
+  `try`/`catch` so a full or denied storage cannot itself become the crash.
+- `markStage()` walks `roll:start` → `roll:scored` → `roll:state-set` → `idle`
+  in `tasksh.stage.v1`, so a roll that stops half-way stops on a named step.
+- Vault grows a **LAST-CRASH** row that shows the message, where it was thrown
+  from and the last stage reached, with **copy** and **clear**.
+
+The row hides itself when there is nothing to report and the stage is `idle`,
+so a healthy phone never sees it. Verified both directions in a browser: a
+normal roll wrote `roll:state-set` and then `idle` with no error recorded; a
+forced render throw produced the panel, and after the reload the vault row
+read back the message, `[render at …/bundle.js:26]`, `last stage: crash-panel`.
+
+### The roll engine was fuzzed, and it is not the culprit
+
+342,880 values scored through the band/EP path -- every seventh step across the
+full 0-1,000,000 range, plus 200k random numbers and the exact edges. No throws.
+The rules are sound; a bad number is not what he is hitting.
+
+The fuzz did find a latent one, though. The daily pick and the slot repair both
+indexed `list[Math.floor(Math.random() * list.length)]` and trusted the ceiling.
+`Math.random()` cannot return 1 in a browser, but the shape is a render-throw
+waiting for the day something else supplies the number. Both now go through
+`pickRandom(list)`, which clamps the index and returns `undefined` for an empty
+list instead of throwing. The three scramble pickers in the roll stage use it
+too.
+
+### The service worker theory, and what it cost
+
+The first draft of this release also added an unconditional reload on
+`controllerchange`. `cloud.spec.mjs` caught it immediately: the app already
+routes updates through `decideUpdateAction`, which reloads only when the tab is
+hidden and nothing is being typed, and otherwise raises the update bar. An
+unconditional reload would have thrown away half-typed text on every deploy --
+exactly the reload loop the `hadController` guard exists to prevent. It was
+reverted, and `boundary.test.mjs` now pins the guarded behaviour so it cannot
+be re-introduced.
+
+The worker-mismatch path stays *suspected*, not confirmed: it is handled by the
+existing update flow, and nothing in it was changed.
+
+### Tests
+
+New `boundary.test.mjs`, 12 assertions: boundary exists, the whole app is inside
+it, the crash panel has every part it advertises, the last error is persisted,
+`pickRandom` clamps both ends, no unclamped index arithmetic survives anywhere
+outside it, the daily draw and slot repair both use it, the panel styles itself
+without the app stylesheet, non-render failures are recorded through a guarded
+ring, a roll marks every stage it reaches, the crash row is mounted in the vault
+and hides itself when idle, and no worker event reloads the page unguarded.
+
+`daily.test.mjs`'s slice was widened to include `pickRandom` -- the harness
+extracts functions out of `app.jsx`, so a new dependency of `drawDaily` has to
+be named in the slice too.
+
+**688 unit / 105 regress / 11 gate / 8 cloud / 77 tools, 0 failed.**
 
 ---
 
