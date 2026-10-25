@@ -1621,6 +1621,36 @@ await test("the roll stage survives repeated rolls with no giant scaled layer", 
   await ctx.close();
 });
 
+await test("a luck draw that wins does not take the screen down", async () => {
+  // v70: owning one luck item made about one press in eight keep a LUCK draw,
+  // and the roll screen looked that winner up in the skill table by id. There
+  // is no skill called "luck", so the .name read threw out of render and the
+  // screen went. Twelve presses with the top luck tier owned, which makes a
+  // luck draw certain, is enough to hit it every time on the old code.
+  const { ctx, page, errors } = await phone({
+    "tasksh.rngdle.v2": JSON.stringify({
+      owned: ["fourleaf-5"], wearing: null, aura: null, wallet: 0, best: 0, rolls: 0,
+      streak: 0, cooldownUntil: 0, lastRollAt: 0, autoRoll: false, charges: 0,
+      equipped: [], pets: [], badges: [],
+    }),
+  });
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await gotoTools(page, "rngdle");
+  let luckLabels = 0, crashes = 0;
+  for (let i = 0; i < 12; i++) {
+    await page.locator(".rngi-btn.generate").click({ force: true }).catch(() => {});
+    await page.waitForTimeout(2900);
+    if (await page.locator(".crash").count()) { crashes++; break; }
+    const line = await page.evaluate(() =>
+      (document.querySelector(".rngi-draws") || {}).textContent || "");
+    if (/luck draw/.test(line)) luckLabels++;
+  }
+  assert.equal(crashes, 0, "the crash panel replaced the roll screen");
+  assert.ok(luckLabels > 0, "no luck draw was kept, so this test proved nothing");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 console.log(results.join("\n"));
 console.log(`  tools.spec.mjs — ${passed} passed`);
 await browser.close();

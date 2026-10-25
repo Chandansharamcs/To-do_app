@@ -716,7 +716,7 @@ function petContextSummary(ctx) {
   const { pet, level, doneToday, totalToday, streak, routineNow, nextRoutine } = ctx;
   const mood = petMood(pet);
   return [
-    `pet: ${pet.name}, ${PET_FORMS[pet.stage].name} form, mood ${mood.label}`,
+    `pet: ${pet.name}, ${(PET_FORMS[pet.stage] || PET_FORMS[0]).name} form, mood ${mood.label}`,
     `stats: happiness ${pet.happiness}, energy ${pet.energy}, friendship ${pet.friendship} (${petBond(pet.friendship)}), intelligence ${pet.intelligence}`,
     `owner: level ${level}, ${doneToday}/${totalToday} habits done today, best streak ${streak}`,
     routineNow ? `right now: ${routineNow}` : "no routine running",
@@ -11495,6 +11495,40 @@ function rngiLuck(owned = []) {  let pct = 0;
   return pct;
 }
 
+/** The label for a draw that beat the visible slots.
+ *
+ *  v70: `rngiRunDraws` sets `winner` to the id of the pick that produced the
+ *  kept number, and one of those picks has the id "luck" -- permanent luck is
+ *  not a skill, so it is not in RNGI_SKILL_BY_ID. Looking it up blindly threw
+ *  `Cannot read properties of undefined (reading 'name')` from inside render,
+ *  which is the crash panel he saw, and before the panel it was the black
+ *  screen. Twelve percent of presses with one luck item owned land here.
+ *
+ *  Returns null rather than throwing for anything unrecognised: a stale or
+ *  unknown id should cost a label, never the whole screen.
+ */
+function rngiWinnerLabel(winner) {
+  if (!winner) return null;
+  if (winner === "luck") return "a luck draw";
+  const s = RNGI_SKILL_BY_ID[winner];
+  // typeof, not truthiness: "constructor" and "__proto__" are truthy keys on
+  // any object literal, so a plain ?. would still hand back undefined.
+  return s && typeof s.name === "string" ? s.name : null;
+}
+
+/** A companion's EP multiplier, or 1. Same rule again: a stale id is worth
+ *  nothing rather than a crash. */
+function rngiPetMult(id) {
+  const p = id ? RNGI_PET_BY_ID[id] : null;
+  return p && typeof p.multiplier === "number" ? p.multiplier : 1;
+}
+
+/** A companion's display name, or null. Same rule: no throw for a stale id. */
+function rngiPetName(id) {
+  const p = id ? RNGI_PET_BY_ID[id] : null;
+  return p && typeof p.name === "string" ? p.name : null;
+}
+
 /** How many EXTRA draws this press gets. 175% is one guaranteed extra plus a
  *  75% shot at a second -- the fractional part is a real coin flip, not a
  *  rounding. */
@@ -11532,7 +11566,9 @@ function rngiFlywheel(owned = [], streak = 0) {
  *  what lands in the wallet differs. That boundary is the whole reason the
  *  rank and percentile figures stay comparable. */
 function rngiWalletMult(state) {
-  const pet = state.wearing && RNGI_PET_BY_ID[state.wearing] ? RNGI_PET_BY_ID[state.wearing].multiplier : 1;
+  // v70: one lookup through rngiPetMult so there is a single place that can
+  // decide what a missing or stale companion id is worth (nothing).
+  const pet = rngiPetMult(state.wearing);
   const rebirth = 1 + 0.02 * Math.max(0, state.rebirths || 0);
   const prestige = 1 + 0.1 * Math.max(0, state.prestiges || 0);
   const rollback = 1 + 0.25 * Math.max(0, state.rollbacks || 0);
@@ -12488,7 +12524,7 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
               <div className="rngi-draws rise">
                 kept the best of {outcome.draws.length}
                 {outcome.winner
-                  ? ` · ${RNGI_SKILL_BY_ID[outcome.winner].name}`
+                  ? ` · ${rngiWinnerLabel(outcome.winner) || outcome.winner}`
                   : outcome.panels && outcome.panels.length > 1
                     ? outcome.keptIndex >= 0
                       ? ` · slot ${outcome.keptIndex + 1} of ${outcome.panels.length}`
@@ -12519,8 +12555,8 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
                 </div>
               </div>
             )}
-            {rv.showStats && outcome.drop && (
-              <div className="rngi-drop rise">a friend turned up: {RNGI_PET_BY_ID[outcome.drop].name}</div>
+            {rv.showStats && rngiPetName(outcome.drop) && (
+              <div className="rngi-drop rise">a friend turned up: {rngiPetName(outcome.drop)}</div>
             )}
           </>
         ) : (
@@ -12989,7 +13025,7 @@ function RngdleTool() {
       <div className="rngi-wallet">
         <span className="rngi-wallet-ep">{rngiEP(state.ep)}</span>
         <span className="rngi-wallet-l">EP</span>
-        {state.wearing && <span className="rngi-wallet-pet">{RNGI_PET_BY_ID[state.wearing].name}</span>}
+        {rngiPetName(state.wearing) && <span className="rngi-wallet-pet">{rngiPetName(state.wearing)}</span>}
         {(state.rebirths > 0 || state.prestiges > 0 || state.rollbacks > 0) && (
           <span className="rngi-wallet-marks">
             {state.rollbacks > 0 && `◆${state.rollbacks} `}

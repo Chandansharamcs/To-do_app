@@ -43,7 +43,7 @@ const EXPORTS = [
   "rngiOfflineGains", "rngiClaimOffline", "rngiDiscovered", "rngiResetGate",
   "rngiTimeline", "rngiReferenceTimeline", "rngiCueTimes", "rngiRevealState",
   "rngiSurplus", "rngiReset", "rngiEP", "rngiDuration",
-  "RNGT_BADGES", "rngiLuck", "rngiLuckDraws",
+  "RNGT_BADGES", "rngiLuck", "rngiLuckDraws", "rngiWinnerLabel", "rngiPetName",
 ];
 const M = new Function(`${CODE}\nreturn {${EXPORTS.join(",")}};`)();
 
@@ -1001,6 +1001,50 @@ T("scaling is proportional, so the shape is the same at any speed", () => {
   assert.ok(Math.abs(ratio(slow.rarity, slow.end) - ratio(fast.rarity, fast.end)) < 1e-9,
     "the rarity beat sits at a different point in the reveal at different speeds");
   assert.ok(Math.abs(ratio(slow.collapse, slow.end) - ratio(fast.collapse, fast.end)) < 1e-9);
+});
+
+T("a luck draw that wins still has a name", () => {
+  // v70: rngiRunDraws marks the winning pick by its id, and permanent luck is
+  // a pick with the id "luck". It is not a skill, so RNGI_SKILL_BY_ID has no
+  // entry for it, and the roll screen looked the name up blindly -- throwing
+  // "Cannot read properties of undefined (reading 'name')" from inside render
+  // on about 12% of presses with one luck item owned. The label must resolve
+  // for every id that can win, and must never throw for one that cannot.
+  assert.equal(M.rngiWinnerLabel("luck"), "a luck draw");
+  for (const sk of M.RNGI_SKILLS) {
+    assert.equal(M.rngiWinnerLabel(sk.id), sk.name, `no label for skill ${sk.id}`);
+  }
+  for (const junk of [undefined, null, "", "nope", "__proto__", 42]) {
+    assert.equal(M.rngiWinnerLabel(junk), null, `threw or invented a label for ${junk}`);
+  }
+});
+
+T("every winner a real roll can produce resolves to a label", () => {
+  // The same assertion, driven by the engine instead of the tables: roll with
+  // each luck tier owned and check the kept draw's winner every time.
+  const luckProducts = M.RNGI_PRODUCTS.filter((p) => p.kind === "luck");
+  assert.ok(luckProducts.length >= 5, "luck ladder went missing");
+  for (const lp of luckProducts) {
+    let s = {
+      owned: [lp.id], wearing: null, aura: null, streak: 0, cooldownUntil: 0,
+      lastRollAt: 0, autoRoll: false, charges: 0, equipped: [], wallet: 0,
+      rolls: 0, best: 0,
+    };
+    let luckWins = 0;
+    for (let i = 0; i < 4000; i++) {
+      const { state: next, outcome } = M.rngiRoll(s, 1000 + i * 9000);
+      s = next;
+      if (outcome.winner === "luck") luckWins++;
+      if (outcome.winner) {
+        assert.ok(M.rngiWinnerLabel(outcome.winner),
+          `${lp.id}: winner "${outcome.winner}" has no label`);
+      }
+      if (outcome.drop) {
+        assert.ok(M.rngiPetName(outcome.drop), `drop "${outcome.drop}" has no name`);
+      }
+    }
+    assert.ok(luckWins > 0, `${lp.id}: luck never won in 4000 rolls, so this test proves nothing`);
+  }
 });
 
 

@@ -110,6 +110,20 @@ t("the recorder is readable from the vault and stays quiet when healthy", ()=>{
   assert.match(SRC, /navigator\.clipboard\.writeText\(text\)/, "no copy button");
   assert.match(SRC, /lastErrors\.clear\(\)/, "no clear button");
 });
+t("no render path dereferences a lookup-by-id map directly", ()=>{
+  // v70: the roll screen did RNGI_SKILL_BY_ID[outcome.winner].name. The winner
+  // can be the id "luck", which is not a skill, so the lookup was undefined and
+  // the .name read threw "Cannot read properties of undefined (reading 'name')"
+  // straight out of render -- the black screen. Every id taken from state or an
+  // outcome now goes through a helper that returns null instead of throwing.
+  const bad = (SRC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")
+    .match(/RNGI_[A-Z_]+_BY_ID\s*\[[^\]]+\]\s*\.\s*\w+/g) || []);
+  assert.deepEqual(bad, [], "unguarded map dereference");
+  // and the helpers must survive keys that exist on every object
+  assert.match(SRC, /s && typeof s\.name === "string" \? s\.name : null/);
+  assert.match(SRC, /p && typeof p\.name === "string" \? p\.name : null/);
+  assert.match(SRC, /if \(winner === "luck"\) return "a luck draw";/);
+});
 t("a new worker never reloads the page out from under the user", ()=>{
   // v69 tried an unconditional controllerchange -> location.reload() and
   // cloud.spec caught it: the app already routes updates through

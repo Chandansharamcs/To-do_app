@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v70`** | 2026-10-25 | A luck draw that wins had no name, and took the screen with it |
 | **`v69`** | 2026-10-24 | A crash shows its message instead of a black screen |
 | **`v68`** | 2026-10-21 | rngdle: auto-roll unlocked, faster pace, a shop that shows the next rung |
 | **`v67`** | 2026-10-21 | Ambient beds rebuilt as layers instead of one filtered hiss |
@@ -92,6 +93,79 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v70 ───────────────────────────────────────────────────────────┐
+│  2026-10-25 · the black screen, named                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### He was right and v68's animation theory was wrong
+
+The v69 crash panel came back with one line:
+
+```
+Cannot read properties of undefined (reading 'name')
+```
+
+That is the whole answer, and it cost one deploy to get. It was never an
+animation, a compositor layer or the service worker.
+
+### What was undefined
+
+`rngiRunDraws` marks the winning pick by its **id**. Permanent luck is added
+as a pick with the id `"luck"` -- it is not a skill, so there is no entry in
+`RNGI_SKILL_BY_ID` for it. The roll screen then did:
+
+```js
+RNGI_SKILL_BY_ID[outcome.winner].name
+```
+
+so any press where a **luck draw produced the kept number** read `.name` off
+`undefined`, inside render, and React unmounted the tree. Before v69 that was
+a black screen; v69 turned it into a readable message. Measured: with one luck
+item owned (`fourleaf-1`, 25%) **3,729 of 30,000 rolls** -- 12.4% -- keep a
+luck draw. It is intermittent, it is per-press, and it needs luck owned, which
+is exactly the shape of "sometimes, as soon as I click roll".
+
+### The fix
+
+Three ids come from state or an outcome and were each dereferenced blind:
+
+| site | what it did |
+|---|---|
+| `RNGI_SKILL_BY_ID[outcome.winner].name` | **the crash** -- `winner` can be `"luck"` |
+| `RNGI_PET_BY_ID[outcome.drop].name` | a stale companion id |
+| `RNGI_PET_BY_ID[state.wearing].name` | a stale worn id |
+
+They go through `rngiWinnerLabel(id)`, `rngiPetName(id)` and `rngiPetMult(id)`
+now, which return a label, a label and `1`, and return `null` for anything
+unrecognised. `"luck"` gets a real label: **"a luck draw"**.
+
+Two details worth keeping:
+
+- the helpers test `typeof s.name === "string"`, not truthiness. `"__proto__"`
+  and `"constructor"` are truthy keys on any object literal, so a plain `?.`
+  would still have returned `undefined`. A test found that, not a review.
+- `petContextSummary` had the same shape -- `PET_FORMS[pet.stage].name` -- and
+  is guarded, because a stage out of range would throw the identical message
+  in a place that has nothing to do with the roll.
+
+### Verified
+
+A/B on the same save, same 25 presses, luck tier `fourleaf-5` owned:
+
+| build | result |
+|---|---|
+| v69 (what is live now) | crash panel on press 4, message **`Cannot read properties of undefined (reading 'name')`** |
+| v70 | 25 presses, **0 crashes**, 15 of them showed `· a luck draw` |
+
+Plus an engine sweep: 4,000 rolls per luck tier, every winner and every drop
+resolves to a label; and 30,000 rolls with no `winner` id outside the tables.
+
+**691 unit / 105 regress / 11 gate / 8 cloud / 78 tools, 0 failed.**
 
 ---
 
