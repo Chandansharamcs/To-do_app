@@ -1314,13 +1314,13 @@ function applyTheme(theme) {
 const SOUND_KEY = "tasksh.sound.v1";
 const SOUND_SETTINGS_KEY = "tasksh.soundcfg.v1";
 
-// v71: the bed starts ON, in "cozy", at a deliberately low level. It used to
-// default to "off" on the argument that an app which makes noise on its own
-// gets uninstalled -- but he asked for exactly the opposite, and the mute
-// button is one tap away. It still cannot start before the first gesture:
-// that is the browser's rule, not a setting, so the first tap anywhere fades
-// it in.
-const SOUND_DEFAULTS = { volume: 70, ambient: "cozy", ambientVolume: 30, alarmSeconds: 10 };
+// v72: ambient is back to "off" by default.
+//
+// v71 turned it on because he asked for ambient; he then told me to leave the
+// ambient beds alone, so the default is silence again and the beds stay where
+// they are for anyone who wants one. The interaction cues are the sounds that
+// matter here -- those play on every tap and are not optional.
+const SOUND_DEFAULTS = { volume: 70, ambient: "off", ambientVolume: 30, alarmSeconds: 10 };
 
 function loadSoundCfg() {
   try {
@@ -1329,9 +1329,7 @@ function loadSoundCfg() {
     return {
       volume: clamp(raw.volume, SOUND_DEFAULTS.volume),
       ambientVolume: clamp(raw.ambientVolume, SOUND_DEFAULTS.ambientVolume),
-      // v71: an unrecognised scene falls back to the default bed, not to
-      // silence -- silence is a choice the user makes with the off button.
-      ambient: AMBIENT_SCENES.some((s) => s.id === raw.ambient) ? raw.ambient : SOUND_DEFAULTS.ambient,
+      ambient: AMBIENT_SCENES.some((s) => s.id === raw.ambient) ? raw.ambient : "off",
       alarmSeconds: [0, 3, 10, 20].includes(raw.alarmSeconds) ? raw.alarmSeconds : SOUND_DEFAULTS.alarmSeconds,
     };
   } catch {
@@ -1547,6 +1545,29 @@ function playNoiseNow({ dur = 0.08, gain = 0.03, type = "highpass", freq = 1200,
   src.stop(now + dur + 0.02);
 }
 
+/** One cue at a time, per kind.
+ *
+ *  v72: `sound.click()` is wired to 84 places, and several of them fire in
+ *  bursts -- a swipe, a re-render, a list that commits three things at once.
+ *  Two taps 4ms apart schedule two transients that sum into a buzz, which is
+ *  the single most common reason UI sounds feel cheap. 26ms is under the
+ *  threshold where a repeat reads as a separate event and over the one where
+ *  it sums into a click.
+ */
+const __cueAt = Object.create(null);
+function cueOnce(kind, ms, fn) {
+  // The WALL clock, deliberately. The first version gated on
+  // ctx.currentTime, and a suspended context freezes that clock -- so the
+  // first cue after muting would close the gate and never reopen it. A test
+  // caught it: five calls spaced 40ms apart produced one sound instead of
+  // five. performance.now() always advances, whatever the audio is doing.
+  const now = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+  const last = __cueAt[kind] || -1e9;
+  if (now - last < ms) return;
+  __cueAt[kind] = now;
+  fn();
+}
+
 const sound = {
   // v66: rewritten. The old palette was square and sawtooth tones between
   // 165 and 720Hz at tiny gains -- thin, buzzy, and it read as "beeping"
@@ -1555,70 +1576,114 @@ const sound = {
   // and every note now lands in the room instead of stopping dead.
   //
   // --- taps and navigation
-  click: () => {
-    playNoise({ dur: 0.012, gain: 0.02, freq: 5200, type: "highpass" });
-    playTone([{ freq: 1180, dur: 0.05, type: "sine", gain: 0.05,
-                slideTo: 880, space: 0.12 }]);
-  },
-  tick: () => playNoise({ dur: 0.018, gain: 0.022, freq: 3800, type: "highpass" }),
-  toggle: () => playTone([{ freq: 880, dur: 0.055, type: "triangle", gain: 0.045,
-                            slideTo: 1320, space: 0.14 }]),
+  // v72: the whole palette was rebuilt around one idea -- every cue is part of
+  // the same chord. A major pentatonic (A C# E F# A) means no two sounds can
+  // clash, so a screen that fires four of them in sequence still sounds like
+  // one instrument rather than four.
+  //
+  // click is the most-used cue (84 call sites), so it is the shortest and the
+  // quietest: a felt tap, not a beep. It rises a whole tone because an upward
+  // interval reads as "that worked" and nothing else in the app does that.
+  click: () => cueOnce("click", 26, () => {
+    playNoise({ dur: 0.009, gain: 0.012, freq: 4200, type: "highpass" });
+    playTone([{ freq: 1046.5, dur: 0.045, type: "sine", gain: 0.045,
+                slideTo: 1174.7, space: 0.1 }]);
+  }),
+  tick: () => cueOnce("tick", 18, () =>
+    playTone([{ freq: 1568, dur: 0.028, type: "sine", gain: 0.016 }])),
+  // direction matters: going on rises, going off falls, and both end on a note
+  // from the same chord
+  toggle: (on = true) => cueOnce("toggle", 40, () =>
+    playTone([
+      { freq: on ? 659.3 : 880.0, dur: 0.06, type: "sine", gain: 0.044, space: 0.12 },
+      { freq: on ? 880.0 : 659.3, start: 0.045, dur: 0.08, type: "sine", gain: 0.036, space: 0.16 },
+    ])),
+  /** A box being ticked: the small reward that has to survive being heard
+   *  a hundred times a day. Wood, not glass -- a low note plus its fifth. */
+  check: () => cueOnce("check", 60, () => {
+    playNoise({ dur: 0.014, gain: 0.012, freq: 2600, type: "bandpass", q: 1.1 });
+    playTone([
+      { freq: 659.3, dur: 0.07, type: "sine", gain: 0.042, space: 0.16 },
+      { freq: 987.8, start: 0.05, dur: 0.10, type: "sine", gain: 0.034, space: 0.2 },
+    ]);
+  }),
+  /** ...and unticking it, which must not sound like a reward. One step down,
+   *  quieter, no fifth. */
+  untick: () => cueOnce("untick", 60, () =>
+    playTone([{ freq: 587.3, dur: 0.07, type: "sine", gain: 0.030,
+                slideTo: 493.9, space: 0.14 }])),
+  /** A panel arriving: short and airy, so it is felt more than heard. */
+  open: () => cueOnce("open", 120, () => {
+    playNoise({ dur: 0.09, gain: 0.010, freq: 1800, type: "bandpass", q: 0.7 });
+    playTone([{ freq: 440, dur: 0.10, type: "sine", gain: 0.018,
+                slideTo: 659.3, space: 0.18 }]);
+  }),
+  close: () => cueOnce("close", 120, () =>
+    playTone([{ freq: 659.3, dur: 0.09, type: "sine", gain: 0.016,
+                slideTo: 415.3, space: 0.16 }])),
   whoosh: () => {
     playNoise({ dur: 0.11, gain: 0.018, freq: 1500, type: "bandpass", q: 0.6 });
-    playTone([{ freq: 660, dur: 0.09, type: "sine", gain: 0.022, slideTo: 990, space: 0.2 }]);
+    playTone([{ freq: 659.3, dur: 0.09, type: "sine", gain: 0.022, slideTo: 880.0, space: 0.2 }]);
   },
 
   // --- outcomes
-  success: () =>
+  // a real triad rather than two arbitrary tones: A, C#, E with the root
+  // repeated an octave up and a longer tail on the last note
+  success: () => cueOnce("success", 90, () =>
     playTone([
-      { freq: 880,  start: 0,    dur: 0.1,  type: "sine", gain: 0.05, space: 0.3 },
-      { freq: 1320, start: 0.075, dur: 0.16, type: "sine", gain: 0.045, space: 0.3 },
-    ]),
-  error: () =>
+      { freq: 440.0, start: 0,     dur: 0.09, type: "sine", gain: 0.044, space: 0.3 },
+      { freq: 554.4, start: 0.055, dur: 0.09, type: "sine", gain: 0.030, space: 0.3 },
+      { freq: 659.3, start: 0.11,  dur: 0.16, type: "sine", gain: 0.026, space: 0.34 },
+      { freq: 880.0, start: 0.165, dur: 0.22, type: "sine", gain: 0.018, space: 0.4 },
+    ])),
+  // a soft descending minor third, not a buzzer. It has to be recognisable as
+  // "no" without being unpleasant, because a blocked action is not an error
+  // the user needs to be scolded for.
+  error: () => cueOnce("error", 110, () =>
     playTone([
-      { freq: 320, start: 0, dur: 0.09, type: "triangle", gain: 0.05, slideTo: 240 },
-      { freq: 240, start: 0.07, dur: 0.13, type: "triangle", gain: 0.04, slideTo: 190 },
-    ]),
+      { freq: 311.1, start: 0,    dur: 0.09, type: "sine", gain: 0.030, slideTo: 261.6 },
+      { freq: 233.1, start: 0.075, dur: 0.14, type: "sine", gain: 0.024, slideTo: 196.0 },
+    ])),
   delete: () => {
     playNoise({ dur: 0.06, gain: 0.02, freq: 900, type: "lowpass" });
-    playTone([{ freq: 420, dur: 0.1, type: "triangle", gain: 0.035, slideTo: 260, space: 0.1 }]);
+    playTone([{ freq: 440.0, dur: 0.1, type: "sine", gain: 0.026, slideTo: 329.6, space: 0.1 }]);
   },
 
   /** Swipe right. A major third up, in the room rather than on top of it. */
   complete: () => {
     playNoise({ dur: 0.05, gain: 0.012, freq: 2400, type: "bandpass", q: 0.9 });
     playTone([
-      { freq: 1046, start: 0,    dur: 0.1,  type: "sine", gain: 0.045, space: 0.28 },
-      { freq: 1568, start: 0.065, dur: 0.17, type: "sine", gain: 0.04,  space: 0.32 },
+      { freq: 659.3, start: 0,    dur: 0.1,  type: "sine", gain: 0.038, space: 0.28 },
+      { freq: 880.0, start: 0.065, dur: 0.17, type: "sine", gain: 0.034, space: 0.32 },
     ]);
   },
   /** Swipe left. A minor second down: wrong-sounding on purpose, but short
    *  and low enough that it never reads as a telling-off. */
   fail: () =>
     playTone([
-      { freq: 523, start: 0,   dur: 0.1,  type: "triangle", gain: 0.04, slideTo: 494, space: 0.18 },
-      { freq: 392, start: 0.07, dur: 0.16, type: "triangle", gain: 0.035, slideTo: 370, space: 0.18 },
+      { freq: 493.9, start: 0,   dur: 0.1,  type: "sine", gain: 0.030, slideTo: 440.0, space: 0.18 },
+      { freq: 440.0, start: 0.07, dur: 0.16, type: "sine", gain: 0.026, slideTo: 392.0, space: 0.18 },
     ]),
 
   // --- money and milestones
   coin: () =>
     playTone([
-      { freq: 1568, start: 0,    dur: 0.05, type: "sine", gain: 0.035, space: 0.22 },
-      { freq: 2093, start: 0.035, dur: 0.1,  type: "sine", gain: 0.03,  space: 0.22 },
+      { freq: 1318.5, start: 0,     dur: 0.05, type: "sine", gain: 0.030, space: 0.22 },
+      { freq: 1760.0, start: 0.035, dur: 0.1,  type: "sine", gain: 0.026, space: 0.22 },
     ]),
   levelUp: () =>
     playTone([
-      { freq: 523,  start: 0.00, dur: 0.12, type: "sine", gain: 0.05,  space: 0.3 },
-      { freq: 659,  start: 0.10, dur: 0.12, type: "sine", gain: 0.05,  space: 0.3 },
-      { freq: 784,  start: 0.20, dur: 0.14, type: "sine", gain: 0.055, space: 0.34 },
-      { freq: 1047, start: 0.32, dur: 0.34, type: "sine", gain: 0.06,  space: 0.4 },
-      { freq: 1047, start: 0.32, dur: 0.34, type: "sine", gain: 0.02,  detune: 9, space: 0.4 },
+      { freq: 440.0,  start: 0.00, dur: 0.12, type: "sine", gain: 0.040, space: 0.3 },
+      { freq: 554.4,  start: 0.10, dur: 0.12, type: "sine", gain: 0.040, space: 0.3 },
+      { freq: 659.3,  start: 0.20, dur: 0.14, type: "sine", gain: 0.044, space: 0.34 },
+      { freq: 880.0,  start: 0.32, dur: 0.34, type: "sine", gain: 0.048, space: 0.4 },
+      { freq: 880.0,  start: 0.32, dur: 0.34, type: "sine", gain: 0.016, detune: 9, space: 0.4 },
     ]),
   achievement: () =>
     playTone([
-      { freq: 880,  start: 0,    dur: 0.1,  type: "triangle", gain: 0.045, space: 0.25 },
-      { freq: 1175, start: 0.08, dur: 0.1,  type: "triangle", gain: 0.045, space: 0.25 },
-      { freq: 1568, start: 0.16, dur: 0.24, type: "triangle", gain: 0.05,  space: 0.34 },
+      { freq: 659.3,  start: 0,    dur: 0.1,  type: "sine", gain: 0.038, space: 0.25 },
+      { freq: 880.0,  start: 0.08, dur: 0.1,  type: "sine", gain: 0.038, space: 0.25 },
+      { freq: 1108.7, start: 0.16, dur: 0.24, type: "sine", gain: 0.042, space: 0.34 },
     ]),
 
   /** The rngdle reveal: a rising sweep whose length matches the reveal, and
@@ -1626,13 +1691,13 @@ const sound = {
    *  before you have finished reading the word. */
   reveal: (ms = 600) => {
     const dur = Math.max(0.12, Math.min(3, ms / 1000));
-    playTone([{ freq: 260, dur, type: "triangle", gain: 0.022, slideTo: 900, space: 0.2 }]);
+    playTone([{ freq: 220, dur, type: "sine", gain: 0.022, slideTo: 880, space: 0.2 }]);
   },
   land: (tier = 0) => {
     // Number.isFinite first: [..][NaN] is undefined, and an undefined
     // frequency is a silent note rather than a loud error
     const t = Number.isFinite(tier) ? Math.max(0, Math.min(5, Math.round(tier))) : 0;
-    const base = [392, 494, 587, 698, 880, 1175][t];
+    const base = [440.0, 554.4, 659.3, 880.0, 1108.7, 1318.5][t];
     playTone([
       { freq: base, start: 0, dur: 0.14, type: "sine", gain: 0.05, space: 0.25 },
       { freq: base * 1.5, start: 0.1, dur: 0.22, type: "sine", gain: 0.04, space: 0.3 },
@@ -1641,7 +1706,7 @@ const sound = {
   },
   cash: () => {
     playNoise({ dur: 0.05, gain: 0.02, freq: 3400, type: "highpass" });
-    playTone([{ freq: 1047, start: 0.03, dur: 0.12, type: "triangle", gain: 0.032, space: 0.2 }]);
+    playTone([{ freq: 1108.7, start: 0.03, dur: 0.12, type: "sine", gain: 0.030, space: 0.2 }]);
   },
 
 };
@@ -3226,7 +3291,7 @@ function RoutinesView({ routines, setRoutines }) {
       })
     );
     linkBridge.propagate("routine", id, willBeDone);
-    if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
+    if (willBeDone) { sound.check(); petBus.emit("routineDone"); } else { sound.untick(); }
   };
 
   const saveRoutine = (id, patch) =>
@@ -3623,7 +3688,7 @@ function VaultHabitsSection({ habits, setHabits }) {
       })
     );
     linkBridge.propagate("vault", id, willBeDone);
-    if (willBeDone) { sound.success(); petBus.emit("vaultDone"); } else { sound.click(); }
+    if (willBeDone) { sound.check(); petBus.emit("vaultDone"); } else { sound.untick(); }
   };
 
   return (
@@ -12732,7 +12797,7 @@ function RngiRoll({ state, setState, outcome, setOutcome }) {
         {(
           <button
             className={`rngi-auto ${state.autoRoll ? "on" : ""}`}
-            onClick={() => { setState((s) => ({ ...s, autoRoll: !s.autoRoll })); sound.toggle(); }}
+            onClick={() => { const next = !state.autoRoll; setState((s) => ({ ...s, autoRoll: next })); sound.toggle(next); }}
           >
             auto-roll {state.autoRoll ? "on" : "off"}
           </button>
@@ -12883,8 +12948,8 @@ function RngiShop({ state, setState }) {
     sound.success();
   };
 
-  const wear = (id) => { setState((s) => ({ ...s, wearing: s.wearing === id ? null : id })); sound.toggle(); };
-  const skin = (id) => { setState((s) => ({ ...s, aura: s.aura === id ? null : id })); sound.toggle(); };
+  const wear = (id) => { const next = state.wearing !== id; setState((s) => ({ ...s, wearing: next ? id : null })); sound.toggle(next); };
+  const skin = (id) => { const next = state.aura !== id; setState((s) => ({ ...s, aura: next ? id : null })); sound.toggle(next); };
 
   // v68: what this shelf is saving FOR. A wall of prices with no sense of the
   // next rung is the least motivating possible shop: the useful question is
@@ -14933,7 +14998,7 @@ function TodayView({ routines, setRoutines, tasks, setTasks, vaultHabits, habits
       })
     );
     linkBridge.propagate("routine", id, willBeDone);
-    if (willBeDone) { sound.success(); petBus.emit("routineDone"); } else { sound.click(); }
+    if (willBeDone) { sound.check(); petBus.emit("routineDone"); } else { sound.untick(); }
   };
 
   /** v45 (#5): today's drawn quests belong here.
@@ -15172,18 +15237,15 @@ function TodoApp() {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "k") {
         e.preventDefault();
-        setPaletteOpen((v) => !v);
+        setPaletteOpen((v) => { if (!v) sound.open(); else sound.close(); return !v; });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const [soundOn, toggleSound] = useSoundToggle();
-  // v71: the switch flash. A counter, not a boolean -- remounting the overlay
-  // is what restarts the animation, and a boolean would only flash once.
-  const [flashKey, setFlashKey] = useState(0);
   const changeTab = (t) => {
-    if (t !== tab) { sound.whoosh(); setFlashKey((k) => k + 1); }
+    if (t !== tab) sound.whoosh();
     setTab(t);
     // With seven tabs the bar can still overflow on a narrow phone or a long
     // pet name. Pull the selected one into view so the active tab is never
@@ -15672,7 +15734,7 @@ function TodoApp() {
   const toggleTask = (id) => {
     const willBeDone = !tasks.find((t) => t.id === id)?.done;
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
-    if (willBeDone) { sound.success(); petBus.emit("taskDone"); } else { sound.click(); }
+    if (willBeDone) { sound.check(); petBus.emit("taskDone"); } else { sound.untick(); }
   };
 
   const deleteTask = (id) => {
@@ -16011,95 +16073,90 @@ function TodoApp() {
           z-index: 3;
         }
 
-        /* ---- v71: the leak ------------------------------------------------
-           A single wide gradient layer, centred on the selected tab and
-           sliding with it: cyan at the core, red bleeding out past the end of
-           the bar. It replaces the tick that crossed the bar (it read as a
-           loading indicator) and the stepping activity diodes.
+        /* ---- v72: the bar he liked, polished -----------------------------
+           The v66 mechanics are back: a magnifying ladder, one travelling
+           puck, a tick crossing the bar, a dot over each tab. What changed is
+           the finish, not the behaviour --
 
-           Only transform and opacity animate, the layer is the size of the
-           bar, and it never scales -- a full-screen scaled element is what a
-           phone can fail to composite, and that failure is a black screen. */
-        .tabs { overflow: hidden; }
-        .tab-glow {
+             * the tick is a soft light with gradient ends instead of a hard
+               1px line, so it reads as a sweep and not as a progress bar
+             * the puck is a short rounded bar that stretches as it travels
+                (scaleX on the bar itself, never on a full-screen layer)
+             * the diodes dim unless they are the selected one, so the bar has
+               one live point instead of seven blinking ones
+             * everything moves on one shared easing curve and one shared
+               duration, which is most of what "polished" means here
+
+           A cyan-tinted selection glow returns as a text shadow on the active
+           label only. No gradient surface, no full-screen wash. */
+        .tab-puck {
+          height: 2px;
+          border-radius: 2px;
+          background: var(--accent);
+          box-shadow: 0 0 10px 1px var(--glow);
+          transform-origin: 0 50%;
+        }
+        .tab-puck::after {
+          content: "";
           position: absolute;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          top: auto;
-          height: 300%;
-          z-index: 0;
+          inset: -6px 0 -10px;
+          background: radial-gradient(60% 100% at 50% 0%, rgba(94,234,212,0.20), rgba(94,234,212,0) 72%);
           pointer-events: none;
-          /* anchored to the bottom edge and three bars tall, so the light
-             reads as coming up from under the icons rather than as a band
-             across them. Cyan core, red bleeding out to either side. */
-          background: radial-gradient(
-            52% 46% at 50% 100%,
-            rgba(94, 234, 212, 0.62) 0%,
-            rgba(94, 234, 212, 0.34) 30%,
-            rgba(148, 196, 190, 0.22) 52%,
-            rgba(240, 87, 107, 0.34) 72%,
-            rgba(240, 87, 107, 0.12) 86%,
-            rgba(240, 87, 107, 0) 97%
-          );
-          transition: transform 460ms cubic-bezier(.22, 1.2, .36, 1);
-          animation: tabGlowBreath 5.5s ease-in-out infinite;
         }
-        @keyframes tabGlowBreath {
-          0%, 100% { opacity: 0.82; }
-          50%      { opacity: 1; }
-        }
-        .tabs button { z-index: 2; }
 
-        /* the selected glyph picks up the same two colours */
+        /* the tick: a soft light crossing the bar */
+        .tab-sweep {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 48px;
+          height: 1px;
+          background: linear-gradient(90deg, rgba(94,234,212,0) 0%, rgba(94,234,212,0.55) 50%, rgba(94,234,212,0) 100%);
+          animation: tabSweep 9s linear infinite;
+          pointer-events: none;
+          z-index: 3;
+        }
+        @keyframes tabSweep {
+          0%   { transform: translateX(-60px); opacity: 0; }
+          10%  { opacity: 1; }
+          88%  { opacity: 1; }
+          100% { transform: translateX(calc(100vw + 60px)); opacity: 0; }
+        }
+
+        /* the diodes: quiet at rest, one breathing under the selection */
+        .tab-dot {
+          position: absolute;
+          top: 4px;
+          left: 50%;
+          margin-left: -1.5px;
+          width: 3px;
+          height: 3px;
+          border-radius: 2px;
+          background: var(--track);
+          opacity: 0.7;
+          transition: background 220ms ease, opacity 220ms ease;
+        }
+        .tabs button.active .tab-dot {
+          background: var(--accent);
+          opacity: 1;
+          box-shadow: 0 0 6px rgba(94,234,212,0.8);
+          animation: tabDotBreath 2.4s ease-in-out infinite;
+        }
+        @keyframes tabDotBreath {
+          0%, 100% { opacity: 1; }
+          50%      { opacity: 0.45; }
+        }
+
+        /* the label and glyph of the selection pick up a little light */
         .tabs button.active .tab-label {
-          text-shadow: 0 0 10px rgba(94, 234, 212, 0.55), 0 0 22px rgba(240, 87, 107, 0.4);
+          text-shadow: 0 0 12px rgba(94,234,212,0.45);
         }
         .tabs button.active svg {
-          filter: drop-shadow(0 0 5px rgba(94, 234, 212, 0.55)) drop-shadow(0 0 12px rgba(240, 87, 107, 0.35));
+          filter: drop-shadow(0 0 4px rgba(94,234,212,0.45));
         }
-
-        /* ---- v71: the switch flash ---------------------------------------
-           Whole screen, 420ms, cyan into red. Fixed and pointer-events none so
-           it cannot eat a tap; opacity only, so the compositor has one layer
-           to fade and nothing to rasterise at a new size. */
-        .tab-flash {
-          position: fixed;
-          inset: 0;
-          z-index: 60;
-          pointer-events: none;
-          background: linear-gradient(
-            118deg,
-            rgba(94, 234, 212, 0.55) 0%,
-            rgba(120, 200, 210, 0.30) 38%,
-            rgba(240, 87, 107, 0.45) 78%,
-            rgba(240, 87, 107, 0.30) 100%
-          );
-          animation: tabFlash 420ms ease-out forwards;
-          contain: paint;
-        }
-        @keyframes tabFlash {
-          0%   { opacity: 0; }
-          14%  { opacity: 0.55; }
-          46%  { opacity: 0.22; }
-          100% { opacity: 0; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .tab-flash { animation: none; opacity: 0; }
-          .tab-glow { animation: none; transition: none; }
-        }
-
-        /* the glyph answers the selection: it lifts and brightens a touch */
-        .tabs button svg {
-          transition: transform 420ms cubic-bezier(.22, 1.35, .36, 1), filter 260ms ease;
-        }
-        .tabs button.active svg { transform: translateY(-1px) scale(1.06); }
-        .tabs button.active .tab-label { letter-spacing: 0.06em; }
-        .tab-label { transition: letter-spacing 320ms ease; }
 
         @media (prefers-reduced-motion: reduce) {
-          .tab-inner, .tab-puck, .tabs button svg, .tab-label { transition: none !important; }
-          .tab-glow { animation: none !important; }
+          .tab-sweep, .tab-dot, .tabs button.active .tab-dot { animation: none !important; }
         }
 
         .hero-card {
@@ -21408,7 +21465,7 @@ function TodoApp() {
             </button>
             <button
               className="titlebar-icon-btn"
-              onClick={() => { setPaletteOpen(true); sound.click(); }}
+              onClick={() => { setPaletteOpen(true); sound.open(); }}
               aria-label="Search"
               title="Search (ctrl+k)"
             >
@@ -21480,12 +21537,6 @@ pet, wallet and themes are always included.
             instead of six unrelated buttons. aria-selected also gives the
             active tab a programmatic state, not just a CSS class. */}
 
-
-        {/* v71: cyan to red washing over the whole screen on a switch.
-            Fixed, pointer-events none, and only opacity animates -- no
-            transform and no huge scaled layer, because a full-screen scaled
-            layer is exactly what a phone can fail to composite. */}
-        {flashKey > 0 && <span key={flashKey} className="tab-flash" aria-hidden="true" />}
 
         <div
           key={tab}
@@ -21579,7 +21630,7 @@ pet, wallet and themes are always included.
 
         {paletteOpen && (
           <CommandPalette
-            onClose={() => setPaletteOpen(false)}
+            onClose={() => { setPaletteOpen(false); sound.close(); }}
             onRun={(fn) => fn()}
             buildItems={() => {
               const items = [];
@@ -21628,6 +21679,7 @@ pet, wallet and themes are always included.
                 {/* the magnification scales this wrapper, not the button:
                     transform shrinks the hit area too, and at 360px the far
                     tabs fell to 43.99px -- under the 44px minimum */}
+                <span className="tab-dot" style={{ animationDelay: `${i * 0.21}s` }} />
                 <span className="tab-inner">
                   <TabIcon id={id} />
                   <span className="tab-label">{label}</span>
@@ -21645,15 +21697,16 @@ pet, wallet and themes are always included.
               transform: `translateX(${activeTabIndex * 100}%)`,
             }}
           />
-          {/* v71: the leak. One wide gradient layer centred on the selected
-              tab -- cyan at the core, red bleeding out to the edges -- that
-              slides when the selection moves. It replaces the tick that
-              crossed the bar, which read as a loading indicator rather than
-              as light. */}
+          {/* v72: back to the tick. He asked for the gradient leak, then asked
+              for the old bar back, so the old bar is back -- but rebuilt
+              rather than restored: the tick is a soft light that fades at
+              both ends instead of a hard 1px line, and the diodes are a
+              single breathing dot under the selected tab. */}
+          <span className="tab-sweep" aria-hidden="true" />
           <span
-            className="tab-glow"
+            className="tab-comet"
             aria-hidden="true"
-            style={{ transform: `translateX(${(activeTabIndex - (TAB_DEFS.length - 1) / 2) * (100 / TAB_DEFS.length)}%)` }}
+            style={{ transform: `translateX(${activeTabIndex * 100}%)` }}
           />
         </div>
       </div>

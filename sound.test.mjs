@@ -102,6 +102,7 @@ function soundModule({ muted = false, cfg = null } = {}) {
     "isSoundOn", "setSoundOn", "playTone", "playNoise", "sound",
     "buildAlarmPattern", "buildVibratePattern", "ringAlarm", "stopAlarm", "alarmRinging",
     "startAmbient", "stopAmbient", "ambientPlaying", "getBuses", "applySoundCfg",
+    "cueOnce",
   ];
   const mod = new Function("__store", "__ctx", "__log",
     `${env}\n${code}\nreturn {${exportNames.join(",")}};`)(store, ctx, log);
@@ -181,18 +182,17 @@ T("the vibration pattern matches the alarm length", () => {
 
 T("defaults are silence: the bed never starts on its own", () => {
   const M = soundModule();
-  // v71: the bed defaults to "cozy" at a low level -- he asked for ambient to
-  // be on. It still cannot start before a gesture; that is the browser.
-  assert.equal(M.SOUND_DEFAULTS.ambient, "cozy");
-  assert.equal(M.loadSoundCfg().ambient, "cozy");
-  assert.ok(M.SOUND_DEFAULTS.ambientVolume <= 35, "the default bed is too loud to be ambient");
+  // v72: silence again. He asked for ambient in v71, then said to leave the
+  // beds alone -- the interaction cues are the sounds that matter.
+  assert.equal(M.SOUND_DEFAULTS.ambient, "off");
+  assert.equal(M.loadSoundCfg().ambient, "off");
 });
 
 T("volumes are clamped and nonsense falls back", () => {
   assert.equal(soundModule({ cfg: { volume: 999 } }).loadSoundCfg().volume, 100);
   assert.equal(soundModule({ cfg: { volume: -5 } }).loadSoundCfg().volume, 0);
   assert.equal(soundModule({ cfg: { volume: "loud" } }).loadSoundCfg().volume, 70);
-  assert.equal(soundModule({ cfg: { ambient: "disco" } }).loadSoundCfg().ambient, "cozy");
+  assert.equal(soundModule({ cfg: { ambient: "disco" } }).loadSoundCfg().ambient, "off");
   assert.equal(soundModule({ cfg: { alarmSeconds: 999 } }).loadSoundCfg().alarmSeconds, 10);
 });
 
@@ -212,6 +212,7 @@ T("every scene in the picker is a scene the engine can build", () => {
   const M = soundModule();
   assert.ok(M.AMBIENT_SCENES.length >= 4);
   assert.equal(M.AMBIENT_SCENES[0].id, "off", "off must stay first so muting is the first button");
+  // the beds stay selectable even though none of them is the default
   assert.ok(M.AMBIENT_SCENES.some((x) => x.id === "cozy"), "the cozy bed is missing");
   for (const sc of M.AMBIENT_SCENES) {
     assert.ok(sc.label && sc.desc, `${sc.id} has no label or description`);
@@ -445,6 +446,36 @@ T("the reveal sweep is as long as the reveal it covers", () => {
   const M2 = soundModule();
   M2.sound.reveal(999999);
   assert.ok(M2.log.osc.length === 1);
+});
+
+T("a burst of the same cue is gated, so taps cannot machine-gun", () => {
+  // v72. sound.click() is wired to 84 places and several fire in a burst. The
+  // gate is per cue and keyed on the wall clock, so this drives it directly:
+  // twenty calls back to back must produce one, calls 30ms apart must all pass.
+  const M = soundModule();
+  const spin = (ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) {} };
+  let hits = 0;
+  for (let i = 0; i < 20; i++) M.cueOnce("probe", 26, () => { hits++; });
+  assert.equal(hits, 1, `${hits} of 20 back-to-back calls fired`);
+
+  hits = 0;
+  M.cueOnce.__x = 0;
+  for (let i = 0; i < 5; i++) { M.cueOnce("probe2", 26, () => { hits++; }); spin(30); }
+  assert.equal(hits, 5, `the gate dropped ${5 - hits} of 5 calls spaced 30ms apart`);
+});
+
+T("each cue has its own gate and none of them throws", () => {
+  const M = soundModule();
+  // one cue's burst must not silence a different cue, or a tap and its
+  // confirmation would cancel each other
+  let a = 0, b = 0;
+  M.cueOnce("a", 26, () => a++);
+  M.cueOnce("b", 26, () => b++);
+  M.cueOnce("a", 26, () => a++);
+  assert.equal(a, 1);
+  assert.equal(b, 1);
+  // and the stop button has to stay silent-safe in a dead audio state
+  assert.doesNotThrow(() => M.cueOnce("c", 26, () => {}));
 });
 
 for (const [name, fn] of tests) {

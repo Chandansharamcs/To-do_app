@@ -131,41 +131,63 @@ t("the nav order and the settings rename are what he asked for", ()=>{
   // label changed, id did not: the id is inside localStorage keys and backups
   assert.match(defs, /\["vault", "settings"\]/);
 });
-t("the nav design is the one he described, not a loading bar", ()=>{
-  // the tick that crossed the bar and the stepping diodes read as a loading
-  // indicator, which is exactly what he objected to
-  assert.ok(!SRC.includes(".tab-sweep"), "the loading-style sweep is back");
-  assert.ok(!SRC.includes(".tab-dot"), "the stepping diodes are back");
-  // a cyan-to-red radial leak anchored to the bottom of the bar, and a
-  // whole-screen flash on a switch
-  const glow = SRC.slice(SRC.indexOf(".tab-glow {"), SRC.indexOf("@keyframes tabGlowBreath"));
-  assert.match(glow, /radial-gradient/);
-  assert.match(glow, /rgba\(94, 234, 212/, "no cyan");
-  assert.match(glow, /rgba\(240, 87, 107/, "no red");
-  const flash = SRC.slice(SRC.indexOf(".tab-flash {"), SRC.indexOf("@keyframes tabFlash"));
-  assert.match(flash, /position: fixed/, "the flash does not cover the screen");
-  assert.match(flash, /pointer-events: none/, "the flash would eat taps");
-  assert.match(SRC, /@keyframes tabFlash/);
-  assert.match(SRC, /<span key=\{flashKey\} className="tab-flash"/);
+t("the nav is the old bar again, polished, and the v71 wash is gone", ()=>{
+  // He asked for the gradient leak and the switch flash, then changed his mind
+  // ("keep the nav that was before"). Both are gone; the v66 mechanics -- the
+  // ladder, the puck, the tick, one diode per tab -- are back.
+  assert.ok(!SRC.includes(".tab-glow"), "the v71 gradient leak is still here");
+  assert.ok(!SRC.includes(".tab-flash"), "the v71 screen flash is still here");
+  assert.ok(SRC.includes(".tab-sweep"), "the tick is missing");
+  assert.ok(SRC.includes(".tab-dot"), "the diodes are missing");
+  assert.match(SRC, /className="tab-sweep"/);
+  assert.match(SRC, /className="tab-dot"/);
+  // the polish: the tick fades at its ends instead of starting and stopping
+  const sweep = SRC.slice(SRC.indexOf(".tab-sweep {"), SRC.indexOf("@keyframes tabSweep"));
+  assert.match(sweep, /linear-gradient\(90deg/, "the tick is a hard line again");
+  assert.match(sweep, /width: 48px/, "the tick was not widened");
+  // and the light on the selection is a shadow, not a gradient surface
+  assert.match(SRC, /text-shadow: 0 0 12px rgba\(94,234,212,0\.45\)/);
 });
-t("neither the leak nor the flash can scale a full-screen layer", ()=>{
-  // the one compositor failure this project has seen was a full-screen element
-  // scaled 26x. Both new effects are banned from transform: scale.
-  for (const sel of [".tab-glow {", ".tab-flash {"]) {
-    const blk = SRC.slice(SRC.indexOf(sel), SRC.indexOf("}", SRC.indexOf(sel)));
-    assert.ok(!/scale\(/.test(blk), `${sel} scales`);
+t("every interaction cue is in the same key, and none can machine-gun", ()=>{
+  // All of them come from A major pentatonic, so any sequence of cues across a
+  // screen still sounds like one instrument. A noise layer's filter frequency
+  // is not a note, so those are stripped before the check.
+  const iSound = SRC.indexOf("const sound = {");
+  let pal = SRC.slice(iSound, SRC.indexOf("\n};", iSound));
+  pal = pal.replace(/playNoise\(\{[^}]*\}\)/g, "");
+  const NOTE = new Set([
+    196, 220, 233.1, 261.6, 311.1, 329.6, 392.0, 415.3, 440.0, 493.9, 554.4, 587.3,
+    659.3, 880.0, 987.8, 1046.5, 1108.7, 1174.7, 1318.5, 1568, 1760.0,
+  ]);
+  const freqs = [...pal.matchAll(/freq: ([0-9.]+)/g)].map((m) => Number(m[1]));
+  assert.ok(freqs.length >= 20, `the palette lost its notes (${freqs.length} found)`);
+  const off = freqs.filter((f) => !NOTE.has(f));
+  assert.deepEqual(off, [], `notes outside the key: ${off.join(", ")}`);
+  // a repeat guard per cue, keyed on the audio clock so a burst cannot stack
+  assert.match(SRC, /function cueOnce\(kind, ms, fn\)/);
+  assert.match(SRC, /const __cueAt = Object\.create\(null\);/);
+  for (const cue of ["click", "check", "untick", "toggle", "open", "close", "success", "error"]) {
+    assert.match(SRC, new RegExp(`cueOnce\\("${cue}"`), `${cue} has no repeat guard`);
   }
+  // and toggle has to know which way it went
+  assert.match(SRC, /toggle: \(on = true\)/);
 });
-t("the ambient bed is on by default and is a pitch bed, not hiss", ()=>{
-  assert.match(SRC, /const SOUND_DEFAULTS = \{ volume: 70, ambient: "cozy", ambientVolume: 30/);
-  assert.match(SRC, /\{ id: "cozy",/, "the cozy scene is missing");
-  const cozy = SRC.slice(SRC.indexOf('if (sceneId === "cozy")'), SRC.indexOf('} else if (sceneId === "rain")') > 0
-    ? SRC.indexOf('} else if (sceneId === "rain")') : SRC.indexOf("// one slow fade for the whole bed"));
-  // a chord, not just filtered noise
-  const tones = (cozy.match(/tone\(\{ freq:/g) || []).length;
-  assert.ok(tones >= 4, `cozy holds ${tones} tones, expected a chord`);
-  assert.match(cozy, /setInterval\(pluck/, "no music box");
-  // and the box must clean itself up, or every scene swap leaks an interval
+t("ticking and unticking a habit are different sounds", ()=>{
+  // v72: four toggles used to play the generic tap on the way off, which made
+  // undoing something sound exactly like doing it.
+  const checks = (SRC.match(/sound\.check\(\)/g) || []).length;
+  const unticks = (SRC.match(/sound\.untick\(\)/g) || []).length;
+  assert.equal(checks, 4, `expected 4 tick cues, found ${checks}`);
+  assert.equal(unticks, 4, `expected 4 untick cues, found ${unticks}`);
+  assert.ok(!/if \(willBeDone\) \{ sound\.success\(\)/.test(SRC), "a toggle still plays the success fanfare");
+});
+t("ambient is off by default again, and the beds stay available", ()=>{
+  // v71 defaulted the bed to "cozy"; he said to leave the beds alone, so the
+  // default is silence and the scenes remain selectable.
+  assert.match(SRC, /const SOUND_DEFAULTS = \{ volume: 70, ambient: "off"/);
+  assert.match(SRC, /\{ id: "cozy",/);
+  // the music box still cleans up its interval on every scene swap
+  const cozy = SRC.slice(SRC.indexOf('if (sceneId === "cozy")'), SRC.indexOf("// one slow fade for the whole bed"));
   assert.match(cozy, /clearInterval\(boxTimer\)/);
 });
 t("a new worker never reloads the page out from under the user", ()=>{

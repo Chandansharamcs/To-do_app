@@ -1192,15 +1192,15 @@ const countAudio = () => `
   window.webkitAudioContext = Patched;
 `;
 
-await test("the sound panel lives in settings and starts on the cozy bed", async () => {
+await test("the sound panel lives in settings and starts silent", async () => {
   const { ctx, page, errors } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
   await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   assert.equal(await page.locator(".snd").count(), 1, "no sound panel in settings");
-  // v71: ambient is on by default now (his call), at a low level
-  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "cozy",
-    "the ambient bed should default to the cozy bed");
+  // v72: ambient is off again; he told me to leave the beds alone
+  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "off",
+    "the ambient bed should default to silence");
   assert.equal(await page.locator(".snd-status").count(), 1, "no audio state line");
   assert.deepEqual(errors, []);
   await ctx.close();
@@ -1653,43 +1653,36 @@ await test("a luck draw that wins does not take the screen down", async () => {
   await ctx.close();
 });
 
-await test("the nav glows cyan into red and the screen flashes on a switch", async () => {
+await test("the nav is the old bar again, and no screen wash survives", async () => {
   const { ctx, page, errors } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
   await page.waitForTimeout(600);
   const nav = await page.evaluate(() => {
-    const g = document.querySelector(".tab-glow");
+    const sweep = document.querySelector(".tab-sweep");
     return {
       order: [...document.querySelectorAll(".tabs button")].map((b) => b.getAttribute("aria-label")),
-      glow: g ? getComputedStyle(g).backgroundImage : null,
-      // the leak must sit UNDER the bar, not across the icons
-      glowTop: g ? g.getBoundingClientRect().top : null,
-      barTop: document.querySelector(".tabs").getBoundingClientRect().top,
-      flashBefore: document.querySelectorAll(".tab-flash").length,
+      glow: !!document.querySelector(".tab-glow"),
+      flash: document.querySelectorAll(".tab-flash").length,
+      sweep: !!sweep,
+      // the tick is a fading light, not a hard line
+      sweepImage: sweep ? getComputedStyle(sweep).backgroundImage : null,
+      dots: document.querySelectorAll(".tab-dot").length,
     };
   });
   assert.deepEqual(nav.order,
     ["today", "tasks", "routines", "quest", "tools", "pip", "settings"],
     "the nav order he asked for is not the nav order");
-  assert.match(nav.glow, /radial-gradient/, "no gradient on the nav bar");
-  assert.match(nav.glow, /94, 234, 212/, "no cyan in the leak");
-  assert.match(nav.glow, /240, 87, 107/, "no red in the leak");
-  assert.ok(nav.glowTop < nav.barTop + 4, "the leak is not anchored to the bottom edge");
-  assert.equal(nav.flashBefore, 0, "a flash exists before anything was switched");
+  // v72: he asked for the gradient leak and the wash, then asked for the old
+  // bar back. Both v71 effects must be gone, and the old bar must be present.
+  assert.equal(nav.glow, false, "the v71 gradient leak survived");
+  assert.equal(nav.flash, 0, "the v71 screen wash survived");
+  assert.ok(nav.sweep, "the soft tick is missing");
+  assert.equal(nav.dots, 7, "the diodes are missing");
+  assert.match(nav.sweepImage, /linear-gradient/, "the tick is a hard line again");
 
   await page.getByRole("tab", { name: "tools" }).click();
   await page.waitForTimeout(80);
-  const mid = await page.evaluate(() => {
-    const f = document.querySelector(".tab-flash");
-    return f ? { op: +getComputedStyle(f).opacity, img: getComputedStyle(f).backgroundImage } : null;
-  });
-  assert.ok(mid, "switching a tab did not flash");
-  assert.ok(mid.op > 0.05, `the flash was invisible (opacity ${mid && mid.op})`);
-  assert.match(mid.img, /94, 234, 212/, "the flash has no cyan");
-  assert.match(mid.img, /240, 87, 107/, "the flash has no red");
-  await page.waitForTimeout(600);
-  assert.equal(await page.evaluate(() => +getComputedStyle(document.querySelector(".tab-flash") || { opacity: 0 }).opacity), 0,
-    "the flash stayed on screen");
+  assert.equal(await page.locator(".tab-flash").count(), 0, "switching still flashed the screen");
   assert.deepEqual(errors, []);
   await ctx.close();
 });

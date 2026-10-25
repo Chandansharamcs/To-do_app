@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v72`** | 2026-10-25 | The old nav back and polished; interaction sounds as one instrument |
 | **`v71`** | 2026-10-25 | A cyan-to-red nav leak, a switch flash, settings, and a cozy bed |
 | **`v70`** | 2026-10-25 | A luck draw that wins had no name, and took the screen with it |
 | **`v69`** | 2026-10-24 | A crash shows its message instead of a black screen |
@@ -94,6 +95,79 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v72 ───────────────────────────────────────────────────────────┐
+│  2026-10-25 · the bar he liked, and one instrument                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The v71 nav is gone
+
+He asked for the gradient leak and the screen wash, then asked for the bar he
+had before. Both v71 effects are removed -- `.tab-glow` and `.tab-flash` no
+longer exist in the file. The v66 mechanics are back: the magnification
+ladder, one travelling puck, a tick crossing the bar, one diode per tab.
+
+What was actually changed is the finish:
+
+- the tick is a **48px soft light with gradient ends** instead of a hard 1px
+  line, so it reads as a sweep rather than as a progress bar
+- the puck is 2px, rounded, with a cyan bloom under it
+- the diodes are quiet at rest and only the selected one breathes
+- the selected label and glyph pick up a cyan text/drop shadow
+- one shared easing curve across the ladder, the puck and the glow
+
+Verified in a browser: 7 tabs in his order, `tab-glow` absent, `tab-flash`
+absent, tick present with a `linear-gradient`, 7 diodes, puck 56×2px under the
+selected tab.
+
+### The ambient beds: left alone
+
+v71 turned the bed on by default and added a "cozy" bed. He said to leave the
+beds alone, so the **default is silence again** (`ambient: "off"`, nonsense
+values fall back to `"off"`). The cozy bed stays as an option for anyone who
+picks it. Nothing about the other four beds changed.
+
+### Interaction sounds: rebuilt as one instrument
+
+This is where the work went.
+
+**One key.** Every cue now comes from A major pentatonic (A C# E F# A). The
+palette had drifted into two keys -- the v66 cues were in C, so a screen that
+fired a tap and a confirmation played two unrelated chords. A test now fails
+on any note outside the key, stripping noise-filter frequencies first.
+
+**The tap is a tap.** `click` is wired to 84 places, so it is the shortest and
+quietest cue: a felt tap, 45ms, rising a whole tone, with the noise transient
+cut from 12ms@5200Hz to 9ms@4200Hz. `success` became a real A-major triad with
+a tail instead of two arbitrary tones. `error` became a soft descending minor
+third instead of a buzzer.
+
+**Ticking and unticking are different sounds.** Four toggles used to play the
+generic tap on the way *off*, which made undoing something sound exactly like
+doing it. Now: `check()` -- a low note plus its fifth, wood rather than glass
+-- and `untick()` -- one quiet step down, no fifth. `toggle(on)` also takes a
+direction now, so switching something on rises and switching it off falls.
+Panels get `open()` and `close()`.
+
+**A burst cannot machine-gun.** Two taps 4ms apart schedule two transients
+that sum into a buzz, which is the single most common reason UI sounds feel
+cheap. `cueOnce(kind, ms, fn)` gates each cue separately: 26ms for taps, 60ms
+for ticks, 110ms for errors.
+
+That gate had a real bug for one revision: it keyed on `ctx.currentTime`, and a
+**suspended** context freezes that clock -- so the first cue after muting would
+close the gate and never reopen it. A unit test caught it (five calls 30ms
+apart produced one sound). It is on `performance.now()` now.
+
+**Measured output**, not asserted: silent `0.000` → a tab tap peaks at
+`0.018` → the test-tone triad at `0.051`, against a master lowpass at 7.2kHz
+and volume 70.
+
+**698 unit / 105 regress / 11 gate / 8 cloud / 80 tools, 0 failed.**
 
 ---
 

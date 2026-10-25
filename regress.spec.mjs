@@ -1557,7 +1557,7 @@ await test("no tab paints a decorative gradient", async () => {
       for (const el of document.querySelectorAll("*")) {
         const cls = (el.className || "").toString();
         if (cls.includes("screen-pulse")) continue;          // transient bloom
-        if (/tab-(glow|flash|puck)/.test(cls)) continue;     // v71, his design
+        if (/tab-(sweep|puck)/.test(cls)) continue;          // v72, a fading light
         const bg = getComputedStyle(el).backgroundImage || "";
         if (!/gradient/.test(bg)) continue;
         if (/repeating-/.test(bg)) continue;                 // texture, not a ramp
@@ -1939,23 +1939,22 @@ await test("the nav magnifies the selected tab and slides a puck to it", async (
         const m = getComputedStyle(t.querySelector(".tab-inner")).transform;
         return m === "none" ? 1 : +m.slice(7, m.indexOf(","));
       }),
-      // v71: the stepping diodes and the tick that crossed the bar read as a
-      // loading indicator, so both are gone. What moves now is one wide
-      // gradient layer sitting under the selected tab.
+      // v72: back to the bar he liked -- ladder, puck, tick, one diode per
+      // tab -- with the finish cleaned up. The v71 gradient leak and the
+      // full-screen wash are gone at his request.
       dots: document.querySelectorAll(".tab-dot").length,
       sweep: !!document.querySelector(".tab-sweep"),
       glow: !!document.querySelector(".tab-glow"),
-      glowShift: document.querySelector(".tab-glow")?.style.transform,
       flash: document.querySelectorAll(".tab-flash").length,
     };
   });
   await page.waitForTimeout(600);
   const a = await read();
   assert.equal(a.count, 7, `expected 7 tabs, got ${a.count}`);
-  assert.equal(a.dots, 0, "the stepping diodes are back");
-  assert.equal(a.sweep, false, "the loading-style sweep is back");
-  assert.ok(a.glow, "the gradient leak is missing");
-  assert.equal(a.flash, 0, "the switch flash should not exist before a switch");
+  assert.equal(a.dots, 7, "not every tab has a diode");
+  assert.ok(a.sweep, "the soft tick is missing");
+  assert.equal(a.glow, false, "the v71 gradient leak is still there");
+  assert.equal(a.flash, 0, "the v71 screen flash is still there");
   assert.equal(a.puck, `translateX(${a.active * 100}%)`, `puck is not under the active tab: ${a.puck}`);
 
   await gotoTab(page, "settings");
@@ -1964,8 +1963,7 @@ await test("the nav magnifies the selected tab and slides a puck to it", async (
   // settings is the last tab now: today > tasks > routines > quest > tools > pip
   assert.equal(b.active, 6, `active tab index is ${b.active}`);
   assert.equal(b.puck, "translateX(600%)", `the puck did not travel: ${b.puck}`);
-  assert.notEqual(a.glowShift, b.glowShift, "the glow did not follow the selection");
-  assert.ok(b.flash >= 1, "switching tabs did not flash the screen");
+  assert.equal(b.flash, 0, "switching tabs still flashes the screen");
   // the ladder: the selected tab is the largest, and size falls off with
   // distance rather than switching to a single hard "active" style
   // the ladder, measured from the NEW active index (settings is last now)
