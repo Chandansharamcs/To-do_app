@@ -1314,7 +1314,13 @@ function applyTheme(theme) {
 const SOUND_KEY = "tasksh.sound.v1";
 const SOUND_SETTINGS_KEY = "tasksh.soundcfg.v1";
 
-const SOUND_DEFAULTS = { volume: 70, ambient: "off", ambientVolume: 35, alarmSeconds: 10 };
+// v71: the bed starts ON, in "cozy", at a deliberately low level. It used to
+// default to "off" on the argument that an app which makes noise on its own
+// gets uninstalled -- but he asked for exactly the opposite, and the mute
+// button is one tap away. It still cannot start before the first gesture:
+// that is the browser's rule, not a setting, so the first tap anywhere fades
+// it in.
+const SOUND_DEFAULTS = { volume: 70, ambient: "cozy", ambientVolume: 30, alarmSeconds: 10 };
 
 function loadSoundCfg() {
   try {
@@ -1323,7 +1329,9 @@ function loadSoundCfg() {
     return {
       volume: clamp(raw.volume, SOUND_DEFAULTS.volume),
       ambientVolume: clamp(raw.ambientVolume, SOUND_DEFAULTS.ambientVolume),
-      ambient: AMBIENT_SCENES.some((s) => s.id === raw.ambient) ? raw.ambient : "off",
+      // v71: an unrecognised scene falls back to the default bed, not to
+      // silence -- silence is a choice the user makes with the off button.
+      ambient: AMBIENT_SCENES.some((s) => s.id === raw.ambient) ? raw.ambient : SOUND_DEFAULTS.ambient,
       alarmSeconds: [0, 3, 10, 20].includes(raw.alarmSeconds) ? raw.alarmSeconds : SOUND_DEFAULTS.alarmSeconds,
     };
   } catch {
@@ -1369,7 +1377,17 @@ function unlockAudio() {
   if (__audioUnlocked) return;
   const ctx = getAudioCtx();
   if (!ctx) return;
-  const done = () => { __audioUnlocked = true; };
+  const done = () => {
+    __audioUnlocked = true;
+    // v71: the bed is a default now, so it has to survive the fact that it
+    // cannot start before a gesture. The effect that owns it runs on mount,
+    // i.e. before any tap, so this is the moment it becomes possible -- and
+    // without this the app would sit silently until the user happened to open
+    // the sound panel, which is the "sound doesn't work" report.
+    try {
+      if (isSoundOn()) startAmbient(loadSoundCfg().ambient);
+    } catch { /* never let audio stand between a tap and the tap landing */ }
+  };
   if (ctx.state === "running") { done(); return; }
   const p = ctx.resume();
   if (p && typeof p.then === "function") p.then(done).catch(() => {});
@@ -1751,6 +1769,7 @@ function alarmRinging() {
  *  one you uninstall. */
 const AMBIENT_SCENES = [
   { id: "off",   label: "off",        desc: "silence" },
+  { id: "cozy",  label: "cozy",       desc: "a warm major-seventh pad and a music box, very quiet" },
   { id: "rain",  label: "rain",       desc: "steady, filtered, no thunder" },
   { id: "room",  label: "server room", desc: "a low hum and some air" },
   { id: "tape",  label: "tape",       desc: "pink noise with slow wow" },
@@ -1923,6 +1942,54 @@ function startAmbient(sceneId) {
     tone({ freq: 82.5, gain: 0.012 });
   }
 
+  if (sceneId === "cozy") {
+    // v71: the one bed built from PITCH rather than noise. Everything else
+    // here is filtered hiss with a tone under it, which is a room, not a
+    // mood. This is a warm major seventh (A2, E3, C#4, E4, G#4) held under a
+    // whisper of air, with a music box on top that plays a note every few
+    // seconds. The intervals are wide and the notes are quiet: the point is
+    // that you stop noticing it.
+    const air = noise({ type: "lowpass", freq: 1100, q: 0.5, gain: 0.035, lfo: 0.05, depth: 140 });
+    swell(air.gain, 0.06, 0.012);
+
+    // the chord. Detunes are in cents and deliberately not equal: two voices
+    // a couple of cents apart beat slowly, and that slow beat is what makes a
+    // held pad sound alive instead of frozen.
+    tone({ freq: 110.00, type: "sine",     gain: 0.050, detune: -3, wobble: 0.09, wobbleDepth: 0.006 });
+    tone({ freq: 164.81, type: "sine",     gain: 0.030, detune: +4, wobble: 0.07, wobbleDepth: 0.004 });
+    tone({ freq: 277.18, type: "triangle", gain: 0.016, detune: -6, wobble: 0.05, wobbleDepth: 0.003 });
+    tone({ freq: 329.63, type: "sine",     gain: 0.012, detune: +2 });
+    tone({ freq: 415.30, type: "sine",     gain: 0.008, detune: -4, wobble: 0.11, wobbleDepth: 0.002 });
+
+    // the music box: A major pentatonic, so every note agrees with the chord
+    // and nothing can land badly. Each note is its own oscillator with a soft
+    // attack and a long decay, then it stops itself -- nothing accumulates.
+    const BOX = [880.00, 1108.73, 1318.51, 659.26, 987.77];
+    let step = 0;
+    const pluck = () => {
+      if (!__ambient || __ambient.id !== "cozy") return;
+      const t = ctx.currentTime + 0.02;
+      const f = BOX[step % BOX.length];
+      step += 1 + (step % 3 === 0 ? 1 : 0);        // skips, so it is not a scale
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      const lp = ctx.createBiquadFilter();
+      o.type = "sine";
+      o.frequency.value = f;
+      lp.type = "lowpass";
+      lp.frequency.value = 2600;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.020, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
+      o.connect(lp); lp.connect(g); g.connect(bed);
+      o.start(t);
+      o.stop(t + 2.7);
+    };
+    const boxTimer = setInterval(pluck, 7400);
+    setTimeout(pluck, 2200);
+    nodes.push({ stop() { clearInterval(boxTimer); }, disconnect() {} });
+  }
+
   // one slow fade for the whole bed, so a swap never clicks
   bed.gain.setTargetAtTime(1, now, 0.9);
   __ambient = { id: sceneId, nodes };
@@ -1930,6 +1997,45 @@ function startAmbient(sceneId) {
 
 function ambientPlaying() {
   return __ambient ? __ambient.id : null;
+}
+
+/** What the audio system actually thinks is happening.
+ *
+ *  v71: "sound doesn't work" is unactionable. This makes it a sentence: is
+ *  there a context, is it running, is a bed playing, at what volume. It is
+ *  read by the SOUND row only, and it never throws -- every field has a
+ *  fallback.
+ */
+function audioStatus() {
+  const hasApi = typeof window !== "undefined" && !!(window.AudioContext || window.webkitAudioContext);
+  const ctx = __audioCtx;
+  let cfg = SOUND_DEFAULTS;
+  try { cfg = loadSoundCfg(); } catch { /* defaults are fine */ }
+  return {
+    hasApi,
+    state: !hasApi ? "unsupported" : ctx ? ctx.state : "not started",
+    unlocked: __audioUnlocked,
+    bed: ambientPlaying(),
+    muted: !isSoundOn(),
+    volume: cfg.volume,
+    bedLevel: cfg.ambientVolume,
+  };
+}
+
+/** A short warm chord, so "is there any sound at all" is one tap to answer. */
+function playTestChime() {
+  // resume() is asynchronous: the context reports "running" a tick later, so a
+  // reader taken straight after this call still says suspended. The SOUND row
+  // already re-reads once a second; this makes the reason obvious instead of
+  // looking like the button did nothing.
+  unlockAudio();
+  withAudio(() => {
+    playTone([
+      { freq: 440.00, start: 0,    dur: 0.5, type: "sine", gain: 0.06, space: 0.9 },
+      { freq: 554.37, start: 0.06, dur: 0.5, type: "sine", gain: 0.05, space: 0.9 },
+      { freq: 659.26, start: 0.12, dur: 0.7, type: "sine", gain: 0.045, space: 1.2 },
+    ]);
+  });
 }
 
 function useSoundToggle() {
@@ -3987,6 +4093,14 @@ function SoundRow() {
   const [cfg, setCfg] = useAmbient();
   const [on, toggle] = useSoundToggle();
   const [ringing, setRinging] = useState(false);
+  const [pinged, setPinged] = useState(false);
+  const [status, setStatus] = useState(audioStatus);
+  // the context can go running at any moment (the first tap anywhere does it),
+  // so the reading is refreshed rather than taken once
+  useEffect(() => {
+    const t = setInterval(() => setStatus(audioStatus()), 1000);
+    return () => clearInterval(t);
+  }, []);
   useEffect(() => () => stopAlarm(), []);
 
   const demoAlarm = () => {
@@ -4003,6 +4117,35 @@ function SoundRow() {
         <button className={`snd-mute ${on ? "on" : ""}`} onClick={toggle}>
           {on ? "sound is on" : "muted"}
         </button>
+
+        {/* v71: the state of the audio system, in words. "Sound doesn't work"
+            is impossible to act on; "context: suspended" is a diagnosis. */}
+        <div className="snd-status">
+          <span className={`snd-state snd-${status.state.replace(/ /g, "-")}`}>
+            {status.state}
+          </span>
+          <span className="snd-status-bit">
+            bed: {status.bed || "—"}
+          </span>
+          <span className="snd-status-bit">
+            {`${status.volume}%`}
+          </span>
+          <button
+            className="snd-ping"
+            onClick={() => { setPinged(true); playTestChime(); setStatus(audioStatus()); }}
+          >
+            {pinged ? "again" : "test tone"}
+          </button>
+        </div>
+        {status.state === "suspended" && (
+          <div className="snd-hint">
+            the browser is holding the audio until you touch the app — tap
+            anywhere, or press test tone.
+          </div>
+        )}
+        {status.muted && (
+          <div className="snd-hint">muted — nothing will play until sound is on.</div>
+        )}
 
         <label className="snd-slider">
           <span className="snd-label">volume</span>
@@ -15036,8 +15179,11 @@ function TodoApp() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const [soundOn, toggleSound] = useSoundToggle();
+  // v71: the switch flash. A counter, not a boolean -- remounting the overlay
+  // is what restarts the animation, and a boolean would only flash once.
+  const [flashKey, setFlashKey] = useState(0);
   const changeTab = (t) => {
-    if (t !== tab) sound.whoosh();
+    if (t !== tab) { sound.whoosh(); setFlashKey((k) => k + 1); }
     setTab(t);
     // With seven tabs the bar can still overflow on a narrow phone or a long
     // pet name. Pull the selected one into view so the active tab is never
@@ -15858,59 +16004,89 @@ function TodoApp() {
           left: 0;
           bottom: 0;
           height: 2px;
-          background: var(--accent);
-          box-shadow: 0 0 10px 1px var(--glow);
+          background: linear-gradient(90deg, #5EEAD4 0%, #9CD3C6 42%, #F0576B 100%);
+          box-shadow: 0 0 10px 1px rgba(94, 234, 212, 0.5), 0 0 18px 2px rgba(240, 87, 107, 0.3);
           transition: transform 420ms cubic-bezier(.22, 1.35, .36, 1);
           pointer-events: none;
           z-index: 3;
         }
 
-        /* one tick crossing the bar every few seconds: cheap, quiet, and it
-           makes an idle screen feel powered on rather than paused */
-        .tab-sweep {
+        /* ---- v71: the leak ------------------------------------------------
+           A single wide gradient layer, centred on the selected tab and
+           sliding with it: cyan at the core, red bleeding out past the end of
+           the bar. It replaces the tick that crossed the bar (it read as a
+           loading indicator) and the stepping activity diodes.
+
+           Only transform and opacity animate, the layer is the size of the
+           bar, and it never scales -- a full-screen scaled element is what a
+           phone can fail to composite, and that failure is a black screen. */
+        .tabs { overflow: hidden; }
+        .tab-glow {
           position: absolute;
-          top: 0;
           left: 0;
-          width: 26px;
-          height: 1px;
-          background: var(--accent);
-          opacity: 0.35;
-          animation: tabSweep 9s linear infinite;
+          right: 0;
+          bottom: 0;
+          top: auto;
+          height: 300%;
+          z-index: 0;
           pointer-events: none;
-          z-index: 3;
+          /* anchored to the bottom edge and three bars tall, so the light
+             reads as coming up from under the icons rather than as a band
+             across them. Cyan core, red bleeding out to either side. */
+          background: radial-gradient(
+            52% 46% at 50% 100%,
+            rgba(94, 234, 212, 0.62) 0%,
+            rgba(94, 234, 212, 0.34) 30%,
+            rgba(148, 196, 190, 0.22) 52%,
+            rgba(240, 87, 107, 0.34) 72%,
+            rgba(240, 87, 107, 0.12) 86%,
+            rgba(240, 87, 107, 0) 97%
+          );
+          transition: transform 460ms cubic-bezier(.22, 1.2, .36, 1);
+          animation: tabGlowBreath 5.5s ease-in-out infinite;
         }
-        @keyframes tabSweep {
-          0%   { transform: translateX(-30px); opacity: 0; }
-          8%   { opacity: 0.35; }
-          92%  { opacity: 0.35; }
-          100% { transform: translateX(calc(100vw + 30px)); opacity: 0; }
+        @keyframes tabGlowBreath {
+          0%, 100% { opacity: 0.82; }
+          50%      { opacity: 1; }
+        }
+        .tabs button { z-index: 2; }
+
+        /* the selected glyph picks up the same two colours */
+        .tabs button.active .tab-label {
+          text-shadow: 0 0 10px rgba(94, 234, 212, 0.55), 0 0 22px rgba(240, 87, 107, 0.4);
+        }
+        .tabs button.active svg {
+          filter: drop-shadow(0 0 5px rgba(94, 234, 212, 0.55)) drop-shadow(0 0 12px rgba(240, 87, 107, 0.35));
         }
 
-        /* the activity diode above each icon */
-        .tab-dot {
-          position: absolute;
-          top: 3px;
-          left: 50%;
-          margin-left: -1.5px;
-          width: 3px;
-          height: 3px;
-          border-radius: 1px;
-          background: var(--track);
-          animation: tabDot 4.2s steps(1, end) infinite;
+        /* ---- v71: the switch flash ---------------------------------------
+           Whole screen, 420ms, cyan into red. Fixed and pointer-events none so
+           it cannot eat a tap; opacity only, so the compositor has one layer
+           to fade and nothing to rasterise at a new size. */
+        .tab-flash {
+          position: fixed;
+          inset: 0;
+          z-index: 60;
+          pointer-events: none;
+          background: linear-gradient(
+            118deg,
+            rgba(94, 234, 212, 0.55) 0%,
+            rgba(120, 200, 210, 0.30) 38%,
+            rgba(240, 87, 107, 0.45) 78%,
+            rgba(240, 87, 107, 0.30) 100%
+          );
+          animation: tabFlash 420ms ease-out forwards;
+          contain: paint;
         }
-        .tabs button.active .tab-dot {
-          background: var(--accent);
-          animation: tabDotOn 1.6s steps(1, end) infinite;
+        @keyframes tabFlash {
+          0%   { opacity: 0; }
+          14%  { opacity: 0.55; }
+          46%  { opacity: 0.22; }
+          100% { opacity: 0; }
         }
-        @keyframes tabDot {
-          0%, 88%  { background: var(--track); }
-          90%, 94% { background: var(--accent2); opacity: 0.85; }
-          96%, 100% { background: var(--track); opacity: 1; }
-        }
-        @keyframes tabDotOn {
-          0%, 45%  { opacity: 1; }
-          50%, 95% { opacity: 0.25; }
-          100%     { opacity: 1; }
+        @media (prefers-reduced-motion: reduce) {
+          .tab-flash { animation: none; opacity: 0; }
+          .tab-glow { animation: none; transition: none; }
         }
 
         /* the glyph answers the selection: it lifts and brightens a touch */
@@ -15923,7 +16099,7 @@ function TodoApp() {
 
         @media (prefers-reduced-motion: reduce) {
           .tab-inner, .tab-puck, .tabs button svg, .tab-label { transition: none !important; }
-          .tab-sweep, .tab-dot, .tabs button.active .tab-dot { animation: none !important; }
+          .tab-glow { animation: none !important; }
         }
 
         .hero-card {
@@ -18436,6 +18612,28 @@ function TodoApp() {
           color: var(--accent); font-family: var(--font-mono); font-size: 10px;
         }
         .crash-btn.ghost { border-color: var(--border); color: var(--muted); }
+
+        /* v71: the sound panel's state line */
+        .snd-status {
+          display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+          margin: 8px 0 2px;
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.06em;
+        }
+        .snd-state {
+          text-transform: uppercase;
+          padding: 2px 6px; border-radius: 4px;
+          border: 1px solid var(--border); color: var(--muted);
+        }
+        .snd-running { color: var(--accent); border-color: var(--accent); }
+        .snd-suspended, .snd-not-started { color: var(--accent2); border-color: var(--accent2); }
+        .snd-unsupported { color: var(--danger); border-color: var(--danger); }
+        .snd-status-bit { color: var(--muted); }
+        .snd-ping {
+          margin-left: auto;
+          background: transparent; border: 1px solid var(--accent); color: var(--accent);
+          border-radius: 6px; padding: 4px 9px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.06em;
+        }
 
         .coin-total { color: var(--accent); font-variant-numeric: tabular-nums; }
         .today-xp-total {
@@ -21283,6 +21481,12 @@ pet, wallet and themes are always included.
             active tab a programmatic state, not just a CSS class. */}
 
 
+        {/* v71: cyan to red washing over the whole screen on a switch.
+            Fixed, pointer-events none, and only opacity animates -- no
+            transform and no huge scaled layer, because a full-screen scaled
+            layer is exactly what a phone can fail to composite. */}
+        {flashKey > 0 && <span key={flashKey} className="tab-flash" aria-hidden="true" />}
+
         <div
           key={tab}
           className="tab-content"
@@ -21379,9 +21583,7 @@ pet, wallet and themes are always included.
             onRun={(fn) => fn()}
             buildItems={() => {
               const items = [];
-              for (const [id, label] of [["today","today"],["tasks","tasks"],["routines","routines"],
-                                         ["vault","vault"],["quest","quest"],["tools","tools"],
-                                         ["pet", petCtl.pet.name.toLowerCase()]]) {
+              for (const [id, label] of TAB_DEFS) {
                 items.push({ key: `tab-${id}`, kind: "tab", label, run: () => changeTab(id) });
               }
               for (const h of habits) {
@@ -21423,7 +21625,6 @@ pet, wallet and themes are always included.
                 className={`${id === "pet" ? "tab-pet " : ""}${tab === id ? "active" : ""}`.trim()}
                 onClick={() => changeTab(id)}
               >
-                <span className="tab-dot" style={{ animationDelay: `${i * 0.21}s` }} />
                 {/* the magnification scales this wrapper, not the button:
                     transform shrinks the hit area too, and at 360px the far
                     tabs fell to 43.99px -- under the 44px minimum */}
@@ -21444,23 +21645,40 @@ pet, wallet and themes are always included.
               transform: `translateX(${activeTabIndex * 100}%)`,
             }}
           />
-          {/* a slow tick crossing the bar: the only thing here that moves
-              when you are not touching it */}
-          <span className="tab-sweep" aria-hidden="true" />
+          {/* v71: the leak. One wide gradient layer centred on the selected
+              tab -- cyan at the core, red bleeding out to the edges -- that
+              slides when the selection moves. It replaces the tick that
+              crossed the bar, which read as a loading indicator rather than
+              as light. */}
+          <span
+            className="tab-glow"
+            aria-hidden="true"
+            style={{ transform: `translateX(${(activeTabIndex - (TAB_DEFS.length - 1) / 2) * (100 / TAB_DEFS.length)}%)` }}
+          />
         </div>
       </div>
     </div>
   );
 }
 
+// v71: nav order and one rename.
+//
+// The order is his: today > tasks > routines > quest > tools > pip > settings.
+// The old bar put the vault in the middle, which meant the two most-used tabs
+// sat on either side of a screen most people open about once a week.
+//
+// "vault" is now "settings" everywhere the user reads it. The id stays
+// "vault" on purpose: it is in localStorage keys, in the backup payload and in
+// a hundred test selectors, and renaming the id would be a migration for a
+// word. Only the label changed.
 const TAB_DEFS_BASE = [
   ["today", "today"],
   ["tasks", "tasks"],
   ["routines", "routines"],
-  ["vault", "vault"],
   ["quest", "quest"],
   ["tools", "tools"],
   ["pet", "pet"],
+  ["vault", "settings"],
 ];
 
 const LAST_ERROR_KEY = "tasksh.lasterror.v1";

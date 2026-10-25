@@ -181,15 +181,18 @@ T("the vibration pattern matches the alarm length", () => {
 
 T("defaults are silence: the bed never starts on its own", () => {
   const M = soundModule();
-  assert.equal(M.SOUND_DEFAULTS.ambient, "off");
-  assert.equal(M.loadSoundCfg().ambient, "off");
+  // v71: the bed defaults to "cozy" at a low level -- he asked for ambient to
+  // be on. It still cannot start before a gesture; that is the browser.
+  assert.equal(M.SOUND_DEFAULTS.ambient, "cozy");
+  assert.equal(M.loadSoundCfg().ambient, "cozy");
+  assert.ok(M.SOUND_DEFAULTS.ambientVolume <= 35, "the default bed is too loud to be ambient");
 });
 
 T("volumes are clamped and nonsense falls back", () => {
   assert.equal(soundModule({ cfg: { volume: 999 } }).loadSoundCfg().volume, 100);
   assert.equal(soundModule({ cfg: { volume: -5 } }).loadSoundCfg().volume, 0);
   assert.equal(soundModule({ cfg: { volume: "loud" } }).loadSoundCfg().volume, 70);
-  assert.equal(soundModule({ cfg: { ambient: "disco" } }).loadSoundCfg().ambient, "off");
+  assert.equal(soundModule({ cfg: { ambient: "disco" } }).loadSoundCfg().ambient, "cozy");
   assert.equal(soundModule({ cfg: { alarmSeconds: 999 } }).loadSoundCfg().alarmSeconds, 10);
 });
 
@@ -208,7 +211,8 @@ T("settings round-trip", () => {
 T("every scene in the picker is a scene the engine can build", () => {
   const M = soundModule();
   assert.ok(M.AMBIENT_SCENES.length >= 4);
-  assert.equal(M.AMBIENT_SCENES[0].id, "off", "off must be first and default");
+  assert.equal(M.AMBIENT_SCENES[0].id, "off", "off must stay first so muting is the first button");
+  assert.ok(M.AMBIENT_SCENES.some((x) => x.id === "cozy"), "the cozy bed is missing");
   for (const sc of M.AMBIENT_SCENES) {
     assert.ok(sc.label && sc.desc, `${sc.id} has no label or description`);
     M.stopAmbient();

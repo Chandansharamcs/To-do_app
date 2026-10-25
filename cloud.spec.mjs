@@ -124,7 +124,7 @@ const cloudBtn = (page, name) => page.locator(".cloud-card").getByRole("button",
 const updateBtn = (page, name) => page.locator(".update-card").getByRole("button", { name });
 
 const openVault = async (page) => {
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(250);
 };
 

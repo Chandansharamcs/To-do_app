@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v71`** | 2026-10-25 | A cyan-to-red nav leak, a switch flash, settings, and a cozy bed |
 | **`v70`** | 2026-10-25 | A luck draw that wins had no name, and took the screen with it |
 | **`v69`** | 2026-10-24 | A crash shows its message instead of a black screen |
 | **`v68`** | 2026-10-21 | rngdle: auto-roll unlocked, faster pace, a shop that shows the next rung |
@@ -93,6 +94,77 @@ later the *why* is the only part that still matters.
 ```
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+```
+┌─ v71 ───────────────────────────────────────────────────────────┐
+│  2026-10-25 · light in the nav, a bed that is warm                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The nav bar was a loading indicator, and he was right
+
+The v66 bar had two things moving: a tick that crossed the bar every nine
+seconds, and a row of stepping diodes. Both read as *working*, not as *alive*.
+He said so, and named what he wanted instead.
+
+- **The leak.** One wide layer under the bar, anchored to the bottom edge and
+  three bars tall, radial-gradient: cyan at the core, red bleeding out past the
+  ends. It slides to the selected tab over 460ms and breathes 5.5s. The
+  selected label and glyph pick up the same two colours as a text/drop shadow.
+  The puck is now a cyan→red bar rather than flat cyan.
+- **The flash.** A whole-screen cyan→red wash, 420ms, on every tab switch. It
+  is `position: fixed`, `pointer-events: none`, and **opacity is the only thing
+  that animates** -- the one compositor failure this project has actually seen
+  was a full-screen element scaled 26x, so both new effects are banned from
+  `scale()` by a test.
+- The tick and the diodes are gone.
+
+Measured mid-switch: flash opacity `0.40` at 90ms and `0` by 700ms; leak
+background `radial-gradient(52% 46% at 50% 100%, rgba(94,234,212 …)`.
+
+### Gradients: the rule was never his
+
+Since v62 a regress test has failed on any decorative gradient. That rule came
+from a ChatGPT-made template, not from him. He has now asked for two gradients
+by name, so the test allows exactly `.tab-glow`, `.tab-flash` and `.tab-puck`
+and still fails on anything else -- every card, panel and sheet is still flat.
+
+### vault → settings, and a new order
+
+The label is "settings"; the **id stays `vault`**, because it lives in
+localStorage keys, in the backup payload and in a hundred selectors, and
+renaming it would be a data migration bought for a word. Order is his:
+`today > tasks > routines > quest > tools > pip > settings`. The command
+palette now reads the same list instead of keeping its own copy.
+
+### The sound: on by default, and a bed built from pitch
+
+Two separate problems.
+
+**It was silent by default.** `ambient: "off"` was a deliberate v67 choice
+("an app that makes noise on its own is one you uninstall"). He asked for
+ambient, so the default is now `cozy` at level 30 — quiet, and one tap from
+off. It still cannot start before the first gesture, so `unlockAudio` now
+starts the bed the moment audio becomes possible, instead of waiting for the
+sound panel to be opened.
+
+**Every bed was hiss.** rain, room, tape and night are all filtered noise with
+a tone under them. That is a room, not a mood. The new `cozy` bed is built from
+**pitch**: a warm major seventh (A2, E3, C#4, E4, G#4) held under a whisper of
+air, with a music box on A-major pentatonic plucking a note every 7.4s. Voices
+are detuned by a few cents each so they beat slowly instead of sitting frozen;
+the box's interval is cleared on every scene swap so nothing leaks.
+
+**And the report itself.** "Sound doesn't work" is unactionable, so the SOUND
+row now prints the state of the audio system: `RUNNING` / `SUSPENDED` /
+`NOT STARTED` / `UNSUPPORTED`, which bed is playing, the volume, and a **test
+tone** button that plays a warm A-major chime. Measured in a browser with a
+gesture: row reads `RUNNING | bed: cozy | 70%`, and the tone brings a
+suspended context up.
+
+**695 unit / 105 regress / 11 gate / 8 cloud / 80 tools, 0 failed.**
 
 ---
 

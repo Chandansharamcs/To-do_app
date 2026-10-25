@@ -124,6 +124,50 @@ t("no render path dereferences a lookup-by-id map directly", ()=>{
   assert.match(SRC, /p && typeof p\.name === "string" \? p\.name : null/);
   assert.match(SRC, /if \(winner === "luck"\) return "a luck draw";/);
 });
+t("the nav order and the settings rename are what he asked for", ()=>{
+  const defs = SRC.slice(SRC.indexOf("const TAB_DEFS_BASE = ["), SRC.indexOf("];", SRC.indexOf("const TAB_DEFS_BASE = [")));
+  const ids = [...defs.matchAll(/\["(\w+)",/g)].map((m) => m[1]);
+  assert.deepEqual(ids, ["today", "tasks", "routines", "quest", "tools", "pet", "vault"]);
+  // label changed, id did not: the id is inside localStorage keys and backups
+  assert.match(defs, /\["vault", "settings"\]/);
+});
+t("the nav design is the one he described, not a loading bar", ()=>{
+  // the tick that crossed the bar and the stepping diodes read as a loading
+  // indicator, which is exactly what he objected to
+  assert.ok(!SRC.includes(".tab-sweep"), "the loading-style sweep is back");
+  assert.ok(!SRC.includes(".tab-dot"), "the stepping diodes are back");
+  // a cyan-to-red radial leak anchored to the bottom of the bar, and a
+  // whole-screen flash on a switch
+  const glow = SRC.slice(SRC.indexOf(".tab-glow {"), SRC.indexOf("@keyframes tabGlowBreath"));
+  assert.match(glow, /radial-gradient/);
+  assert.match(glow, /rgba\(94, 234, 212/, "no cyan");
+  assert.match(glow, /rgba\(240, 87, 107/, "no red");
+  const flash = SRC.slice(SRC.indexOf(".tab-flash {"), SRC.indexOf("@keyframes tabFlash"));
+  assert.match(flash, /position: fixed/, "the flash does not cover the screen");
+  assert.match(flash, /pointer-events: none/, "the flash would eat taps");
+  assert.match(SRC, /@keyframes tabFlash/);
+  assert.match(SRC, /<span key=\{flashKey\} className="tab-flash"/);
+});
+t("neither the leak nor the flash can scale a full-screen layer", ()=>{
+  // the one compositor failure this project has seen was a full-screen element
+  // scaled 26x. Both new effects are banned from transform: scale.
+  for (const sel of [".tab-glow {", ".tab-flash {"]) {
+    const blk = SRC.slice(SRC.indexOf(sel), SRC.indexOf("}", SRC.indexOf(sel)));
+    assert.ok(!/scale\(/.test(blk), `${sel} scales`);
+  }
+});
+t("the ambient bed is on by default and is a pitch bed, not hiss", ()=>{
+  assert.match(SRC, /const SOUND_DEFAULTS = \{ volume: 70, ambient: "cozy", ambientVolume: 30/);
+  assert.match(SRC, /\{ id: "cozy",/, "the cozy scene is missing");
+  const cozy = SRC.slice(SRC.indexOf('if (sceneId === "cozy")'), SRC.indexOf('} else if (sceneId === "rain")') > 0
+    ? SRC.indexOf('} else if (sceneId === "rain")') : SRC.indexOf("// one slow fade for the whole bed"));
+  // a chord, not just filtered noise
+  const tones = (cozy.match(/tone\(\{ freq:/g) || []).length;
+  assert.ok(tones >= 4, `cozy holds ${tones} tones, expected a chord`);
+  assert.match(cozy, /setInterval\(pluck/, "no music box");
+  // and the box must clean itself up, or every scene swap leaks an interval
+  assert.match(cozy, /clearInterval\(boxTimer\)/);
+});
 t("a new worker never reloads the page out from under the user", ()=>{
   // v69 tried an unconditional controllerchange -> location.reload() and
   // cloud.spec caught it: the app already routes updates through

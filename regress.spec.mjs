@@ -51,7 +51,7 @@ const { server, port } = await serve();
 const BASE = `http://127.0.0.1:${port}/`;
 const browser = await chromium.launch();
 
-const TABS = ["today", "tasks", "routines", "vault", "quest", "pip"];
+const TABS = ["today", "tasks", "routines", "quest", "tools", "pip", "settings"];
 
 async function open(viewport = { width: 390, height: 844 }) {
   const ctx = await browser.newContext({ viewport });
@@ -530,7 +530,7 @@ await test("the panel is scrollable on a phone", async () => {
   await ctx.close();
 });
 
-await test("the vault is backup, build and sound now", async () => {
+await test("settings is backup, build and sound now", async () => {
   // v44: habits, projects and notes were removed from this screen at the
   // owner's request. The four note tests that used to live here went with
   // the UI. The DATA is deliberately untouched -- these keys still ride in
@@ -539,7 +539,7 @@ await test("the vault is backup, build and sound now", async () => {
   // v47: SOUND joined them. It is here rather than behind the titlebar
   // speaker because that button's one job is muting in a hurry.
   const { ctx, page } = await open();
-  await gotoTab(page, "vault");
+  await gotoTab(page, "settings");
   const heads = await page.locator(".section-header").allInnerTexts();
   assert.deepEqual(heads.map((h) => h.trim()), ["CLOUD-BACKUP", "APP-UPDATE", "SOUND"],
     `vault shows ${heads.join(", ")}`);
@@ -1513,9 +1513,9 @@ await test("an inventory row says when it was last done, or that it never was", 
   await ctx.close();
 });
 
-await test("the vault reports storage without writing to it", async () => {
+await test("settings reports storage without writing to it", async () => {
   const { ctx, page } = await open();
-  await gotoTab(page, "vault");
+  await gotoTab(page, "settings");
   const row = page.locator(".store-row");
   assert.equal(await row.count(), 1, "no storage row in the vault");
   const before = await page.evaluate(() => Object.keys(localStorage).sort().join(","));
@@ -1542,16 +1542,22 @@ await test("the vault reports storage without writing to it", async () => {
 //   - repeating-linear-gradient: the 1px Conky grid and scanline texture
 //   - mask-image: the scroll edge fade, which has to ramp or it isn't a fade
 //   - .screen-pulse: one 1.1s light bloom on level-up, never at rest
+//   - .tab-glow / .tab-flash / .tab-puck: v71, requested BY HIM -- a cyan-to-red
+//     leak along the nav bar and a cyan-to-red wash on a tab switch. The
+//     no-gradient rule came from a template he did not write, so his word
+//     settles it. These are the only surfaces allowed to ramp; every card,
+//     panel and sheet is still flat.
 await test("no tab paints a decorative gradient", async () => {
   const { ctx, page } = await open();
   const offenders = [];
-  for (const tab of ["today", "tasks", "routines", "vault", "quest", "tools"]) {
+  for (const tab of ["today", "tasks", "routines", "quest", "tools", "settings"]) {
     await gotoTab(page, tab);
     const hits = await page.evaluate(() => {
       const out = [];
       for (const el of document.querySelectorAll("*")) {
         const cls = (el.className || "").toString();
         if (cls.includes("screen-pulse")) continue;          // transient bloom
+        if (/tab-(glow|flash|puck)/.test(cls)) continue;     // v71, his design
         const bg = getComputedStyle(el).backgroundImage || "";
         if (!/gradient/.test(bg)) continue;
         if (/repeating-/.test(bg)) continue;                 // texture, not a ramp
@@ -1933,27 +1939,48 @@ await test("the nav magnifies the selected tab and slides a puck to it", async (
         const m = getComputedStyle(t.querySelector(".tab-inner")).transform;
         return m === "none" ? 1 : +m.slice(7, m.indexOf(","));
       }),
+      // v71: the stepping diodes and the tick that crossed the bar read as a
+      // loading indicator, so both are gone. What moves now is one wide
+      // gradient layer sitting under the selected tab.
       dots: document.querySelectorAll(".tab-dot").length,
       sweep: !!document.querySelector(".tab-sweep"),
+      glow: !!document.querySelector(".tab-glow"),
+      glowShift: document.querySelector(".tab-glow")?.style.transform,
+      flash: document.querySelectorAll(".tab-flash").length,
     };
   });
   await page.waitForTimeout(600);
   const a = await read();
   assert.equal(a.count, 7, `expected 7 tabs, got ${a.count}`);
-  assert.equal(a.dots, 7, "not every tab has an activity dot");
-  assert.ok(a.sweep, "the ambient sweep is missing");
+  assert.equal(a.dots, 0, "the stepping diodes are back");
+  assert.equal(a.sweep, false, "the loading-style sweep is back");
+  assert.ok(a.glow, "the gradient leak is missing");
+  assert.equal(a.flash, 0, "the switch flash should not exist before a switch");
   assert.equal(a.puck, `translateX(${a.active * 100}%)`, `puck is not under the active tab: ${a.puck}`);
 
-  await gotoTab(page, "vault");
+  await gotoTab(page, "settings");
   await page.waitForTimeout(700);
   const b = await read();
-  assert.equal(b.active, 3, `active tab index is ${b.active}`);
-  assert.equal(b.puck, "translateX(300%)", `the puck did not travel: ${b.puck}`);
+  // settings is the last tab now: today > tasks > routines > quest > tools > pip
+  assert.equal(b.active, 6, `active tab index is ${b.active}`);
+  assert.equal(b.puck, "translateX(600%)", `the puck did not travel: ${b.puck}`);
+  assert.notEqual(a.glowShift, b.glowShift, "the glow did not follow the selection");
+  assert.ok(b.flash >= 1, "switching tabs did not flash the screen");
   // the ladder: the selected tab is the largest, and size falls off with
   // distance rather than switching to a single hard "active" style
-  assert.ok(b.scaleX[3] > b.scaleX[2], `active tab is not magnified: ${b.scaleX.join(",")}`);
-  assert.ok(b.scaleX[2] > b.scaleX[1], `no falloff with distance: ${b.scaleX.join(",")}`);
-  assert.ok(b.scaleX[0] < b.scaleX[1], `the far end is not settled back: ${b.scaleX.join(",")}`);
+  // the ladder, measured from the NEW active index (settings is last now)
+  // The ladder clamps at three steps of distance (1, 0.955, 0.91, 0.865), so
+  // with the LAST tab selected the three far tabs are all at the floor -- equal
+  // is correct there, not a regression. What must hold is: strictly smaller at
+  // each step until the floor, and never larger further away.
+  const ai = b.active;
+  assert.ok(b.scaleX[ai] > b.scaleX[ai - 1], `active tab is not magnified: ${b.scaleX.join(",")}`);
+  assert.ok(b.scaleX[ai - 1] > b.scaleX[ai - 2], `no falloff with distance: ${b.scaleX.join(",")}`);
+  assert.ok(b.scaleX[ai - 2] > b.scaleX[ai - 3], `the falloff stops too early: ${b.scaleX.join(",")}`);
+  for (let i = 1; i <= ai - 3; i++) {
+    assert.ok(b.scaleX[i - 1] <= b.scaleX[i], `a far tab is larger than a nearer one: ${b.scaleX.join(",")}`);
+  }
+  assert.ok(Math.abs(b.scaleX[0] - 0.865) < 0.01, `the far end is not at the floor: ${b.scaleX[0]}`);
   await ctx.close();
 });
 

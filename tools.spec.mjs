@@ -1192,14 +1192,16 @@ const countAudio = () => `
   window.webkitAudioContext = Patched;
 `;
 
-await test("the sound panel lives in the vault and defaults to silence", async () => {
+await test("the sound panel lives in settings and starts on the cozy bed", async () => {
   const { ctx, page, errors } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
-  assert.equal(await page.locator(".snd").count(), 1, "no sound panel in the vault");
-  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "off",
-    "the ambient bed must not be on by default");
+  assert.equal(await page.locator(".snd").count(), 1, "no sound panel in settings");
+  // v71: ambient is on by default now (his call), at a low level
+  assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "cozy",
+    "the ambient bed should default to the cozy bed");
+  assert.equal(await page.locator(".snd-status").count(), 1, "no audio state line");
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -1207,14 +1209,14 @@ await test("the sound panel lives in the vault and defaults to silence", async (
 await test("choosing an ambient scene sticks across a reload", async () => {
   const { ctx, page } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   await page.locator(".snd-scenes button", { hasText: "rain" }).click();
   await page.waitForTimeout(300);
   assert.equal((await sndCfg(page)).ambient, "rain");
 
   await page.reload({ waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   assert.equal(await page.locator(".snd-scenes button.on").first().innerText(), "rain");
   await ctx.close();
@@ -1223,7 +1225,7 @@ await test("choosing an ambient scene sticks across a reload", async () => {
 await test("the alarm length is a setting, and silent is one of the choices", async () => {
   const { ctx, page } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   assert.equal((await sndCfg(page) || {}).alarmSeconds ?? 10, 10, "10s should be the default");
   await page.locator(".snd-scenes button", { hasText: "silent" }).click();
@@ -1235,7 +1237,7 @@ await test("the alarm length is a setting, and silent is one of the choices", as
 await test("the ring can be tested and stopped from the panel", async () => {
   const { ctx, page, errors } = await phone();
   await page.goto(BASE, { waitUntil: "networkidle" });
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   await page.locator(".snd-test").click();
   await page.waitForTimeout(400);
@@ -1255,7 +1257,7 @@ await test("muting silences the app, including a running ambient bed", async () 
   const page = await ctxx.newPage();
   await page.goto(BASE, { waitUntil: "networkidle" });
 
-  await page.getByRole("tab", { name: "vault" }).click();
+  await page.getByRole("tab", { name: "settings" }).click();
   await page.waitForTimeout(350);
   await page.locator(".snd-scenes button", { hasText: "rain" }).click();
   await page.waitForTimeout(400);
@@ -1647,6 +1649,66 @@ await test("a luck draw that wins does not take the screen down", async () => {
   }
   assert.equal(crashes, 0, "the crash panel replaced the roll screen");
   assert.ok(luckLabels > 0, "no luck draw was kept, so this test proved nothing");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("the nav glows cyan into red and the screen flashes on a switch", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const nav = await page.evaluate(() => {
+    const g = document.querySelector(".tab-glow");
+    return {
+      order: [...document.querySelectorAll(".tabs button")].map((b) => b.getAttribute("aria-label")),
+      glow: g ? getComputedStyle(g).backgroundImage : null,
+      // the leak must sit UNDER the bar, not across the icons
+      glowTop: g ? g.getBoundingClientRect().top : null,
+      barTop: document.querySelector(".tabs").getBoundingClientRect().top,
+      flashBefore: document.querySelectorAll(".tab-flash").length,
+    };
+  });
+  assert.deepEqual(nav.order,
+    ["today", "tasks", "routines", "quest", "tools", "pip", "settings"],
+    "the nav order he asked for is not the nav order");
+  assert.match(nav.glow, /radial-gradient/, "no gradient on the nav bar");
+  assert.match(nav.glow, /94, 234, 212/, "no cyan in the leak");
+  assert.match(nav.glow, /240, 87, 107/, "no red in the leak");
+  assert.ok(nav.glowTop < nav.barTop + 4, "the leak is not anchored to the bottom edge");
+  assert.equal(nav.flashBefore, 0, "a flash exists before anything was switched");
+
+  await page.getByRole("tab", { name: "tools" }).click();
+  await page.waitForTimeout(80);
+  const mid = await page.evaluate(() => {
+    const f = document.querySelector(".tab-flash");
+    return f ? { op: +getComputedStyle(f).opacity, img: getComputedStyle(f).backgroundImage } : null;
+  });
+  assert.ok(mid, "switching a tab did not flash");
+  assert.ok(mid.op > 0.05, `the flash was invisible (opacity ${mid && mid.op})`);
+  assert.match(mid.img, /94, 234, 212/, "the flash has no cyan");
+  assert.match(mid.img, /240, 87, 107/, "the flash has no red");
+  await page.waitForTimeout(600);
+  assert.equal(await page.evaluate(() => +getComputedStyle(document.querySelector(".tab-flash") || { opacity: 0 }).opacity), 0,
+    "the flash stayed on screen");
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await test("settings is the vault, renamed, and the sound panel reports its state", async () => {
+  const { ctx, page, errors } = await phone();
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "settings" }).click();
+  await page.waitForTimeout(400);
+  // the id stays "vault" (it is in storage keys); only the label changed
+  assert.equal(await page.locator("#tab-panel").getAttribute("aria-labelledby"), "tab-vault");
+  const line = await page.locator(".snd-status").innerText();
+  assert.match(line, /bed: cozy|bed: —/, `no audio state: ${line}`);
+  assert.equal(await page.locator(".snd-ping").count(), 1, "no test tone button");
+  await page.locator(".snd-ping").click();
+  // resume() settles a tick later and the row re-reads once a second
+  await page.waitForTimeout(1400);
+  const after = await page.locator(".snd-status").innerText();
+  assert.match(after, /RUNNING/i, `the test tone did not bring the audio up: ${after.replace(/\n/g, " | ")}`);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
