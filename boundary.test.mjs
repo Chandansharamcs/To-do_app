@@ -104,7 +104,11 @@ t("the recorder is readable from the vault and stays quiet when healthy", ()=>{
   assert.match(SRC, /function LastCrashRow\(\)/);
   assert.match(SRC, /<LastCrashRow \/>/);
   // rendered inside VaultView, next to the other storage/build rows
-  const vault = SRC.slice(SRC.indexOf("function VaultView()"), SRC.indexOf("function VaultView()") + 700);
+  // v73: the vault grew a penalty panel, so the window is the whole component
+  // rather than a fixed number of characters -- the claim is "inside VaultView",
+  // and a byte count was never what this test meant.
+  const vStart = SRC.indexOf("function VaultView(");
+  const vault = SRC.slice(vStart, SRC.indexOf("\nfunction ", vStart + 10));
   assert.match(vault, /<LastCrashRow \/>/);
   assert.match(SRC, /if \(!list\.length && \(!stage \|\| stage\.name === "idle"\)\) return null;/);
   assert.match(SRC, /navigator\.clipboard\.writeText\(text\)/, "no copy button");

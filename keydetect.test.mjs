@@ -248,6 +248,7 @@ const {
 } = liftApp([
   "LEVEL_K", "LEVEL_P", "DIFF_VALUE",
   "cumulativeXPForLevel", "levelFromXP", "computeTotalXP", "computeTagXP", "computeTagXPRaw", "DEFAULT_TAGS", "habitTags", "AREA_TO_TAG", "migrateAreaToTag",
+  "habitTagShare", "evenTagShare", "tagShareTotal", "tagPenaltyTotal",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "habitDoneOn", "habitSlipOn", "markHabit", "mergeHabitLists",
 ]);

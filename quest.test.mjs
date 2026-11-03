@@ -51,7 +51,9 @@ function slice(name) {
 const NAMES = [
   "DEFAULT_TAGS", "normaliseHistory", "countHist", "habitXP", "habitPenalty",
   "habitNet", "habitDoneOn", "habitSlipOn", "markHabit", "habitTags",
-  "migrateAreaToTag", "computeTagXP", "computeTagXPRaw",
+  "migrateAreaToTag", "computeTagXP",
+  "habitTagShare", "evenTagShare", "tagShareTotal", "tagPenaltyTotal",
+  "computeTagXPRaw",
   "axisBreakdown", "habitMonthGrid", "habitHistoryStats", "longestRun", "shiftMonth",
   "MONTH_NAMES", "computeTotalXP", "questSortRank", "sortQuests",
 ];

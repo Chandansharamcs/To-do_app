@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v73`** | 2026-11-03 | The night charges you, routines get seasons, and a swipe finally means "done" |
 | **`v72`** | 2026-10-25 | The old nav back and polished; interaction sounds as one instrument |
 | **`v71`** | 2026-10-25 | A cyan-to-red nav leak, a switch flash, settings, and a cozy bed |
 | **`v70`** | 2026-10-25 | A luck draw that wins had no name, and took the screen with it |
@@ -97,6 +98,97 @@ later the *why* is the only part that still matters.
 ```
 
 ---
+
+```
+┌─ v73 ───────────────────────────────────────────────────────────┐
+│  2026-11-03 · the night, presets, swipe-to-complete, tag splits   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The night charges you
+
+Two rules, and both hit **tag XP in the graph** — never coins, never the level:
+
+| rule | fires when | costs |
+|---|---|---|
+| routines | fewer than **10** routines completed in the day | **−10 on every tag** |
+| board | none of the day's **3 drawn daily quests** completed | **−50 on one random tag** |
+
+A PWA cannot wake itself at 03:00, so "every night" is implemented as **"for
+the day that ended, the first time the app is open after the 03:00 rollover"**:
+`settleNight()` runs on mount, on a 30s interval, and on `visibilitychange`. A
+tab left open across the rollover settles without a reload.
+
+Four safety rules, each one a way this could have gone wrong:
+
+- **first run seeds, never charges.** With no `lastDay` the app writes today and
+  stops. Nobody is fined for days it was not watching.
+- **one charge per (day, kind, tag).** The ledger de-duplicates, so a re-run, a
+  reload or a second tab cannot double-charge.
+- **seven days of catch-up, no more.** `PENALTY_CATCHUP_DAYS = 7` — being away
+  is not the same as sloth, and a fortnight of debt would end the feature.
+- **an unseen board is not charged.** The quest tab only remembers *today's*
+  three picks, so the day's draw is copied into the penalty store while it is
+  still live. A day whose board was never seen is skipped rather than invented
+  — a fine for a quest that may never have been drawn would be a lie with a
+  price on it.
+
+Settings → **NIGHTLY-PENALTIES** shows the two rules in plain words, lets every
+number be edited (0 turns a rule off), has a *run check now* button, and prints
+the receipt: what was taken, from which tag, for which day, and why — `7/10
+routines`, `0/1 daily tasks`.
+
+Where it lands: `tagAxisRaw = computeTagXPRaw + computeDailyTagXP +
+tagPenaltyTotal`, so the radar, the tap-a-dot popup and the tag editor all read
+the same number, and the axis still floors at zero.
+
+### Routine presets
+
+Winter is a different set of times for the same life, so a preset is the whole
+routine list under a name. Creating one asks the question outright — **copy my
+N routines** or **start from scratch** — and a copy deliberately drops history:
+a new season starting with last season's streak already counted would be a
+loan, not a reset. `apply` asks before it replaces the list; `update` overwrites
+a preset with what you have now. Stored under `tasksh.routinePresets.v1`.
+
+### Swipe to complete
+
+The routine gesture was **swipe LEFT to delete** — there was no "swipe to skip"
+to remove, so retasking the row would have quietly kept a gesture that destroys
+data. Now only the completing direction moves: drag right past 70px and the
+day is marked, with a flat cyan reveal reading *swipe to complete* → *release
+to complete* → *done today*. Left does nothing at all. The mark is
+complete-only, matching the button: a swipe can never un-complete a day.
+
+### Points per tag
+
+A quest wearing two or more tags used to count **in full toward each** with a
+note saying "use sparingly". It now has a real allocation: a slider per tag, a
+running total, *split evenly* and *full to each* buttons. The split is stored
+as `tagShare` (percents) and only saved when it totals 100; **unset means full
+value to every tag**, which is exactly what every existing quest already did,
+so nothing re-scores on upgrade. The editor says so in words ("unset — this
+quest counts in full toward every tag") instead of showing a misleading 0%.
+
+### Verified
+
+`penalty.test.mjs` (new, 34) slices the engine out of the source and runs it
+without a browser: threshold edges at 9/10/11, the random tag at both ends of
+`rand()`, both fines on one bad day, a 0 threshold, a 0 fine, the "penalties
+off" switch, no double-charge across a re-run, the 80-entry ledger cap, the
+7-day catch-up window and month/year boundaries.
+
+`v73.spec.mjs` (new, 13) proves the wiring in headless Chromium: three missed
+nights charge on open and never for today, a reload charges nothing more, a
+clean profile writes `lastDay` and an empty ledger, ten routines + one quest is
+clean, "off" is silent, the panel's numbers persist, a preset survives a
+reload (the first cut of `loadPresets` rejected its own stored shape — it now
+accepts the object *and* the old array), applying a preset replaces the list
+and keeps the template, a right swipe marks the day while a left swipe deletes
+nothing, and a two-tag split saves only at 100%.
+
+Totals: **732 unit**, **13 v73**, **105 regress**, **11 gate**, **8 cloud**,
+**80 tools** — 0 failed.
 
 ```
 ┌─ v72 ───────────────────────────────────────────────────────────┐

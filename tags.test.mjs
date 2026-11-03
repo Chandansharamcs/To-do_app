@@ -52,6 +52,7 @@ const NAMES = [
   "DEFAULT_TAGS", "TAG_PALETTE", "MAX_TAGS", "STORAGE_KEY_TAGS",
   "AREA_TO_TAG", "migrateAreaToTag", "habitTags",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
+  "habitTagShare", "evenTagShare", "tagShareTotal", "tagPenaltyTotal",
   "computeTagXPRaw", "computeTagXP", "computeTotalXP", "axisBreakdown",
 ];
 const M = new Function(`${NAMES.map(slice).join("\n\n")}\nreturn {${NAMES.join(",")}};`)();

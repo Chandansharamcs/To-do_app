@@ -541,7 +541,9 @@ await test("settings is backup, build and sound now", async () => {
   const { ctx, page } = await open();
   await gotoTab(page, "settings");
   const heads = await page.locator(".section-header").allInnerTexts();
-  assert.deepEqual(heads.map((h) => h.trim()), ["CLOUD-BACKUP", "APP-UPDATE", "SOUND"],
+  // v73: NIGHTLY-PENALTIES joined the vault -- it is the only screen that can
+  // take points away, so its rules and its receipt belong next to the backups.
+  assert.deepEqual(heads.map((h) => h.trim()), ["CLOUD-BACKUP", "NIGHTLY-PENALTIES", "APP-UPDATE", "SOUND"],
     `vault shows ${heads.join(", ")}`);
   assert.equal(await page.locator(".note-composer, .vault-habit-row").count(), 0,
     "a removed section is still rendering");

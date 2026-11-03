@@ -3019,6 +3019,7 @@ function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelet
   const axisRef = useRef(null); // 'x' | 'y' | null (undecided)
   const movedRef = useRef(false);
   const [removing, setRemoving] = useState(false);
+  const [justDone, setJustDone] = useState(false);
   const exitTimer = useRef(null);
   // swipe-to-delete defers onDelete for the exit animation; drop the timer if
   // this row unmounts first so it can't fire against a stale id
@@ -3077,18 +3078,25 @@ function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelet
 
     if (axisRef.current !== "x") return;
     if (Math.abs(dx) > 4) movedRef.current = true;
-    setDragX(Math.max(-120, Math.min(0, dx)));
+    // v73: only the completing direction moves. Dragging left does nothing at
+    // all -- the skip/delete gesture is gone, so a wrong swipe can never lose
+    // a routine or mark a day off by accident.
+    setDragX(Math.max(0, Math.min(140, dx)));
   };
   const finishDrag = () => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    if (dragX < -70) {
-      setRemoving(true);
-      if (!exitTimer.current) exitTimer.current = setTimeout(() => onDelete(routine.id), 200);
-    } else {
+    if (dragX >= 70 && !doneToday) {
+      // the same rule the mark button uses: complete, never toggle off, so a
+      // swipe cannot un-complete a day you already did
+      onToggleToday(routine.id);
+      setJustDone(true);
+      setTimeout(() => setJustDone(false), 900);
       setDragX(0);
-      if (!movedRef.current) openEdit();
+      return;
     }
+    setDragX(0);
+    if (!movedRef.current) openEdit();
   };
 
   return (
@@ -3096,13 +3104,13 @@ function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelet
       className={`routine-row-wrap ${removing ? "removing" : ""}`}
       style={{ animationDelay: `${index * 35}ms` }}
     >
-      <div className="routine-delete-bg">
-        <svg viewBox="0 0 24 24" width="16" height="16">
-          <path d="M6 6l12 12M18 6L6 18" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
-        </svg>
+      {/* v73: the reveal behind the row. It used to be a delete cross for the
+          swipe-left gesture; it is now the tick for swipe-right to complete. */}
+      <div className={`routine-done-bg ${dragX > 30 ? "show" : ""} ${dragX >= 70 ? "armed" : ""}`} aria-hidden="true">
+        {doneToday ? "done today" : dragX >= 70 ? "release to complete" : "swipe to complete"}
       </div>
       <div
-        className={`routine-row ${status} edge`}
+        className={`routine-row ${status} edge ${justDone ? "just-done" : ""}`}
         style={{
           transform: `translateX(${dragX}px)`,
           transition: draggingRef.current ? "none" : "transform 220ms cubic-bezier(.65,0,.35,1)",
@@ -3242,7 +3250,7 @@ function RoutineRow({ routine, status, index, total = 1, nowMinutes = 0, onDelet
 
 // aggregate completion % across all routines, last 7 IST days
 
-function RoutinesView({ routines, setRoutines }) {
+function RoutinesView({ routines, setRoutines, presetCtl }) {
   const ist = useISTClock();
   const nowMinutes = ist.hour * 60 + ist.minute;
   const { sorted, currentId, nextId } = useRoutineStatus(routines, nowMinutes);
@@ -3279,6 +3287,21 @@ function RoutinesView({ routines, setRoutines }) {
 
   const deleteRoutine = (id) => { setRoutines((prev) => prev.filter((r) => r.id !== id)); sound.delete(); };
 
+  // ---- v73: presets ----
+  const { presets, activeId } = presetCtl;
+  const [ask, setAsk] = useState(false);          // the copy-or-scratch question
+  const [newName, setNewName] = useState("");
+  const [confirmApply, setConfirmApply] = useState(null);
+
+  const createPreset = (mode) => {
+    const name = newName.trim() || (mode === "copy" ? "copied" : "empty");
+    const list = mode === "copy" ? presetRoutinesFrom(routines, makeId) : [];
+    presetCtl.create(name, list);
+    setAsk(false);
+    setNewName("");
+    sound.success();
+  };
+
   const toggleToday = (id) => {
     const today = getISTDateString(0);
     const willBeDone = !(routines.find((r) => r.id === id)?.history || []).includes(today);
@@ -3307,6 +3330,83 @@ function RoutinesView({ routines, setRoutines }) {
 
   return (
     <div className="task-list routine-list">
+      {/* ---- v73: presets ------------------------------------------------
+          Winter is a different set of times for the same life, so a preset is
+          the whole list, saved under a name. Creating one asks the question
+          outright: copy what you have, or start from an empty sheet. */}
+      <div className="section-header"><span>PRESETS</span></div>
+      <div className="preset-box">
+        {presets.length === 0 && (
+          <div className="preset-empty">no presets yet — save this list as one for winter</div>
+        )}
+        {presets.map((p) => (
+          <div className={`preset-row ${activeId === p.id ? "active" : ""}`} key={p.id}>
+            <div className="preset-main">
+              <span className="preset-name">{p.name}</span>
+              <span className="preset-meta">
+                {p.routines.length} routine{p.routines.length === 1 ? "" : "s"}
+                {activeId === p.id ? " · active" : ""}
+              </span>
+            </div>
+            {confirmApply === p.id ? (
+              <div className="preset-confirm">
+                <span className="preset-warn">replace your {routines.length} routines?</span>
+                <button className="preset-btn danger" onClick={() => { presetCtl.apply(p.id); setConfirmApply(null); sound.success(); }}>
+                  yes, apply
+                </button>
+                <button className="preset-btn" onClick={() => setConfirmApply(null)}>cancel</button>
+              </div>
+            ) : (
+              <div className="preset-actions">
+                <button className="preset-btn" onClick={() => { setConfirmApply(p.id); sound.click(); }}>
+                  apply
+                </button>
+                <button
+                  className="preset-btn"
+                  title="overwrite this preset with the routines you have now"
+                  onClick={() => { presetCtl.updateFromCurrent(p.id, routines, makeId); sound.success(); }}
+                >update</button>
+                <button
+                  className="preset-btn danger"
+                  onClick={() => { presetCtl.remove(p.id); sound.delete(); }}
+                  aria-label={`delete ${p.name}`}
+                >×</button>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {ask ? (
+          <div className="preset-ask">
+            <input
+              className="preset-name-input"
+              placeholder="preset name (winter, summer…)"
+              value={newName}
+              maxLength={24}
+              onChange={(e) => setNewName(e.target.value)}
+            />
+            <div className="preset-ask-q">start from what?</div>
+            <div className="preset-ask-actions">
+              <button className="preset-btn save" onClick={() => createPreset("copy")}>
+                copy my {routines.length} routines
+              </button>
+              <button className="preset-btn" onClick={() => createPreset("scratch")}>
+                start from scratch
+              </button>
+              <button className="preset-btn" onClick={() => { setAsk(false); setNewName(""); }}>cancel</button>
+            </div>
+            <div className="preset-hint">
+              copying keeps the times you have and drops the history, so a new
+              season starts with a clean streak
+            </div>
+          </div>
+        ) : (
+          <button className="preset-new" onClick={() => { setAsk(true); sound.open(); }}>
+            + new preset
+          </button>
+        )}
+      </div>
+
       <div className="hero-card">
         <div className="hero-clock-row">
           <span className="hero-clock">
@@ -4343,10 +4443,129 @@ function StoreRow() {
   );
 }
 
-function VaultView() {
+/** The night, made legible and adjustable.
+ *
+ *  v73: the rules are his numbers, not mine -- 10 routines, 10 points, 50 for
+ *  the board -- so they are here as inputs, not as constants in the code. The
+ *  ledger below is the receipt: what was charged, for which day, against which
+ *  tag, and why. Nothing is silent.
+ */
+function PenaltyRow({ penaltyCtl }) {
+  const { penalty, setPenalty, settleNight } = penaltyCtl;
+  const cfg = penalty.cfg;
+  const [open, setOpen] = useState(false);
+
+  const patch = (p) => {
+    const next = { ...penalty, cfg: { ...penalty.cfg, ...p } };
+    setPenalty(next);
+    savePenaltyState(next);
+    sound.tick();
+  };
+  const setNum = (key, v) => {
+    const n = Math.max(0, Math.min(999, Math.round(Number(v) || 0)));
+    patch({ [key]: n });
+  };
+
+  const recent = [...penalty.ledger].reverse().slice(0, 8);
+  const tonight = penalty.ledger.filter((e) => e.day === getISTDateString(-1));
+
+  return (
+    <>
+      <div className="section-header"><span>NIGHTLY-PENALTIES</span></div>
+      <div className="note-card pen-card">
+        <div className="note-head">
+          <span className="note-prompt">~/night</span>
+          <span className="note-when">{cfg.on ? "on" : "off"}</span>
+        </div>
+        <pre className="note-body">
+          {cfg.on
+            ? `fewer than ${cfg.routineMin} routines in a day: −${cfg.routineFine} on every tag
+none of the day's 3 daily quests: −${cfg.questFine} on one random tag`
+            : "penalties are off — nothing is deducted"}
+        </pre>
+
+        <div className="note-actions">
+          <button className={`note-btn ${cfg.on ? "save" : ""}`} onClick={() => { patch({ on: !cfg.on }); }}>
+            {cfg.on ? "turn off" : "turn on"}
+          </button>
+          <button className="note-btn" onClick={() => { setOpen((v) => !v); sound.click(); }}>
+            {open ? "hide rules" : "rules"}
+          </button>
+          <button
+            className="note-btn"
+            title="settle the night again right now (safe: one charge per day)"
+            onClick={() => { settleNight(); sound.success(); }}
+          >run check now</button>
+        </div>
+
+        {open && (
+          <div className="pen-rules">
+            <label className="pen-field">
+              <span>at least</span>
+              <input type="number" min="0" max="999" value={cfg.routineMin}
+                     onChange={(e) => setNum("routineMin", e.target.value)} />
+              <span>routines a day</span>
+            </label>
+            <label className="pen-field">
+              <span>or −</span>
+              <input type="number" min="0" max="999" value={cfg.routineFine}
+                     onChange={(e) => setNum("routineFine", e.target.value)} />
+              <span>on every tag</span>
+            </label>
+            <label className="pen-field">
+              <span>at least</span>
+              <input type="number" min="0" max="999" value={cfg.questMin}
+                     onChange={(e) => setNum("questMin", e.target.value)} />
+              <span>of the day's quests</span>
+            </label>
+            <label className="pen-field">
+              <span>or −</span>
+              <input type="number" min="0" max="999" value={cfg.questFine}
+                     onChange={(e) => setNum("questFine", e.target.value)} />
+              <span>on one random tag</span>
+            </label>
+            <div className="pen-hint">
+              0 turns a rule off. checks run at the 03:00 rollover and are
+              caught up the first time you open the app after it — never for
+              more than 7 missed days.
+            </div>
+          </div>
+        )}
+
+        {tonight.length > 0 && (
+          <div className="pen-ledger">
+            <div className="pen-ledger-head">last night</div>
+            {tonight.map((e, i) => (
+              <div className="pen-entry" key={i}>
+                <span className={`pen-amt ${e.amount < 0 ? "neg" : ""}`}>{e.amount}</span>
+                <span className="pen-tag">{e.tag}</span>
+                <span className="pen-detail">{e.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {tonight.length === 0 && penalty.ledger.length > 0 && (
+          <div className="pen-ledger">
+            <div className="pen-ledger-head">earlier</div>
+            {recent.map((e, i) => (
+              <div className="pen-entry" key={i}>
+                <span className={`pen-amt ${e.amount < 0 ? "neg" : ""}`}>{e.amount}</span>
+                <span className="pen-tag">{e.tag}</span>
+                <span className="pen-detail">{e.day} · {e.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function VaultView({ penaltyCtl }) {
   return (
     <div className="task-list vault-scroll">
       <CloudBackupRow />
+      <PenaltyRow penaltyCtl={penaltyCtl} />
       <AppUpdateRow />
       <LastCrashRow />
       <SoundRow />
@@ -4475,6 +4694,227 @@ function countHist(h, type) {
 /** Reward per completion. Defaults preserve v34 habits unchanged. */
 function habitXP(h) { return Math.max(0, +h.xp || 0); }
 
+// ============================================================
+// v73: ROUTINE PRESETS
+//
+// Winter is the reason: the same day, at different times. A preset is a named
+// snapshot of the whole routine list -- times, durations, alternatives -- so
+// swapping seasons is one tap instead of twelve edits.
+//
+// Creating one asks the question he asked for: copy the current list to edit,
+// or start from an empty one. Nothing here ever mutates a preset implicitly;
+// "update from current" is a separate, deliberate action.
+// ============================================================
+
+const STORAGE_KEY_PRESETS = "tasksh.routinePresets.v1";
+
+function loadPresets() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY_PRESETS) || "null"); } catch { raw = null; }
+  // The store is {presets, activeId}. An array is also accepted because the
+  // first cut of this file wrote one -- cheap to keep, impossible to regret.
+  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.presets) ? raw.presets : null);
+  if (!list) return { presets: [], activeId: null };
+  const presets = list
+    .filter((p) => p && typeof p.name === "string" && Array.isArray(p.routines))
+    .map((p) => ({
+      id: Number(p.id) || 0,
+      name: String(p.name).slice(0, 24),
+      routines: p.routines
+        .filter((r) => r && typeof r.label === "string")
+        .map((r) => ({
+          id: Number(r.id) || 0,
+          label: String(r.label).slice(0, 60),
+          time: /^\d{1,2}:\d{2}$/.test(String(r.time)) ? String(r.time) : "07:00",
+          duration: Math.max(5, Math.min(720, Number(r.duration) || 30)),
+          alternatives: Array.isArray(r.alternatives) ? r.alternatives.map((a) => String(a).slice(0, 40)).filter(Boolean) : [],
+        })),
+      madeAt: Number(p.madeAt) || 0,
+    }));
+  const wantActive = Number(raw && raw.activeId);
+  const activeId = presets.some((p) => p.id === wantActive) ? wantActive : null;
+  return { presets, activeId };
+}
+
+function savePresets(state) {
+  try { localStorage.setItem(STORAGE_KEY_PRESETS, JSON.stringify(state)); } catch { /* full */ }
+}
+
+/** A copy of the routine list that is safe to edit.
+ *
+ *  New ids, and history deliberately dropped: a preset is a template for a
+ *  season, and carrying last winter's streak into it would credit the new
+ *  routine with days it never ran.
+ */
+function presetRoutinesFrom(list, makeIdFn) {
+  return (list || []).map((r) => ({
+    id: makeIdFn(),
+    label: String(r.label || "").slice(0, 60),
+    time: r.time,
+    duration: r.duration,
+    alternatives: Array.isArray(r.alternatives) ? [...r.alternatives] : [],
+  }));
+}
+
+// ============================================================
+// v73: NIGHTLY PENALTIES
+//
+// Two rules, both checked once per day at the 03:00 rollover and caught up the
+// next time the app is open (a PWA cannot wake itself at night, so "every
+// night" has to mean "for the day that ended, as soon as I can run"):
+//
+//   * routines: fewer than `routineMin` completed today -> every tag loses
+//     `routineFine`. The cost is per tag on purpose; the point is that a bad
+//     day shows up across the whole radar, not on one corner of it.
+//   * daily quests: none of the day's drawn board completed -> ONE random tag
+//     loses `questFine`. Random because the board does not know which part of
+//     your life the miss belonged to.
+//
+// Everything here is pure and takes its randomness as an argument, so the
+// rules can be tested without a clock, a browser or a React tree.
+// ============================================================
+
+const STORAGE_KEY_PENALTY = "tasksh.penalty.v1";
+
+const PENALTY_DEFAULTS = {
+  on: true,
+  routineMin: 10,     // "at least 10 routines"
+  routineFine: 10,    // "deduct 10 points from each tag"
+  questMin: 1,        // "at least one task from the set of three"
+  questFine: 50,      // "deduct 50 points from a random tag"
+};
+
+const PENALTY_BOARDS_MAX = 14;   // a fortnight of remembered boards
+
+/** Keeps only the newest N day-keys, so the store cannot grow forever. */
+function capBoards(boards) {
+  const days = Object.keys(boards || {}).sort();
+  const keep = days.slice(-PENALTY_BOARDS_MAX);
+  const out = {};
+  for (const d of keep) out[d] = boards[d];
+  return out;
+}
+
+const PENALTY_LEDGER_MAX = 80;
+const PENALTY_CATCHUP_DAYS = 7;   // never charge for more than a week of absence
+
+function loadPenaltyState() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY_PENALTY) || "null"); } catch { raw = null; }
+  const cfg = { ...PENALTY_DEFAULTS };
+  if (raw && raw.cfg && typeof raw.cfg === "object") {
+    for (const k of Object.keys(PENALTY_DEFAULTS)) {
+      if (typeof PENALTY_DEFAULTS[k] === "number") {
+        const v = Number(raw.cfg[k]);
+        cfg[k] = Number.isFinite(v) ? Math.max(0, Math.min(9999, Math.round(v))) : PENALTY_DEFAULTS[k];
+      } else if (typeof PENALTY_DEFAULTS[k] === "boolean") {
+        cfg[k] = typeof raw.cfg[k] === "boolean" ? raw.cfg[k] : PENALTY_DEFAULTS[k];
+      }
+    }
+  }
+  const ledger = Array.isArray(raw && raw.ledger)
+    ? raw.ledger
+        .filter((e) => e && typeof e.day === "string" && Number.isFinite(e.amount))
+        .map((e) => ({ day: e.day, kind: String(e.kind || "penalty"), tag: String(e.tag || ""), amount: Math.round(e.amount), detail: String(e.detail || ""), at: Number(e.at) || 0 }))
+        .slice(-PENALTY_LEDGER_MAX)
+    : [];
+  // lastDay is the last calendar day already settled. Absent on a fresh
+  // profile, which is why the first run seeds it instead of charging for a
+  // day that was never tracked.
+  const lastDay = typeof (raw && raw.lastDay) === "string" ? raw.lastDay : "";
+  // v73: the board the night has to judge. The quest tab only remembers
+  // TODAY's three picks, so each day's draw is copied here while it is still
+  // live -- otherwise "did he do one of his three?" is unanswerable tomorrow.
+  const boards = {};
+  if (raw && raw.boards && typeof raw.boards === "object") {
+    for (const [d, ids] of Object.entries(raw.boards)) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d) && Array.isArray(ids)) {
+        boards[d] = ids.filter((x) => x !== null && x !== undefined).map((x) => String(x)).slice(0, 3);
+      }
+    }
+  }
+  return { cfg, ledger, lastDay, boards: capBoards(boards) };
+}
+
+function savePenaltyState(state) {
+  try { localStorage.setItem(STORAGE_KEY_PENALTY, JSON.stringify(state)); } catch { /* full */ }
+}
+
+/** What the night cost, given the day and what happened on it.
+ *
+ *  Returns actions, not storage. Each action names the tag it hits, so the
+ *  ledger reads like a receipt and the tag panel can explain itself.
+ *  `rand` is injected: the random-tag rule must be testable.
+ */
+function penaltyForDay({ day, routinesDone, questsDone, tags, questsKnown = true }, cfg, rand = Math.random) {
+  const out = [];
+  const keys = (tags || []).map((t) => t.key).filter(Boolean);
+  if (!cfg || !cfg.on || !keys.length || !day) return out;
+
+  const rMin = Math.max(0, +cfg.routineMin || 0);
+  const rFine = Math.max(0, +cfg.routineFine || 0);
+  if (rMin > 0 && rFine > 0 && routinesDone < rMin) {
+    for (const key of keys) {
+      out.push({
+        day, kind: "routines", tag: key, amount: -rFine,
+        detail: `${routinesDone}/${rMin} routines`,
+      });
+    }
+  }
+
+  const qMin = Math.max(0, +cfg.questMin || 0);
+  const qFine = Math.max(0, +cfg.questFine || 0);
+  // If the app was closed for the whole of that day we never saw its board,
+  // and inventing a missed quest would be a lie with a price on it.
+  if (questsKnown && qMin > 0 && qFine > 0 && questsDone < qMin) {
+    const i = Math.min(keys.length - 1, Math.max(0, Math.floor((typeof rand === "function" ? rand() : 0) * keys.length)));
+    out.push({
+      day, kind: "quests", tag: keys[i], amount: -qFine,
+      detail: `${questsDone}/${qMin} daily tasks`,
+    });
+  }
+  return out;
+}
+
+/** Appends actions to the ledger, stamping them and capping the length. */
+function penaltyApplyLedger(ledger, actions, at = Date.now()) {
+  const next = [...(ledger || [])];
+  for (const a of actions || []) {
+    // one entry per (day, kind, tag): re-running the night cannot double-charge
+    const dup = next.some((e) => e.day === a.day && e.kind === a.kind && e.tag === a.tag);
+    if (dup) continue;
+    next.push({ ...a, at });
+  }
+  return next.slice(-PENALTY_LEDGER_MAX);
+}
+
+/** Total penalty on one tag, as a negative number. What the radar subtracts. */
+function tagPenaltyTotal(key, ledger) {
+  return (ledger || []).reduce((sum, e) => (e.tag === key ? sum + e.amount : sum), 0);
+}
+
+/** Which days still need settling.
+ *
+ *  Walks forward from the day after `lastDay` up to `yesterday`, and never
+ *  charges for more than PENALTY_CATCHUP_DAYS of absence -- a phone app that
+ *  fines you for not opening it is punishing absence, not sloth.
+ */
+function penaltyDaysToSettle(lastDay, today, yesterday) {
+  if (!lastDay) return [];
+  if (!(lastDay < yesterday)) return [];
+  const days = [];
+  // date arithmetic on "YYYY-MM-DD" without a timezone: step the ISO string
+  const toDate = (s) => new Date(`${s}T00:00:00Z`);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  let cur = toDate(lastDay);
+  cur = new Date(cur.getTime() + 86400000);
+  while (iso(cur) <= yesterday) {
+    days.push(iso(cur));
+    cur = new Date(cur.getTime() + 86400000);
+  }
+  return days.slice(-PENALTY_CATCHUP_DAYS);
+}
+
 /** Cost per slip. Independent of the reward on purpose: skipping a workout
  *  should be allowed to cost less than doing it earns. */
 function habitPenalty(h) { return Math.max(0, +h.penalty || 0); }
@@ -4570,7 +5010,7 @@ function mergeHabitLists(good, bad) {
 function computeTagXPRaw(tagKey, habits, tags) {
   return (habits || [])
     .filter((h) => habitTags(h, tags).includes(tagKey))
-    .reduce((sum, h) => sum + habitNet(h), 0);
+    .reduce((sum, h) => sum + habitNet(h) * habitTagShare(h, tagKey), 0);
 }
 
 /** Everything behind one radar vertex, for the tap-a-dot popup.
@@ -4619,12 +5059,50 @@ function computeTagXP(tagKey, habits, tags) {
  *  slipped quests that then earns +100 from daily tasks reads 60, not 100 --
  *  flooring the quest half first would quietly forgive the penalty, which is
  *  exactly the kind of free money the v51 economy audit was about. */
-function tagAxisRaw(tagKey, habits, tags, inventory) {
-  return computeTagXPRaw(tagKey, habits, tags) + computeDailyTagXP(tagKey, inventory, tags);
+// ---- v73: what share of a quest's points go to each of its tags -----------
+//
+// Before this, a quest with two tags gave its FULL points to both, which is
+// why a two-tag quest quietly doubled its weight on the radar. A quest can now
+// carry `tagShare: { key: percent }`. Unset means "full points to every tag",
+// which is exactly the old behaviour -- so nobody's existing graph moves until
+// they actually open the allocation control and change it.
+function habitTagShare(h, key) {
+  const raw = h && h.tagShare;
+  if (!raw || typeof raw !== "object") return 1;
+  const v = Number(raw[key]);
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(0, Math.min(100, v)) / 100;
 }
 
-function tagAxisXP(tagKey, habits, tags, inventory) {
-  return Math.max(0, tagAxisRaw(tagKey, habits, tags, inventory));
+/** An even split across the quest's tags, used to seed the editor. */
+function evenTagShare(keys) {
+  const list = (keys || []).filter(Boolean);
+  if (!list.length) return {};
+  const each = Math.floor(100 / list.length);
+  const out = {};
+  list.forEach((k, i) => {
+    out[k] = i === 0 ? 100 - each * (list.length - 1) : each;
+  });
+  return out;
+}
+
+/** Does the split add up? A share that does not total 100 is refused on save. */
+function tagShareTotal(share) {
+  if (!share || typeof share !== "object") return 100;
+  return Object.values(share).reduce((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+}
+
+function tagAxisRaw(tagKey, habits, tags, inventory, ledger) {
+  // v73: the graph is what the penalties were asked to hit, so the ledger is
+  // subtracted here -- one place, so the radar, the popup and the tag editor
+  // can never disagree about what a tag is worth.
+  return computeTagXPRaw(tagKey, habits, tags)
+    + computeDailyTagXP(tagKey, inventory, tags)
+    + tagPenaltyTotal(tagKey, ledger);
+}
+
+function tagAxisXP(tagKey, habits, tags, inventory, ledger) {
+  return Math.max(0, tagAxisRaw(tagKey, habits, tags, inventory, ledger));
 }
 
 /** The editable tag list. Habits reference a tag KEY, so renaming or
@@ -5269,6 +5747,8 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
   const [eXP, setEXP] = useState(habitXP(habit));
   const [ePen, setEPen] = useState(habitPenalty(habit));
   const [eOpp, setEOpp] = useState(habit.opposite || "");
+  // v73: per-tag allocation, only meaningful when the quest wears 2+ tags
+  const [eShare, setEShare] = useState(() => (habit.tagShare && typeof habit.tagShare === "object" ? { ...habit.tagShare } : {}));
 
   const openEdit = () => {
     setELabel(habit.label);
@@ -5277,17 +5757,27 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
     setEXP(habitXP(habit));
     setEPen(habitPenalty(habit));
     setEOpp(habit.opposite || "");
+    setEShare(habit.tagShare && typeof habit.tagShare === "object" ? { ...habit.tagShare } : {});
     setEditing(true);
   };
 
   const saveEdit = () => {
     const text = eLabel.trim();
     if (!text) return;
+    // v73: a split is only stored when the quest has 2+ tags and the numbers
+    // add up. Anything else clears it, which means "full points to every tag"
+    // -- the behaviour every existing quest already had.
+    let share = null;
+    if (eTags.length > 1 && tagShareTotal(eShare) === 100) {
+      share = {};
+      for (const k of eTags) share[k] = Math.max(0, Math.min(100, +eShare[k] || 0));
+    }
     onSave(habit.id, {
       label: text, tags: eTags, desc: eDesc.trim().slice(0, 90),
       xp: Math.max(0, +eXP || 0),
       penalty: Math.max(0, +ePen || 0),
       opposite: eOpp || null,
+      tagShare: share,
     });
     setEditing(false);
   };
@@ -5327,8 +5817,42 @@ function HabitCard({ habit, tags = DEFAULT_TAGS, allHabits = [], onMark, onDelet
             })}
           </div>
           {eTags.length > 1 && (
-            <div className="edit-tag-note">
-              counts in full toward {eTags.length} tags — use sparingly
+            <div className="edit-share">
+              <div className="edit-share-head">
+                <span>points per tag</span>
+                <span className={`edit-share-total ${tagShareTotal(eShare) === 0 ? "" : tagShareTotal(eShare) === 100 ? "ok" : "bad"}`}>
+                  {tagShareTotal(eShare) === 0 ? "in full" : `${tagShareTotal(eShare)}%`}
+                </span>
+              </div>
+              {eTags.map((key) => {
+                const t = tags.find((x) => x.key === key) || { label: key, color: "#7C8591" };
+                const cur = Number.isFinite(Number(eShare[key])) ? Number(eShare[key]) : 0;
+                return (
+                  <label className="edit-share-row" key={key}>
+                    <span className="edit-share-name" style={{ color: t.color }}>{t.label}</span>
+                    <input
+                      type="range" min="0" max="100" step="5" value={cur}
+                      onChange={(e) => setEShare((prev) => ({ ...prev, [key]: +e.target.value }))}
+                    />
+                    <span className="edit-share-val">{cur}%</span>
+                  </label>
+                );
+              })}
+              <div className="edit-share-actions">
+                <button type="button" className="edit-share-btn" onClick={() => setEShare(evenTagShare(eTags))}>
+                  split evenly
+                </button>
+                <button type="button" className="edit-share-btn" onClick={() => setEShare({})}>
+                  full to each
+                </button>
+              </div>
+              <div className="edit-share-hint">
+                {tagShareTotal(eShare) === 0
+                  ? "unset — this quest counts in full toward every tag. move a slider to share it instead."
+                  : tagShareTotal(eShare) === 100
+                    ? "the whole quest value is shared across these tags"
+                    : "a split has to total 100% before it is saved"}
+              </div>
             </div>
           )}
           <input
@@ -5604,7 +6128,8 @@ function AxisDetail({ axis, habits, onClose }) {
 }
 
 function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, spend,
-                     inventory = [], setInventory }) {
+                     inventory = [], setInventory, penaltyLedger = [] }) {
+  const ledger = penaltyLedger;
   const tags = tagCtl.tags;
   const [areaFilter, setAreaFilter] = useState("all");
   const [showTagEditor, setShowTagEditor] = useState(false);
@@ -5733,8 +6258,9 @@ function QuestView({ habits, setHabits, rewards, setRewards, tagCtl, coins = 0, 
    *  "20 laps on roof" finally shows up as Body instead of only as coins. */
   const areaAxes = useMemo(() => tags.map((t) => ({
     key: t.key, label: t.label, color: t.color,
-    value: tagAxisXP(t.key, habits, tags, inventory),
-    raw: tagAxisRaw(t.key, habits, tags, inventory),
+    value: tagAxisXP(t.key, habits, tags, inventory, ledger),
+    raw: tagAxisRaw(t.key, habits, tags, inventory, ledger),
+    penalty: tagPenaltyTotal(t.key, ledger),
     pick: (h) => habitTags(h, tags).includes(t.key),
     daily: (inventory || []).filter((x) => dailyTags(x, tags).includes(t.key)),
   })), [tags, habits, inventory]);
@@ -15303,7 +15829,131 @@ function TodoApp() {
   // Stamped onto a daily task when it is completed; kept current further
   // down, once routines and the clock are in scope.
   const questDayRef = useRef(getISTDateString(0));
+  // ---- v73: the night ----
+  //
+  // Runs at the 03:00 rollover, and is caught up the first time the app is
+  // open after it. The check is always for a day that has ENDED, never for
+  // today, so nothing is charged before the day is over.
+  //
+  // It reads the finished day out of history rather than out of state: the
+  // routine list keeps its own date strings and the daily board keeps a day
+  // per completed quest, so the numbers survive a reload, a device change and
+  // a sync. Nothing is written to the routines or the quests -- the cost lands
+  // in a ledger, and the graph subtracts it.
+  // ---- v73: preset controller ----
+  const [presetState, setPresetState] = useState(loadPresets);
+  useEffect(() => { savePresets(presetState); }, [presetState]);
+
+  const presetCtl = useMemo(() => ({
+    presets: presetState.presets,
+    activeId: presetState.activeId,
+    create(name, list) {
+      const id = makeId();
+      setPresetState((st) => ({
+        ...st,
+        presets: [...st.presets, { id, name: String(name).slice(0, 24), routines: list, madeAt: Date.now() }],
+      }));
+    },
+    updateFromCurrent(id, current, makeIdFn) {
+      const snapshot = presetRoutinesFrom(current, makeIdFn);
+      setPresetState((st) => ({
+        ...st,
+        presets: st.presets.map((p) => (p.id === id ? { ...p, routines: snapshot, madeAt: Date.now() } : p)),
+      }));
+    },
+    /** Applying REPLACES the list, which is the point of a season swap -- and
+     *  is why the UI asks first. Ids are fresh so nothing collides with the
+     *  history of the routines being replaced. */
+    apply(id) {
+      const p = presetState.presets.find((x) => x.id === id);
+      if (!p) return;
+      setRoutines(p.routines.map((r) => ({ ...r, id: makeId(), history: [] })));
+      setPresetState((st) => ({ ...st, activeId: id }));
+    },
+    remove(id) {
+      setPresetState((st) => ({
+        presets: st.presets.filter((p) => p.id !== id),
+        activeId: st.activeId === id ? null : st.activeId,
+      }));
+    },
+  }), [presetState, setRoutines]);
+
+  const [penalty, setPenalty] = useState(loadPenaltyState);
+  const penaltyRef = useRef(penalty);
+  penaltyRef.current = penalty;
+
+  const settleNight = useCallback(() => {
+    const today = getISTDateString(0);
+    const yesterday = getISTDateString(-1);
+    const st = penaltyRef.current;
+    // First ever run: mark today as settled and charge nothing. Nobody should
+    // be fined for a day the app was not watching.
+    if (!st.lastDay) {
+      const seeded = { ...st, lastDay: today };
+      penaltyRef.current = seeded;
+      setPenalty(seeded);
+      savePenaltyState(seeded);
+      return;
+    }
+    const days = penaltyDaysToSettle(st.lastDay, today, yesterday);
+    if (!days.length) return;
+    let ledger = st.ledger;
+    for (const day of days) {
+      const routinesDone = routinesRef.current.filter((r) => (r.history || []).includes(day)).length;
+      // "at least one of the three": count only the quests actually drawn for
+      // that day, not every quest in the library.
+      const board = Array.isArray(st.boards && st.boards[day]) ? st.boards[day] : [];
+      const questsKnown = board.length > 0;
+      const questsDone = questsKnown
+        ? board.filter((id) => inventoryRef.current.some((t) => String(t.id) === id && (t.history || []).includes(day))).length
+        : 0;
+      const actions = penaltyForDay(
+        { day, routinesDone, questsDone, tags: tagsRef.current, questsKnown },
+        st.cfg,
+      );
+      ledger = penaltyApplyLedger(ledger, actions);
+    }
+    const next = { ...st, ledger, lastDay: today };
+    penaltyRef.current = next;
+    setPenalty(next);
+    savePenaltyState(next);
+  }, []);
+
+  // refs so the settle function never has to be rebuilt (and re-armed) when a
+  // routine is ticked
+  const routinesRef = useRef(routines);
+  routinesRef.current = routines;
+  const inventoryRef = useRef(inventory);
+  inventoryRef.current = inventory;
+  const tagsRef = useRef(null);
+
+  useEffect(() => {
+    settleNight();
+    // A tab left open across 03:00 has to notice. 30s is far more often than
+    // the night changes, and costs a string compare.
+    const t = setInterval(settleNight, 30000);
+    const onVis = () => { if (!document.hidden) settleNight(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, [settleNight]);
+
   const [daily, setDaily] = useState(() => loadStored(STORAGE_KEY_DAILY, { day: "", picks: {}, done: [] }));
+
+  // Keep the day's drawn board so tomorrow's night can judge it. Records only
+  // when the picks actually change, so this is a no-op on every other render.
+  useEffect(() => {
+    if (!daily || !daily.day) return;
+    const ids = Object.values(daily.picks || {}).filter((x) => x !== null && x !== undefined).map((x) => String(x));
+    if (!ids.length) return;
+    const st = penaltyRef.current;
+    const have = st.boards && st.boards[daily.day];
+    if (Array.isArray(have) && have.length === ids.length && have.every((v, i) => v === ids[i])) return;
+    const next = { ...st, boards: capBoards({ ...(st.boards || {}), [daily.day]: ids }) };
+    penaltyRef.current = next;
+    setPenalty(next);
+    savePenaltyState(next);
+  }, [daily]);
+
   // v35 merged good+bad into one list. On first launch after the upgrade the
   // merged key is absent, so fold the two old lists together; mergeHabitLists
   // is arithmetically identity-preserving, so nobody's XP or level moves.
@@ -15325,6 +15975,8 @@ function TodoApp() {
   const petCtl = usePet(currentLevel);
   const { links, setLinks } = useLinks();
   const tagCtl = useTags();
+  // the night needs the tag list, and it lives below the runner
+  tagsRef.current = tagCtl.tags;
   const [linkTarget, setLinkTarget] = useState(null);   // ref string or null
 
   // any view can request the link sheet without prop-drilling
@@ -16296,24 +16948,40 @@ function TodoApp() {
           animation: rowOut 220ms ease forwards;
         }
 
-        .routine-delete-bg {
+        /* v73: the reveal under a routine being swiped right. Anchored to the
+           LEFT edge, because the row moves right and uncovers it there. */
+        .routine-done-bg {
           position: absolute;
           inset: 0;
-          background: var(--danger);
           border-radius: 8px;
+          background: rgba(94, 234, 212, 0.10);
+          border: 1px solid rgba(94, 234, 212, 0.35);
           display: flex;
           align-items: center;
-          justify-content: flex-end;
-          padding-right: 18px;
+          justify-content: flex-start;
+          padding-left: 18px;
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--accent);
+          opacity: 0;
+          transition: opacity 140ms ease, background 140ms ease;
+        }
+        .routine-done-bg.show { opacity: 1; }
+        .routine-done-bg.armed { background: rgba(94, 234, 212, 0.22); }
+
+        /* the confirmation beat after the swipe lands */
+        .routine-row.just-done { animation: routineDone 700ms ease; }
+        @keyframes routineDone {
+          0%   { box-shadow: 0 0 0 0 rgba(94,234,212,0.5); }
+          30%  { box-shadow: 0 0 0 3px rgba(94,234,212,0.28); }
+          100% { box-shadow: 0 0 0 0 rgba(94,234,212,0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .routine-row.just-done { animation: none; }
         }
 
-        /* ---- routines as cards (v55) ----
-           They were a connected timeline: one node per routine with a line
-           running between them. That reads as a single object you scroll
-           through rather than nineteen things you own, and there was nowhere
-           to hang per-routine detail. Each is its own card now, same
-           vocabulary as the quest board -- panel, border, a left stripe that
-           carries the status colour. */
         .routine-row {
           position: relative;
           display: flex;
@@ -18669,6 +19337,111 @@ function TodoApp() {
           color: var(--accent); font-family: var(--font-mono); font-size: 10px;
         }
         .crash-btn.ghost { border-color: var(--border); color: var(--muted); }
+
+        /* ---- v73: presets, penalties, tag allocation ---------------------- */
+        .preset-box {
+          margin: 0 0 14px;
+          border: 1px solid var(--track);
+          border-radius: 10px;
+          background: var(--panel);
+          padding: 10px 12px;
+        }
+        .preset-empty {
+          font-family: var(--font-mono); font-size: 9.5px; color: var(--muted);
+          padding: 2px 0 8px;
+        }
+        .preset-row {
+          display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+          padding: 7px 0; border-bottom: 1px solid var(--track);
+        }
+        .preset-row:last-of-type { border-bottom: none; }
+        .preset-row.active .preset-name { color: var(--accent); }
+        .preset-main { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; }
+        .preset-name { font-size: 12px; color: var(--text); }
+        .preset-meta { font-family: var(--font-mono); font-size: 8.5px; color: var(--muted); }
+        .preset-actions, .preset-confirm, .preset-ask-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .preset-warn { font-family: var(--font-mono); font-size: 9px; color: var(--accent2); }
+        .preset-btn {
+          border: 1px solid var(--border); background: transparent; color: var(--muted);
+          border-radius: 6px; padding: 5px 9px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.05em;
+          min-height: 30px;
+        }
+        .preset-btn.save { border-color: var(--accent); color: var(--accent); }
+        .preset-btn.danger { border-color: var(--danger); color: var(--danger); }
+        .preset-new {
+          width: 100%; margin-top: 8px;
+          border: 1px dashed var(--border); background: transparent; color: var(--muted);
+          border-radius: 8px; padding: 9px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em;
+        }
+        .preset-ask { padding-top: 6px; }
+        .preset-name-input {
+          width: 100%; box-sizing: border-box; margin-bottom: 8px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+          color: var(--text); font-family: var(--font-mono); font-size: 11px;
+          padding: 9px 10px; min-height: 40px;
+        }
+        .preset-ask-q {
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.18em;
+          text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+        }
+        .preset-hint {
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+          line-height: 1.5; margin-top: 7px;
+        }
+
+        .pen-card .note-body { white-space: pre-wrap; }
+        .pen-rules { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+        .pen-field {
+          display: flex; align-items: center; gap: 7px;
+          font-family: var(--font-mono); font-size: 9.5px; color: var(--muted);
+        }
+        .pen-field input {
+          width: 62px; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 6px; color: var(--text); font-family: var(--font-mono);
+          font-size: 11px; padding: 6px 8px; min-height: 34px; text-align: center;
+        }
+        .pen-hint { font-family: var(--font-mono); font-size: 8.5px; line-height: 1.5; color: var(--muted); }
+        .pen-ledger { margin-top: 10px; border-top: 1px solid var(--track); padding-top: 8px; }
+        .pen-ledger-head {
+          font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.18em;
+          text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
+        }
+        .pen-entry {
+          display: flex; align-items: center; gap: 8px;
+          font-family: var(--font-mono); font-size: 9.5px; padding: 3px 0;
+        }
+        .pen-amt { min-width: 34px; text-align: right; color: var(--text); }
+        .pen-amt.neg { color: var(--danger); }
+        .pen-tag { color: var(--accent); min-width: 54px; }
+        .pen-detail { color: var(--muted); flex: 1 1 auto; }
+
+        .edit-share { margin: 8px 0 4px; display: flex; flex-direction: column; gap: 6px; }
+        .edit-share-head {
+          display: flex; justify-content: space-between; align-items: center;
+          font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.18em;
+          text-transform: uppercase; color: var(--muted);
+        }
+        .edit-share-total { color: var(--muted); }
+        .edit-share-total.ok { color: var(--accent); }
+        .edit-share-total.bad { color: var(--danger); }
+        .edit-share-row { display: flex; align-items: center; gap: 8px; }
+        .edit-share-name {
+          font-family: var(--font-mono); font-size: 9px; min-width: 56px;
+        }
+        .edit-share-row input[type="range"] { flex: 1 1 auto; accent-color: var(--accent); }
+        .edit-share-val {
+          font-family: var(--font-mono); font-size: 9px; color: var(--muted);
+          min-width: 34px; text-align: right;
+        }
+        .edit-share-actions { display: flex; gap: 6px; }
+        .edit-share-btn {
+          border: 1px solid var(--border); background: transparent; color: var(--muted);
+          border-radius: 6px; padding: 5px 8px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 8.5px; min-height: 30px;
+        }
+        .edit-share-hint { font-family: var(--font-mono); font-size: 8.5px; color: var(--muted); }
 
         /* v71: the sound panel's state line */
         .snd-status {
@@ -21579,14 +22352,15 @@ pet, wallet and themes are always included.
             tags={tagCtl.tags}
           />
         ) : tab === "routines" ? (
-          <RoutinesView routines={routines} setRoutines={setRoutines} />
+          <RoutinesView routines={routines} setRoutines={setRoutines} presetCtl={presetCtl} />
         ) : tab === "vault" ? (
-          <VaultView />
+          <VaultView penaltyCtl={{ penalty, setPenalty, settleNight }} />
         ) : tab === "tools" ? (
           <ToolsView onReward={(c) => achCtl.addCoins(c)} />
         ) : tab === "quest" ? (
           <QuestView
             tagCtl={tagCtl}
+            penaltyLedger={penalty.ledger}
             habits={habits}
             setHabits={setHabits}
             inventory={inventory}

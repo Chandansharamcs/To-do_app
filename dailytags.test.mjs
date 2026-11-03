@@ -69,6 +69,7 @@ const NAMES = [
   "guessDailyTags", "migrateInventory", "migrateTasksToInventory",
   "normaliseHistory", "countHist", "habitXP", "habitPenalty", "habitNet",
   "AREA_TO_TAG", "migrateAreaToTag", "habitTags",
+  "habitTagShare", "evenTagShare", "tagShareTotal", "tagPenaltyTotal",
   "computeTagXPRaw", "computeTagXP", "tagAxisRaw", "tagAxisXP",
   "axisBreakdown", "computeTotalXP",
 ];
