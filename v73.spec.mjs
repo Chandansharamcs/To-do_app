@@ -39,8 +39,10 @@ const t = async (name, fn) => {
 
 /** IST day strings, exactly the way the app computes them. */
 const istDate = (offset = 0) => {
-  const now = new Date(Date.now() + 5.5 * 3600 * 1000 + offset * 86400000);
-  return now.toISOString().slice(0, 10);
+  // v63: the app's day starts at 03:00 IST, so this is the app's day, not the
+  // calendar's -- between midnight and 03:00 those two differ.
+  const d = new Date(Date.now() - 3 * 60 * 60 * 1000 + offset * 86400000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
 };
 
 const QUESTS = [

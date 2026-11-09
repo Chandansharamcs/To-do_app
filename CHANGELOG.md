@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v74`** | 2026-11-10 | sight: paste copy, write it one sight at a time — English, हिन्दी, ਪੰਜਾਬੀ |
 | **`v73`** | 2026-11-03 | The night charges you, routines get seasons, and a swipe finally means "done" |
 | **`v72`** | 2026-10-25 | The old nav back and polished; interaction sounds as one instrument |
 | **`v71`** | 2026-10-25 | A cyan-to-red nav leak, a switch flash, settings, and a cozy bed |
@@ -98,6 +99,89 @@ later the *why* is the only part that still matters.
 ```
 
 ---
+
+```
+┌─ v74 ───────────────────────────────────────────────────────────┐
+│  2026-11-10 · sight — a new tool for writing pasted copy          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What it is
+
+Paste a paragraph, choose how it is cut up, and the app shows **one sight at a
+time** — the one you are writing in the middle, the previous one dimmed above
+it, the next one dimmed below. It moves on by itself every *n* seconds, and a
+tap skips ahead. Nothing is saved: paste, write, done.
+
+Tools → **sight** (▦). No new dependency, no storage key, no network.
+
+### The split
+
+| mode | what a sight is |
+|---|---|
+| by sentence | one sentence, punctuation included |
+| 3 words | three words, counting restarts at every sentence |
+| 6 words | same, six |
+| custom | any 1–50 words per sight |
+
+The rules that keep a split honest, all of them tested:
+
+- **danda.** `।` and `॥` end a sentence. Hindi and Punjabi have no capital
+  letter to lean on, so without this a Hindi paragraph is one endless sight.
+- **not a full stop:** decimals (`3.5`), abbreviations (`Dr.`, `etc.`, `fig.`)
+  and initials (`A. P. J.`) do not split.
+- **the newline is a hard break**, so pasted line-per-paragraph stays that way.
+- **punctuation rides along.** Chunks are sliced out of the original string to
+  the *next* word's start, so the comma or danda sitting between two words
+  belongs to the sight that just ended instead of vanishing.
+- **no punctuation at all?** A block with no sentence ender and no capitals is
+  left whole; one with capitals is broken before a capital letter once the run
+  is long enough to be a line. That is the "period or capital letter" rule he
+  described, used only as a rescue, never as the primary split.
+- **word segmentation** uses `Intl.Segmenter` when the platform has it —
+  it knows Devanagari and Gurmukhi — and falls back to whitespace.
+- The paste is capped at 20,000 characters and 2,000 sights, and the *direction*
+  (`dir="auto"`) and `lang` follow the script, so Hindi renders as Hindi.
+
+### The clocks
+
+Before you start it says **"this paragraph will take 0:40 on the clock — 4 ×
+10s"**: interval × sights, nothing invented. While you write it shows the
+sights done, the time actually spent, and a thin bar filling toward the next
+change (it turns amber near the end). After it shows what you really spent,
+the average per sight, and how much you saved by skipping ahead. Pause stops
+the clock as well as the advance — a paused timer that keeps counting is a lie.
+
+### The finish
+
+Flat terminal type, no gradient: `done.` stamps in, four stat tiles land, and a
+rain of block glyphs falls the height of the screen. Deterministic per index so
+a re-render cannot reshuffle the rain mid-fall, and every one of those
+animations is switched off under `prefers-reduced-motion`.
+
+### Verified
+
+`sight.test.mjs` (new, 38) proves the splitter with no browser: English stops,
+the danda, the double danda, decimals, abbreviations, initials, hard newlines,
+Devanagari and Gurmukhi segmentation, the capital rescue (and that it never
+fires on caseless scripts), the word count restarting per sentence, punctuation
+kept, clamping, empty input, the 20k/2000 caps, and the estimate arithmetic.
+
+`v74.spec.mjs` (new, 11) proves the machine in headless Chromium: the estimate
+appears before the start and changes when the interval does, 3-words really
+re-splits, Hindi splits on its danda and renders with `lang="hi"`, the three
+lines are previous/current/next, it advances by itself, a tap skips ahead and ‹
+goes back, pause stops the clock and resume restarts it, the last sight
+celebrates with 22+ glyphs and the real numbers, **nothing about the paste
+reaches localStorage**, and there is no horizontal overflow at 390px.
+
+One test bug found on the way: `regress.spec.mjs` seeded "today" as the
+calendar date, which is the day *before* the app's today between 00:00 and
+03:00 IST (the v63 rollover). Both browser specs now use the app's own day, so
+the suite no longer fails for three hours every night.
+
+Totals: **770 unit**, 13 v73, 11 v74, **105 regress**, **11 gate**, **8 cloud**,
+**80 tools** — 0 failed.
 
 ```
 ┌─ v73 ───────────────────────────────────────────────────────────┐

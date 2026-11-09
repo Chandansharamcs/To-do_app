@@ -15224,6 +15224,476 @@ function ExpensesTool() {
   );
 }
 
+// ============================================================
+// v74: SIGHT — paste copy, write it one sight at a time
+//
+// The problem it solves is not "read faster", it is "copy a paragraph without
+// losing the line you are on". So the unit is a *sight*: one sentence, or a
+// fixed number of words. The screen shows the sight you are writing, the one
+// before it above, the one after below, and advances on a clock you set.
+//
+// Script matters. He writes in English, Hindi and Punjabi, so:
+//
+//   * sentence ends include the Devanagari/Punjabi DANDA (।) and double danda
+//     (॥), not just . ! ? -- Hindi has no capital letter to lean on, so the
+//     danda is the only sentence boundary that exists;
+//   * words are segmented with Intl.Segmenter where the platform has it, which
+//     knows about Devanagari and Gurmukhi, and falls back to whitespace;
+//   * punctuation stays attached to the chunk it belongs to, because the whole
+//     point is copying the text, not reading a word list;
+//   * nothing is transliterated or normalised.
+//
+// Everything below the component is pure and takes its input as an argument,
+// so the splitting rules can be tested without a browser, a clock or a React
+// tree (`sight.test.mjs`).
+// ============================================================
+
+const SIGHT_MAX_CHARS = 20000;
+const SIGHT_MAX_CHUNKS = 2000;
+const SIGHT_DEFAULTS = { mode: "sentence", words: 3, seconds: 10 };
+
+/** Characters that can end a sentence: Latin stops plus the dandas. */
+const SIGHT_ENDERS = new Set([".", "!", "?", "\u0964", "\u0965", "\u2026"]);
+/** Because "Dr. Rao" and "3.5" are not two sentences. */
+const SIGHT_ABBREV = /(?:^|\s)(dr|mr|mrs|ms|vs|etc|eg|ie|no|fig|st|prof|sr|jr|approx)\.$/i;
+
+/** Word-like segments with their offsets, for any script.
+ *
+ *  Offsets are what make this worth using: chunk text is sliced out of the
+ *  ORIGINAL string, so the punctuation, the danda and the spacing are exactly
+ *  what he pasted.
+ */
+function sightWords(text) {
+  const src = String(text || "");
+  const out = [];
+  if (typeof Intl !== "undefined" && Intl.Segmenter) {
+    const seg = new Intl.Segmenter(undefined, { granularity: "word" });
+    for (const s of seg.segment(src)) {
+      if (s.isWordLike) out.push({ text: s.segment, start: s.index, end: s.index + s.segment.length });
+    }
+    return out;
+  }
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(src))) out.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+  return out;
+}
+
+/** Splits a block into sentences that still carry their punctuation.
+ *
+ *  Newlines are hard breaks -- a pasted paragraph per line should stay a
+ *  paragraph per line, not melt into one sentence.
+ */
+function sightSentences(text) {
+  const src = String(text || "");
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\n") {
+      const slice = src.slice(start, i).trim();
+      if (slice) out.push(slice);
+      start = i + 1;
+      continue;
+    }
+    if (!SIGHT_ENDERS.has(c)) continue;
+
+    // a decimal point, not a full stop
+    const prev = src[i - 1] || "";
+    const next = src[i + 1] || "";
+    if (c === "." && /\d/.test(prev) && /\d/.test(next)) continue;
+    if (c === "." && SIGHT_ABBREV.test(src.slice(Math.max(0, i - 12), i + 1))) continue;
+    // an initial: "A. P. J. Abdul Kalam"
+    if (c === "." && /^[A-Z\u0900-\u097F\u0A00-\u0A7F]$/.test(prev) && /^\s+[A-Z\u0900-\u097F\u0A00-\u0A7F]/.test(src.slice(i + 1, i + 4))) continue;
+
+    let j = i + 1;
+    while (j < src.length && SIGHT_ENDERS.has(src[j])) j++;
+    while (j < src.length && /["'”’)\]»]/.test(src[j])) j++;
+    const slice = src.slice(start, j).trim();
+    if (slice) out.push(slice);
+    while (j < src.length && src[j] !== "\n" && /\s/.test(src[j])) j++;
+    start = j;
+    i = j - 1;
+  }
+  const tail = src.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+/** Last resort for copy pasted with no punctuation at all.
+ *
+ *  A paragraph with no full stop in it is one "sentence" of 60 words, which
+ *  would sit on screen forever. So: if a block has no enders, break it before
+ *  a capital letter that starts a word, once the run is long enough to be a
+ *  line. Only Latin has capitals, so scripts without case are left alone.
+ */
+function sightCapitalRescue(sentence, minWords = 8) {
+  const src = String(sentence || "");
+  if ([...src].some((c) => SIGHT_ENDERS.has(c))) return [src];
+  if (!/[A-Z]/.test(src)) return [src];
+  const out = [];
+  let start = 0;
+  let words = 0;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (/\s/.test(c)) { words++; continue; }
+    const atWordStart = i === 0 || /\s/.test(src[i - 1]);
+    if (i > 0 && atWordStart && /[A-Z]/.test(c) && words - 1 >= minWords) {
+      const slice = src.slice(start, i).trim();
+      if (slice) out.push(slice);
+      start = i;
+      words = 0;
+    }
+  }
+  const tail = src.slice(start).trim();
+  if (tail) out.push(tail);
+  return out.length ? out : [src];
+}
+
+/** The whole splitter. Returns chunk strings, in order, ready to display.
+ *
+ *  In word mode the count restarts at every sentence, so a sight never
+ *  straddles two sentences -- 3 words per sight on an 8-word sentence gives
+ *  3, 3, 2, not 3, 3, 2 trickling into the next sentence.
+ */
+function sightChunk(text, opts) {
+  const cfg = { ...SIGHT_DEFAULTS, ...(opts || {}) };
+  const src = String(text || "").slice(0, SIGHT_MAX_CHARS);
+  const chunks = [];
+  const push = (t) => {
+    const s = String(t).trim();
+    if (s) chunks.push(s);
+  };
+
+  const sentences = [];
+  for (const raw of sightSentences(src)) {
+    for (const part of sightCapitalRescue(raw)) sentences.push(part);
+  }
+
+  if (cfg.mode === "words") {
+    const n = Math.max(1, Math.min(50, Math.round(+cfg.words || 3)));
+    for (const sentence of sentences) {
+      const words = sightWords(sentence);
+      if (words.length <= n) { push(sentence); continue; }
+      for (let i = 0; i < words.length; i += n) {
+        const group = words.slice(i, i + n);
+        // Slice to the NEXT word's start, not to this word's end: a comma, a
+        // danda or a closing quote sitting between the two belongs to the
+        // sight that just ended, and dropping it would hand him a sentence
+        // with its punctuation missing.
+        const nextWord = words[i + n];
+        const stop = nextWord ? nextWord.start : sentence.length;
+        push(sentence.slice(group[0].start, stop));
+      }
+    }
+  } else {
+    for (const sentence of sentences) push(sentence);
+  }
+  return chunks.slice(0, SIGHT_MAX_CHUNKS);
+}
+
+/** Sights, words, and the two clocks.
+ *
+ *  `totalMs` is interval × sights -- what he asked to see BEFORE starting.
+ *  It is the time the screen will take to walk the paragraph, not the time his
+ *  hand will take, which is why the run screen reports what actually elapsed
+ *  instead of projecting.
+ */
+function sightPlan(chunks, seconds) {
+  const list = chunks || [];
+  const per = Math.max(1, Math.round(+seconds || 1)) * 1000;
+  return {
+    count: list.length,
+    perChunkMs: per,
+    totalMs: list.length * per,
+    words: list.reduce((n, c) => n + sightWords(c).length, 0),
+  };
+}
+
+/** Which script the copy is in, for the lang attribute (fonts, hyphenation). */
+function sightScript(text) {
+  const s = String(text || "");
+  if (/[\u0A00-\u0A7F]/.test(s)) return "pa";
+  if (/[\u0900-\u097F]/.test(s)) return "hi";
+  return "en";
+}
+
+/** m:ss, for clocks that are minutes long. */
+function sightClock(ms) {
+  const total = Math.max(0, Math.round((ms || 0) / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** Average time per sight. Under a second is "fast", not "0:00" -- a zero
+ *  after finishing four sights is a wrong number, not a rounded one. */
+function sightAverage(ms, count) {
+  const n = Math.max(1, count || 0);
+  const avg = Math.max(0, ms || 0) / n;
+  if (avg > 0 && avg < 1000) return "<0:01";
+  return sightClock(avg);
+}
+
+/** The celebration. Flat glyphs, no gradient, deterministic per index so a
+ *  re-render does not reshuffle the rain mid-fall. */
+const SIGHT_BITS = ["\u2593", "\u2592", "\u25E2", "\u2726", "\u2022", "\u00B7", "\u2500", "\u2591"];
+function sightBits(count = 22) {
+  return Array.from({ length: count }, (_, i) => {
+    const seed = (i * 2654435761) % 4294967296;
+    const r = (n) => ((seed >>> (n * 5)) % 1000) / 1000;
+    return {
+      ch: SIGHT_BITS[i % SIGHT_BITS.length],
+      left: Math.round(r(1) * 100),
+      delay: Math.round(r(2) * 500),
+      dur: 900 + Math.round(r(3) * 700),
+      size: 9 + Math.round(r(4) * 8),
+      tone: i % 3,
+    };
+  });
+}
+
+function SightTool() {
+  const [text, setText] = useState("");
+  const [mode, setMode] = useState(SIGHT_DEFAULTS.mode);
+  const [words, setWords] = useState(SIGHT_DEFAULTS.words);
+  const [seconds, setSeconds] = useState(SIGHT_DEFAULTS.seconds);
+  const [customWords, setCustomWords] = useState(false);
+  const [customSecs, setCustomSecs] = useState(false);
+
+  const [phase, setPhase] = useState("setup");     // setup | run | done
+  const [chunks, setChunks] = useState([]);
+  const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [elapsed, setElapsed] = useState(0);       // ms actually spent
+  const [inChunk, setInChunk] = useState(0);       // ms inside this sight
+  const [peek, setPeek] = useState(false);
+
+  const opts = useMemo(() => ({ mode, words }), [mode, words]);
+  const preview = useMemo(() => sightChunk(text, opts), [text, opts]);
+  const plan = useMemo(() => sightPlan(preview, seconds), [preview, seconds]);
+  const lang = useMemo(() => sightScript(text), [text]);
+  const perMs = Math.max(1, Math.round(+seconds || 1)) * 1000;
+
+  const start = () => {
+    if (!preview.length) return;
+    setChunks(preview);
+    setIndex(0);
+    setElapsed(0);
+    setInChunk(0);
+    setPaused(false);
+    setPhase("run");
+    sound.open();
+  };
+
+  const stop = () => {
+    setPhase("setup");
+    setChunks([]);
+    setIndex(0);
+    setElapsed(0);
+    setInChunk(0);
+    sound.close();
+  };
+
+  const next = () => {
+    setInChunk(0);
+    setIndex((i) => {
+      if (i + 1 >= chunks.length) { setPhase("done"); sound.success(); return i; }
+      return i + 1;
+    });
+  };
+
+  const back = () => {
+    setInChunk(0);
+    setIndex((i) => Math.max(0, i - 1));
+    sound.click();
+  };
+
+  // the clock. 100ms is finer than anyone can read and cheap enough to leave
+  // running; pausing simply stops the counter, so elapsed is time SPENT, not
+  // time since start.
+  useEffect(() => {
+    if (phase !== "run" || paused) return;
+    const t = setInterval(() => {
+      setElapsed((e) => e + 100);
+      setInChunk((c) => c + 100);
+    }, 100);
+    return () => clearInterval(t);
+  }, [phase, paused]);
+
+  // advance: auto when the interval is up, and a tap always jumps ahead early
+  useEffect(() => {
+    if (phase !== "run" || paused) return;
+    if (inChunk < perMs) return;
+    next();
+  }, [inChunk, phase, paused, perMs, chunks.length]);
+
+  return (
+    <div className="sight">
+      {phase === "setup" && (
+        <div className="sight-setup">
+          <textarea
+            className="sight-area"
+            value={text}
+            dir="auto"
+            spellCheck={false}
+            placeholder={`paste the paragraph — English, हिन्दी, ਪੰਜਾਬੀ, any of them\n\nit is split into sights, shown one at a time, and nothing is saved`}
+            onChange={(e) => setText(e.target.value.slice(0, SIGHT_MAX_CHARS))}
+          />
+          <div className="sight-count">
+            <span>{text.length} chars · {sightWords(text).length} words · {preview.length} sights</span>
+            <span>{lang === "hi" ? "devanagari" : lang === "pa" ? "gurmukhi" : "latin"}</span>
+          </div>
+
+          <div className="sight-row">
+            <span className="sight-label">split</span>
+            <button className={`sight-pill ${mode === "sentence" ? "on" : ""}`}
+                    onClick={() => { setMode("sentence"); sound.click(); }}>by sentence</button>
+            <button className={`sight-pill ${mode === "words" && !customWords && words === 3 ? "on" : ""}`}
+                    onClick={() => { setMode("words"); setWords(3); setCustomWords(false); sound.click(); }}>3 words</button>
+            <button className={`sight-pill ${mode === "words" && !customWords && words === 6 ? "on" : ""}`}
+                    onClick={() => { setMode("words"); setWords(6); setCustomWords(false); sound.click(); }}>6 words</button>
+            <button className={`sight-pill ${mode === "words" && customWords ? "on" : ""}`}
+                    aria-label="custom words per sight"
+                    onClick={() => { setMode("words"); setCustomWords(true); sound.click(); }}>custom</button>
+            {mode === "words" && customWords && (
+              <input className="sight-num" type="number" min="1" max="50" value={words}
+                     aria-label="words per sight"
+                     onChange={(e) => setWords(Math.max(1, Math.min(50, Math.round(+e.target.value || 1))))} />
+            )}
+          </div>
+
+          <div className="sight-row">
+            <span className="sight-label">every</span>
+            <button className={`sight-pill ${!customSecs && seconds === 5 ? "on" : ""}`}
+                    onClick={() => { setSeconds(5); setCustomSecs(false); sound.click(); }}>5s</button>
+            <button className={`sight-pill ${!customSecs && seconds === 10 ? "on" : ""}`}
+                    onClick={() => { setSeconds(10); setCustomSecs(false); sound.click(); }}>10s</button>
+            <button className={`sight-pill ${!customSecs && seconds === 20 ? "on" : ""}`}
+                    onClick={() => { setSeconds(20); setCustomSecs(false); sound.click(); }}>20s</button>
+            <button className={`sight-pill ${customSecs ? "on" : ""}`}
+                    aria-label="custom interval"
+                    onClick={() => { setCustomSecs(true); sound.click(); }}>custom</button>
+            {customSecs && (
+              <input className="sight-num" type="number" min="1" max="600" value={seconds}
+                     aria-label="seconds per sight"
+                     onChange={(e) => setSeconds(Math.max(1, Math.min(600, Math.round(+e.target.value || 1))))} />
+            )}
+          </div>
+
+          <div className="sight-plan">
+            <div>
+              <b>{plan.count}</b> sights · <b>{plan.words}</b> words · one every <b>{seconds}s</b>
+            </div>
+            <div>
+              {plan.count
+                ? <>this paragraph will take <b>{sightClock(plan.totalMs)}</b> on the clock — {plan.count} × {seconds}s</>
+                : "paste something and the clock appears here, before you start"}
+            </div>
+          </div>
+
+          <button className="sight-go" disabled={!plan.count} onClick={start}>
+            start · {plan.count} sights
+          </button>
+
+          {plan.count > 0 && (
+            <button className="sight-peek-btn" onClick={() => { setPeek((v) => !v); sound.click(); }}>
+              {peek ? "hide how it split" : "check how it split"}
+            </button>
+          )}
+          {peek && (
+            <ol className="sight-peek" dir="auto" lang={lang}>
+              {preview.slice(0, 40).map((c, i) => (
+                <li key={i}><span className="sight-peek-n">{i + 1}</span>{c}</li>
+              ))}
+              {preview.length > 40 && <li className="sight-peek-more">and {preview.length - 40} more</li>}
+            </ol>
+          )}
+        </div>
+      )}
+
+      {phase === "run" && (
+        <div className="sight-run">
+          <div className="sight-hud">
+            <span className="sight-hud-count">{index + 1}/{chunks.length}</span>
+            <span className="sight-hud-clock">{sightClock(elapsed)}</span>
+            <span className="sight-hud-iv">every {seconds}s</span>
+          </div>
+          <div className="sight-timer" aria-hidden="true">
+            <i style={{ width: `${Math.min(100, (inChunk / perMs) * 100)}%` }} className={inChunk / perMs > 0.85 ? "hot" : ""} />
+          </div>
+
+          <div className="sight-stage" dir="auto" lang={lang} onClick={next} role="button" tabIndex={0}
+               aria-label="current sight — tap to move on"
+               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); next(); } }}>
+            <div className="sight-line prev">{chunks[index - 1] || "\u00A0"}</div>
+            <div className="sight-line now" key={index}>{chunks[index]}</div>
+            <div className="sight-line next">{chunks[index + 1] || "\u00A0"}</div>
+          </div>
+
+          <div className="sight-btns">
+            <button className="sight-pill" onClick={back} disabled={index === 0} aria-label="previous sight">‹</button>
+            <button className="sight-pill wide" onClick={() => { setPaused((v) => !v); sound.toggle(!paused); }}>
+              {paused ? "resume" : "pause"}
+            </button>
+            <button className="sight-pill wide" onClick={next}>next ›</button>
+            <button className="sight-pill" onClick={stop} aria-label="end and go back">end</button>
+          </div>
+          <div className="sight-hint">
+            {paused ? "paused — the clock is stopped too" : "it moves on its own; tap the line to skip ahead"}
+          </div>
+        </div>
+      )}
+
+      {phase === "done" && (
+        <div className="sight-done">
+          <div className="sight-burst" aria-hidden="true">
+            {sightBits().map((b, i) => (
+              <span
+                key={i}
+                className={`sight-bit tone-${b.tone}`}
+                style={{
+                  left: `${b.left}%`,
+                  fontSize: `${b.size}px`,
+                  animationDelay: `${b.delay}ms`,
+                  animationDuration: `${b.dur}ms`,
+                }}
+              >{b.ch}</span>
+            ))}
+          </div>
+
+          <div className="sight-done-kicker">paragraph complete</div>
+          <div className="sight-done-title">done.</div>
+
+          <div className="sight-stats">
+            <div className="sight-stat"><span>{chunks.length}</span><i>sights</i></div>
+            <div className="sight-stat"><span>{plan.words}</span><i>words</i></div>
+            <div className="sight-stat"><span>{sightClock(elapsed)}</span><i>on the clock</i></div>
+            <div className="sight-stat"><span>{sightAverage(elapsed, chunks.length)}</span><i>per sight</i></div>
+          </div>
+
+          <div className="sight-done-line">
+            interval alone would have taken {sightClock(chunks.length * perMs)} — you spent {sightClock(elapsed)}
+            {elapsed < chunks.length * perMs ? " by skipping ahead" : ""}.
+          </div>
+
+          <div className="sight-btns">
+            <button className="sight-pill wide" onClick={() => { setIndex(0); setElapsed(0); setInChunk(0); setPhase("run"); sound.open(); }}>
+              again
+            </button>
+            <button className="sight-pill wide" onClick={() => { setPhase("setup"); setChunks([]); sound.close(); }}>
+              same text, new settings
+            </button>
+            <button className="sight-pill wide" onClick={() => { setPhase("setup"); setChunks([]); setText(""); sound.close(); }}>
+              new text
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TOOLS = [
   {
     id: "rngdle",
@@ -15252,6 +15722,13 @@ const TOOLS = [
     name: "ai captions",
     desc: "word-timed captions burned into a clip · under 60s",
     Component: CaptionsTool,
+  },
+  {
+    id: "sight",
+    glyph: "▦",
+    name: "sight",
+    desc: "paste copy, write it one sight at a time · hindi and punjabi too",
+    Component: SightTool,
   },
 ];
 
@@ -19337,6 +19814,193 @@ function TodoApp() {
           color: var(--accent); font-family: var(--font-mono); font-size: 10px;
         }
         .crash-btn.ghost { border-color: var(--border); color: var(--muted); }
+
+        /* ---- v74: sight ---------------------------------------------------
+           Flat terminal type, one big line in the middle and its neighbours
+           dimmed above and below. No gradients, no blur: the size and the
+           opacity difference is the whole hierarchy. */
+        .sight { padding: 0 16px 28px; }
+        .sight-area {
+          width: 100%;
+          box-sizing: border-box;
+          min-height: 140px;
+          background: var(--panel);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          color: var(--text);
+          font-family: var(--font-mono);
+          font-size: 12.5px;
+          line-height: 1.6;
+          padding: 12px;
+          resize: vertical;
+        }
+        .sight-area::placeholder { color: var(--muted); opacity: 0.7; }
+        .sight-count {
+          display: flex; justify-content: space-between; gap: 10px;
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+          margin-top: 6px; letter-spacing: 0.04em;
+        }
+        .sight-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+        .sight-label {
+          font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.18em;
+          text-transform: uppercase; color: var(--muted); min-width: 46px;
+        }
+        .sight-pill {
+          border: 1px solid var(--border); background: transparent; color: var(--muted);
+          border-radius: 999px; padding: 7px 12px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 10px; min-height: 34px;
+          transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+        }
+        .sight-pill.on { border-color: var(--accent); color: var(--accent); }
+        .sight-pill:disabled { opacity: 0.35; }
+        .sight-pill.wide { flex: 1 1 auto; border-radius: 8px; }
+        .sight-num {
+          width: 66px; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 8px; color: var(--text); font-family: var(--font-mono);
+          font-size: 11px; padding: 7px 8px; min-height: 34px; text-align: center;
+        }
+        .sight-plan {
+          margin-top: 14px; padding: 11px 13px;
+          border: 1px solid var(--track); border-radius: 10px; background: var(--panel);
+          font-family: var(--font-mono); font-size: 10px; line-height: 1.75; color: var(--muted);
+        }
+        .sight-plan b { color: var(--accent); font-weight: 500; }
+        .sight-go {
+          width: 100%; margin-top: 12px; min-height: 50px; cursor: pointer;
+          border: 1px solid var(--accent); border-radius: 10px;
+          background: rgba(94, 234, 212, 0.10); color: var(--accent);
+          font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em;
+          text-transform: uppercase;
+        }
+        .sight-go:disabled {
+          border-color: var(--border); color: var(--muted); background: transparent; cursor: default;
+        }
+        .sight-peek-btn {
+          display: block; width: 100%; margin-top: 8px; min-height: 34px;
+          border: 1px dashed var(--border); background: transparent; color: var(--muted);
+          border-radius: 8px; cursor: pointer;
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.06em;
+        }
+        .sight-peek {
+          margin: 10px 0 0; padding: 0 0 0 4px; list-style: none;
+          max-height: 260px; overflow-y: auto;
+          border-top: 1px solid var(--track);
+        }
+        .sight-peek li {
+          font-family: var(--font-mono); font-size: 10px; line-height: 1.65;
+          color: var(--muted); padding: 5px 0; border-bottom: 1px solid var(--track);
+        }
+        .sight-peek-n {
+          display: inline-block; min-width: 22px; color: var(--accent); opacity: 0.7;
+        }
+        .sight-peek-more { color: var(--muted); font-style: italic; }
+
+        .sight-hud {
+          display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+          margin-top: 6px;
+          font-family: var(--font-mono); font-size: 9.5px; color: var(--muted);
+          letter-spacing: 0.06em;
+        }
+        .sight-hud-count { color: var(--accent); }
+        .sight-hud-clock { color: var(--text); font-size: 12px; }
+        .sight-timer {
+          height: 2px; background: var(--track); border-radius: 2px;
+          overflow: hidden; margin-top: 8px;
+        }
+        .sight-timer i {
+          display: block; height: 100%; width: 0;
+          background: var(--accent);
+          transition: width 100ms linear, background 200ms ease;
+        }
+        .sight-timer i.hot { background: var(--warn, #e8b34b); }
+
+        .sight-run { display: flex; flex-direction: column; min-height: calc(100vh - 250px); }
+        .sight-stage {
+          flex: 1 1 auto; min-height: 220px; margin-top: 10px;
+          display: flex; flex-direction: column; justify-content: center;
+          text-align: center; gap: 18px; cursor: pointer;
+          user-select: none; -webkit-user-select: none;
+          touch-action: manipulation; outline: none;
+        }
+        .sight-line { line-height: 1.45; transition: opacity 240ms ease, transform 240ms ease; }
+        .sight-line.prev, .sight-line.next {
+          font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+          opacity: 0.38; max-height: 3.2em; overflow: hidden;
+        }
+        .sight-line.prev { transform: scale(0.95) translateY(-2px); }
+        .sight-line.next { transform: scale(0.95) translateY(2px); }
+        .sight-line.now {
+          font-size: 22px; font-weight: 500; color: var(--text);
+          animation: sightIn 240ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .sight-line.now::first-letter { color: var(--accent); }
+        @keyframes sightIn {
+          from { opacity: 0; transform: translateY(12px) scale(0.97); }
+          to   { opacity: 1; transform: none; }
+        }
+
+        .sight-btns { display: flex; gap: 6px; margin-top: 14px; align-items: stretch; }
+        .sight-hint {
+          margin-top: 8px; text-align: center;
+          font-family: var(--font-mono); font-size: 8.5px; color: var(--muted);
+        }
+
+        .sight-done { position: relative; padding-top: 42px; text-align: center; }
+        .sight-done-kicker {
+          font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.3em;
+          text-transform: uppercase; color: var(--accent);
+          animation: sightFade 500ms ease both;
+        }
+        .sight-done-title {
+          font-size: 54px; font-weight: 500; color: var(--text); line-height: 1;
+          margin: 6px 0 22px;
+          animation: sightStamp 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        @keyframes sightStamp {
+          0%   { opacity: 0; transform: scale(1.5) rotate(-4deg); letter-spacing: 0.2em; }
+          60%  { opacity: 1; }
+          100% { opacity: 1; transform: none; letter-spacing: 0; }
+        }
+        @keyframes sightFade { from { opacity: 0; } to { opacity: 1; } }
+        .sight-stats {
+          display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;
+        }
+        .sight-stat {
+          border: 1px solid var(--track); border-radius: 10px; background: var(--panel);
+          padding: 11px 8px; display: flex; flex-direction: column; gap: 3px;
+          animation: sightIn 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        .sight-stat span { font-family: var(--font-mono); font-size: 19px; color: var(--accent); }
+        .sight-stat i {
+          font-style: normal; font-family: var(--font-mono); font-size: 8px;
+          letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+        }
+        .sight-done-line {
+          font-family: var(--font-mono); font-size: 9.5px; line-height: 1.7;
+          color: var(--muted); margin-bottom: 16px;
+        }
+        .sight-burst {
+          position: fixed; inset: 0 0 auto 0; height: 100vh;
+          overflow: hidden; pointer-events: none; z-index: 3;
+        }
+        .sight-bit {
+          position: absolute; top: -12px; color: var(--accent);
+          animation-name: sightFall; animation-timing-function: cubic-bezier(0.3, 0.6, 0.4, 1);
+          animation-fill-mode: forwards; opacity: 0.9;
+        }
+        .sight-bit.tone-1 { color: var(--text); opacity: 0.5; }
+        .sight-bit.tone-2 { color: var(--warn, #e8b34b); }
+        @keyframes sightFall {
+          from { transform: translateY(0) rotate(0deg); opacity: 0.9; }
+          70%  { opacity: 0.75; }
+          to   { transform: translateY(78vh) rotate(150deg); opacity: 0; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .sight-line.now, .sight-stat, .sight-done-title, .sight-done-kicker, .sight-bit {
+            animation: none !important;
+          }
+        }
 
         /* ---- v73: presets, penalties, tag allocation ---------------------- */
         .preset-box {

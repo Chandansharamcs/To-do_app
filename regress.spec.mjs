@@ -1445,7 +1445,11 @@ await test("a slipped day is red, not an empty square", async () => {
   const { ctx, page } = await open();
   // seed both a done and a slip for today so the two states are on screen
   await page.evaluate(() => {
-    const iso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+    // v63: the app's day rolls at 03:00 IST, so at 01:00 the calendar date and
+    // the app's "today" are a day apart. Seed the app's day, or this test fails
+    // for three hours every night through no fault of the app.
+    const iso = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" })
+      .format(new Date(Date.now() - 3 * 60 * 60 * 1000));
     const hs = JSON.parse(localStorage.getItem("tasksh.habits.v1") || "[]");
     if (hs.length < 2) return;
     hs[0] = { ...hs[0], history: [{ d: iso, t: "done" }] };
