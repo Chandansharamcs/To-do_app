@@ -193,6 +193,28 @@ await t("finishing the last sight celebrates and reports the real numbers", asyn
   } finally { await ctx.close(); }
 });
 
+await t("the finish screen can show the whole paragraph back, in order", async () => {
+  const { ctx, page } = await openSight();
+  try {
+    await page.fill(".sight-area", EN);
+    await page.click(".sight-go");
+    await page.waitForSelector(".sight-stage", { timeout: 5000 });
+    for (let i = 0; i < 6; i++) {
+      if (await page.locator(".sight-done").count()) break;
+      await page.click(".sight-stage");
+      await page.waitForTimeout(150);
+    }
+    await page.waitForSelector(".sight-done", { timeout: 5000 });
+    await page.click('.sight-peek-btn:has-text("read it all through")');
+    await page.waitForSelector(".sight-all", { timeout: 3000 });
+    const all = (await page.textContent(".sight-all")).replace(/\s+/g, " ").trim();
+    assert.equal(all, EN, "the read-back is not the paragraph that was pasted");
+    await page.click('.sight-peek-btn:has-text("hide it again")');
+    await page.waitForTimeout(150);
+    assert.equal(await page.locator(".sight-all").count(), 0);
+  } finally { await ctx.close(); }
+});
+
 await t("nothing about the paste is written to storage", async () => {
   const { ctx, page } = await openSight();
   try {

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v75`** | 2026-11-10 | sight can read the whole paragraph back when you finish |
 | **`v74`** | 2026-11-10 | sight: paste copy, write it one sight at a time — English, हिन्दी, ਪੰਜਾਬੀ |
 | **`v73`** | 2026-11-03 | The night charges you, routines get seasons, and a swipe finally means "done" |
 | **`v72`** | 2026-10-25 | The old nav back and polished; interaction sounds as one instrument |
@@ -99,6 +100,25 @@ later the *why* is the only part that still matters.
 ```
 
 ---
+
+```
+┌─ v75 ───────────────────────────────────────────────────────────┐
+│  2026-11-10 · sight, read back                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The finish screen now has **read it all through**: one tap joins the sights back
+into the paragraph you pasted, in order, with the original spacing and
+punctuation, right under the stats — so the last thing you do is proofread the
+whole piece instead of trusting four tiles. Tap again to fold it away.
+
+Still no storage: the read-back is the same chunks that were already in memory.
+It resets on every new run, so a second pass never opens with the old text on
+screen.
+
+Verified: `v74.spec.mjs` compares the read-back to the exact string that was
+pasted (`assert.equal(all, EN)`), and 12/12 pass. 770 unit, 105 regress, 11
+gate, 8 cloud, 80 tools, 0 failed.
 
 ```
 ┌─ v74 ───────────────────────────────────────────────────────────┐

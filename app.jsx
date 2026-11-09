@@ -15468,6 +15468,7 @@ function SightTool() {
   const [elapsed, setElapsed] = useState(0);       // ms actually spent
   const [inChunk, setInChunk] = useState(0);       // ms inside this sight
   const [peek, setPeek] = useState(false);
+  const [peekAll, setPeekAll] = useState(false);
 
   const opts = useMemo(() => ({ mode, words }), [mode, words]);
   const preview = useMemo(() => sightChunk(text, opts), [text, opts]);
@@ -15477,6 +15478,7 @@ function SightTool() {
 
   const start = () => {
     if (!preview.length) return;
+    setPeekAll(false);
     setChunks(preview);
     setIndex(0);
     setElapsed(0);
@@ -15676,6 +15678,17 @@ function SightTool() {
             interval alone would have taken {sightClock(chunks.length * perMs)} — you spent {sightClock(elapsed)}
             {elapsed < chunks.length * perMs ? " by skipping ahead" : ""}.
           </div>
+
+          <button className="sight-peek-btn" onClick={() => { setPeekAll((v) => !v); sound.click(); }}>
+            {peekAll ? "hide it again" : "read it all through"}
+          </button>
+          {peekAll && (
+            <div className="sight-all" dir="auto" lang={lang}>
+              {chunks.map((c, i) => (
+                <span key={i} className="sight-all-bit">{c}{" "}</span>
+              ))}
+            </div>
+          )}
 
           <div className="sight-btns">
             <button className="sight-pill wide" onClick={() => { setIndex(0); setElapsed(0); setInChunk(0); setPhase("run"); sound.open(); }}>
@@ -19979,6 +19992,14 @@ function TodoApp() {
           font-family: var(--font-mono); font-size: 9.5px; line-height: 1.7;
           color: var(--muted); margin-bottom: 16px;
         }
+        .sight-all {
+          margin: 10px 0 4px; padding: 12px;
+          border: 1px solid var(--track); border-radius: 10px; background: var(--panel);
+          text-align: left;
+          font-family: var(--font-mono); font-size: 11.5px; line-height: 1.8; color: var(--text);
+          animation: sightFade 260ms ease both;
+        }
+        .sight-all-bit { white-space: pre-wrap; }
         .sight-burst {
           position: fixed; inset: 0 0 auto 0; height: 100vh;
           overflow: hidden; pointer-events: none; z-index: 3;
