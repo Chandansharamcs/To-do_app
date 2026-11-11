@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v76`** | 2026-11-10 | a real Android app: the 03:00 check now fires by itself |
 | **`v75`** | 2026-11-10 | sight can read the whole paragraph back when you finish |
 | **`v74`** | 2026-11-10 | sight: paste copy, write it one sight at a time — English, हिन्दी, ਪੰਜਾਬੀ |
 | **`v73`** | 2026-11-03 | The night charges you, routines get seasons, and a swipe finally means "done" |
@@ -100,6 +101,78 @@ later the *why* is the only part that still matters.
 ```
 
 ---
+
+```
+┌─ v76 ───────────────────────────────────────────────────────────┐
+│  2026-11-10 · the same codebase, this time with an OS under it    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why this release exists
+
+A PWA cannot wake itself. The v73 nightly penalty therefore settles "for the
+day that ended, the first time the app is opened" — an honest workaround, and
+the single biggest compromise in the app. Android can wake itself, so this
+release puts the same `app.jsx` inside a Capacitor shell where it can.
+
+**Nothing about the website changed.** The bridge lives in
+`native/bridge.src.mjs`, is bundled separately into `app-web/bridge.js`, and is
+only ever present inside the APK. `app.jsx` sees it through one function,
+`nativeShell()`, which returns `null` on the web; every call site is guarded.
+
+### What the app has that the PWA cannot
+
+| | PWA | app |
+|---|---|---|
+| 03:00 night check | settles on next open | **exact alarm, `allowWhileIdle`**, silent, repeating |
+| routine reminder | web push needs a server | local notification, offline |
+| storage | best-effort, evictable | JSON snapshot in app Documents on every settle |
+| resume | 30 s poll | `appStateChange` |
+| share into `sight` | none | `ACTION_SEND text/plain` |
+| offline from install | after first visit | assets inside the APK |
+
+Turning penalties **off** cancels the alarm rather than leaving it armed, and
+the alarm is re-scheduled whenever the config changes.
+
+### What was built
+
+- `native/bridge.src.mjs` — bridge: `scheduleNight`, `scheduleRoutine`,
+  `snapshot` / `readSnapshot` / `restoreSnapshot`, `onResume`, `takeSharedText`
+- `scripts/build-app.mjs` — stages `app-web/`: the site's own files plus
+  `bridge.js`, and with the **service worker registration switched off** (in a
+  WebView a cache keeps serving the old bundle after an update)
+- `capacitor.config.json`, `android/` — appId `sh.tasks.app`, our icons in five
+  densities, a flat notification glyph, `POST_NOTIFICATIONS` +
+  `USE_EXACT_ALARM` + `RECEIVE_BOOT_COMPLETED` + `WAKE_LOCK` and no permission
+  it does not need
+- `.github/workflows/android.yml` — JDK 21, builds **debug always** and a
+  **signed release when the keystore secret exists**, uploads both as artifacts
+- `NATIVE.md` — one-time keystore setup, the install path, and the **migration
+  order** (the app is a new origin, so it starts empty; restore from cloud
+  *before* stopping the PWA)
+
+### Deliberately not done
+
+Play Store (a testing track and a privacy form for one user), TWA/Bubblewrap
+(same effort, still cannot fire the alarm), iOS (needs a Mac and $99/yr — the
+PWA remains the iOS answer).
+
+### Verified
+
+`native.test.mjs` (new, 16) proves the two channels stay separate: no Capacitor
+import reaches `app.jsx`, every native call is guarded, turning penalties off
+cancels the alarm, the bridge exposes exactly the surface the app calls, the
+alarm uses `allowWhileIdle`, the snapshot only ever touches `tasksh.*`, the
+manifest asks for the alarm permissions and **not** for contacts/location/SMS/
+camera, share-in is declared, the staging script produces the right files and
+leaks no tests or `sw.js`, the shell's `index.html` loads `bridge.js` and has no
+worker, the website's `index.html` gained nothing, and no keystore is committed.
+
+The APK itself was **not** built here — this sandbox has no Android SDK. The CI
+job is the build; `NATIVE.md` records the exact commands for a local one.
+
+Totals: **786 unit** (25 suites), 13 v73, 12 v74, 105 regress, 11 gate, 8 cloud,
+80 tools — 0 failed.
 
 ```
 ┌─ v75 ───────────────────────────────────────────────────────────┐

@@ -4774,6 +4774,32 @@ function presetRoutinesFrom(list, makeIdFn) {
 // rules can be tested without a clock, a browser or a React tree.
 // ============================================================
 
+/** v76: the Android shell.
+ *
+ *  Everything here is a no-op on the website, because `window.taskshNative`
+ *  only exists inside the APK (native/bridge.src.mjs). That is the whole trick:
+ *  one codebase, and the browser build degrades to exactly what it was.
+ *
+ *  What the shell adds, in the order it matters:
+ *    * a 03:01 local notification -- Android can wake itself, so the nightly
+ *      settle stops depending on him opening the app;
+ *    * a JSON snapshot in Documents on every settle, so a WebView data clear
+ *      is recoverable;
+ *    * settling on `appStateChange` instead of on a 30s poll.
+ */
+function nativeShell() {
+  return (typeof window !== "undefined" && window.taskshNative) || null;
+}
+
+/** Keeps the OS alarm in step with the penalty config. Silent and idempotent:
+ *  turning penalties off cancels the alarm instead of leaving it to fire. */
+function nativeScheduleNight(cfg) {
+  const n = nativeShell();
+  if (!n || !n.scheduleNight) return Promise.resolve(null);
+  if (!cfg || !cfg.on) return (n.cancelNight ? n.cancelNight() : Promise.resolve(null));
+  return n.scheduleNight(3, 1);
+}
+
 const STORAGE_KEY_PENALTY = "tasksh.penalty.v1";
 
 const PENALTY_DEFAULTS = {
@@ -16416,6 +16442,17 @@ function TodoApp() {
   const inventoryRef = useRef(inventory);
   inventoryRef.current = inventory;
   const tagsRef = useRef(null);
+
+  // v76: in the Android shell the OS wakes us instead of a timer.
+  useEffect(() => {
+    const n = nativeShell();
+    if (!n || !n.onResume) return undefined;
+    const stop = n.onResume(() => { settleNight(); });
+    return () => { if (typeof stop === "function") stop(); };
+  }, [settleNight]);
+
+  // Keep the OS alarm in step with the rules: turning penalties off cancels it.
+  useEffect(() => { nativeScheduleNight(penalty.cfg); }, [penalty.cfg]);
 
   useEffect(() => {
     settleNight();

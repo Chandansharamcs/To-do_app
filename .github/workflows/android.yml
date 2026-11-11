@@ -1,0 +1,97 @@
+name: android
+
+# Builds the tasks.sh APK. Nothing here touches the website: the PWA keeps
+# deploying from the repo root as it always has, and this workflow is the only
+# thing that produces an installable Android app.
+#
+# Two artefacts come out of every run:
+#   tasksh-debug.apk    signed with a throwaway key -- installs, but a NEW build
+#                      will not update it (different signature)
+#   tasksh-release.apk  signed with the key in the KEYSTORE_* secrets -- updates
+#                      install over the previous one. This is the one to keep.
+#
+# Secrets needed (Settings -> Secrets and variables -> Actions):
+#   KEYSTORE_BASE64   base64 of tasksh-release.keystore   (one line: base64 -w0 file)
+#   KEYSTORE_PASSWORD the store password you chose
+#   KEY_ALIAS         tasksh
+#   KEY_PASSWORD      the key password (usually the same)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["app-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: install
+        run: npm ci
+
+      # The same build the website runs, plus the app-only staging step.
+      - name: build web assets
+        run: |
+          npm run build
+          node scripts/build-app.mjs
+
+      - name: sync android
+        run: npx cap sync android
+
+      # ---- debug, always ----
+      - name: assemble debug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: upload debug apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasksh-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # ---- release, only when the signing key is configured ----
+      - name: decode keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/tasksh.keystore"
+          echo "KS=$RUNNER_TEMP/tasksh.keystore" >> "$GITHUB_ENV"
+
+      - name: assemble release
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        working-directory: android
+        env:
+          KS: ${{ env.KS }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$KS" \
+            -Pandroid.injected.signing.store.password="$KS_PASS" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASS"
+
+      - name: upload release apk
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasksh-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

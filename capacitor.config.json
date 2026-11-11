@@ -1,0 +1,21 @@
+{
+  "appId": "sh.tasks.app",
+  "appName": "tasks.sh",
+  "webDir": "app-web",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0B0D10",
+    "webContentsDebuggingEnabled": false,
+    "useLegacyBridge": false
+  },
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#5EEAD4"
+    }
+  }
+}

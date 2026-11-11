@@ -1,6 +1,6 @@
 {
   "name": "tasks-sh",
-  "version": "5.21.0",
+  "version": "5.22.0",
   "private": true,
   "description": "Terminal-styled task manager PWA with a routines quest-log timeline synced to IST",
   "scripts": {
@@ -8,8 +8,12 @@
     "build:dev": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap",
     "watch": "esbuild app.jsx --bundle --format=iife --loader:.jsx=jsx --define:process.env.NODE_ENV='\"development\"' --outfile=bundle.js --sourcemap --watch",
     "serve": "python3 -m http.server 8080",
-    "test": "node keydetect.test.mjs && node daily.test.mjs && node notify.test.mjs && node cloud.test.mjs && node pomodoro.test.mjs && node captions.test.mjs && node rngdle.test.mjs && node infinite.test.mjs && node slots.test.mjs && node quest.test.mjs && node tags.test.mjs && node dailytags.test.mjs && node store.test.mjs && node recurring.test.mjs && node expenses.test.mjs && node sound.test.mjs && node boundary.test.mjs && node penalty.test.mjs && node sight.test.mjs && node worker/actions.test.mjs && node worker/providers.test.mjs && node worker/callshape.test.mjs && node worker/backup.test.mjs && node worker/timer.test.mjs",
-    "test:browser": "node gate.spec.mjs && node regress.spec.mjs && node cloud.spec.mjs && node tools.spec.mjs && node v73.spec.mjs && node v74.spec.mjs"
+    "test": "node keydetect.test.mjs && node daily.test.mjs && node notify.test.mjs && node cloud.test.mjs && node pomodoro.test.mjs && node captions.test.mjs && node rngdle.test.mjs && node infinite.test.mjs && node slots.test.mjs && node quest.test.mjs && node tags.test.mjs && node dailytags.test.mjs && node store.test.mjs && node recurring.test.mjs && node expenses.test.mjs && node sound.test.mjs && node boundary.test.mjs && node penalty.test.mjs && node sight.test.mjs && node native.test.mjs && node worker/actions.test.mjs && node worker/providers.test.mjs && node worker/callshape.test.mjs && node worker/backup.test.mjs && node worker/timer.test.mjs",
+    "test:browser": "node gate.spec.mjs && node regress.spec.mjs && node cloud.spec.mjs && node tools.spec.mjs && node v73.spec.mjs && node v74.spec.mjs",
+    "app:web": "node scripts/build-app.mjs",
+    "app:sync": "npm run build && node scripts/build-app.mjs && cap sync android",
+    "app:debug": "npm run app:sync && cd android && ./gradlew assembleDebug",
+    "app:apk": "npm run app:sync && cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "mediabunny": "^1.60.0",
@@ -17,6 +21,12 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/cli": "^6.2.3",
+    "@capacitor/core": "^6.2.3",
+    "@capacitor/filesystem": "^6.0.4",
+    "@capacitor/local-notifications": "^6.1.3",
     "esbuild": "^0.27.0",
     "playwright": "^1.56.0"
   }
