@@ -47,7 +47,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # `tools` was removed from the SDK, and this action installs it by
+      # default -- which is what killed the first runs:
+      #   Warning: Failed to find package 'tools'  ->  sdkmanager exit 1
+      # platform-tools is the only package we actually need here; the runner
+      # image already carries the SDK, build-tools and platform 34.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: report sdk
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" || true
 
       - name: install
         run: npm ci

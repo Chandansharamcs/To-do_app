@@ -48,7 +48,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- v76: the 03:01 night check. Notifications, and the permission to fire
-         while the phone is in Doze -- without USE_EXACT_ALARM Android batches
+         while the phone is in Doze. Without USE_EXACT_ALARM, Android batches
          the alarm into the next maintenance window and "every night" becomes
          "eventually". BOOT_COMPLETED re-arms it after a restart. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

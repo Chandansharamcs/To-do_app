@@ -16,6 +16,23 @@ import { execFileSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p) => readFileSync(join(here, p), "utf8");
+/** Just enough XML checking to catch the two things that actually broke a
+ *  build: a comment with `--` in it, and an unbalanced tag. */
+function DOMParserShim(src) {
+  const body = src.replace(/<!--[\s\S]*?-->/g, "").replace(/<\?[\s\S]*?\?>/g, "");
+  const stack = [];
+  const re = /<(\/?)([A-Za-z][\w.:-]*)([^>]*?)(\/?)>/g;
+  let m;
+  while ((m = re.exec(body))) {
+    const [, close, name, , selfClose] = m;
+    if (selfClose) continue;
+    if (close) {
+      const top = stack.pop();
+      if (top !== name) throw new Error(`unbalanced tag: </${name}> closes <${top}>`);
+    } else stack.push(name);
+  }
+  if (stack.length) throw new Error(`unclosed tags: ${stack.join(", ")}`);
+}
 const SRC = read("app.jsx");
 
 let pass = 0;
@@ -126,9 +143,30 @@ t("the CI job builds a debug APK always and a signed one when the key exists", (
   assert.match(w, /if: env\.KS_B64 != ''/);
   assert.match(w, /upload-artifact@v4/);
   assert.match(w, /java-version: "21"/);
+  // setup-android installs the removed `tools` package by default, which fails
+  // the whole job before any of our steps run
+  assert.match(w, /with:\s+packages: platform-tools/);
   // the keystore is decoded into the runner's temp dir, never committed
   // whitespace in a pasted secret must not corrupt the key
   assert.match(w, /tr -d '\[:space:\]' \| base64 -d/);
+});
+
+t("every XML in the android project is well-formed", () => {
+  // Two builds died on this: a comment containing `--` is illegal XML, and the
+  // manifest merger reports it as a bare "Error parsing AndroidManifest.xml"
+  // with no line number. Cheap to check, expensive to hit at build time.
+  const walk = (dir) => readdirSync(join(here, dir), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);
+  const files = [...walk("android/app/src/main"), "android/app/src/main/AndroidManifest.xml"]
+    .filter((f) => f.endsWith(".xml"));
+  assert.ok(files.length >= 3, "no android xml found");
+  for (const f of files) {
+    const src = readFileSync(join(here, f), "utf8");
+    for (const c of src.match(/<!--[\s\S]*?-->/g) || []) {
+      assert.ok(!c.slice(4, -3).includes("--"), `${f}: a comment contains a double hyphen`);
+    }
+    assert.doesNotThrow(() => new DOMParserShim(src), `${f} is not well-formed`);
+  }
 });
 
 t("no keystore is committed anywhere", () => {
