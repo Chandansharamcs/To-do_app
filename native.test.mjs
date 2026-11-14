@@ -120,7 +120,10 @@ t("the CI job builds a debug APK always and a signed one when the key exists", (
   const w = read(".github/workflows/android.yml");
   assert.match(w, /assembleDebug/);
   assert.match(w, /assembleRelease/);
-  assert.match(w, /secrets\.KEYSTORE_BASE64/);
+  // secrets are copied to job env, then the step conditions test the env --
+  // `secrets` is not readable inside every `if:` expression
+  assert.match(w, /KS_B64: \$\{\{ secrets\.KEYSTORE_BASE64 \}\}/);
+  assert.match(w, /if: env\.KS_B64 != ''/);
   assert.match(w, /upload-artifact@v4/);
   assert.match(w, /java-version: "21"/);
   // the keystore is decoded into the runner's temp dir, never committed

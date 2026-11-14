@@ -1,20 +1,20 @@
 name: android
 
-# Builds the tasks.sh APK. Nothing here touches the website: the PWA keeps
-# deploying from the repo root as it always has, and this workflow is the only
-# thing that produces an installable Android app.
+# Builds the tasks.sh APK. The website is untouched by this: Pages keeps serving
+# the repo root as it always has, and this workflow is the only thing that makes
+# an installable Android app.
 #
-# Two artefacts come out of every run:
-#   tasksh-debug.apk    signed with a throwaway key -- installs, but a NEW build
-#                      will not update it (different signature)
-#   tasksh-release.apk  signed with the key in the KEYSTORE_* secrets -- updates
-#                      install over the previous one. This is the one to keep.
+# Artefacts per run:
+#   tasksh-debug    always. Throwaway signature: installs, but a NEW debug build
+#                   will not update the previous one (different signature).
+#   tasksh-release  only when KEYSTORE_BASE64 exists. Signed with your key, so it
+#                   installs OVER the previous build and keeps the data.
 #
-# Secrets needed (Settings -> Secrets and variables -> Actions):
-#   KEYSTORE_BASE64   base64 of tasksh-release.keystore   (one line: base64 -w0 file)
-#   KEYSTORE_PASSWORD the store password you chose
-#   KEY_ALIAS         tasksh
-#   KEY_PASSWORD      the key password (usually the same)
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   KEYSTORE_BASE64    one line: base64 -w0 tasksh-release.keystore
+#   KEYSTORE_PASSWORD  the store password
+#   KEY_ALIAS          tasksh
+#   KEY_PASSWORD       the key password
 
 on:
   workflow_dispatch:
@@ -27,6 +27,13 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    # Secrets are not readable inside every `if:` expression, so they are copied
+    # into job-level env once and the conditions test the env instead.
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+      KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASS: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +61,6 @@ jobs:
       - name: sync android
         run: npx cap sync android
 
-      # ---- debug, always ----
       - name: assemble debug
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
@@ -66,21 +72,15 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      # ---- release, only when the signing key is configured ----
       - name: decode keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KS_B64 != ''
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/tasksh.keystore"
+          printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/tasksh.keystore"
           echo "KS=$RUNNER_TEMP/tasksh.keystore" >> "$GITHUB_ENV"
 
       - name: assemble release
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KS_B64 != ''
         working-directory: android
-        env:
-          KS: ${{ env.KS }}
-          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           ./gradlew assembleRelease --no-daemon \
             -Pandroid.injected.signing.store.file="$KS" \
@@ -89,7 +89,7 @@ jobs:
             -Pandroid.injected.signing.key.password="$KEY_PASS"
 
       - name: upload release apk
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.KS_B64 != ''
         uses: actions/upload-artifact@v4
         with:
           name: tasksh-release
