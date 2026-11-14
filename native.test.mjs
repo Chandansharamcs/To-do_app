@@ -127,7 +127,8 @@ t("the CI job builds a debug APK always and a signed one when the key exists", (
   assert.match(w, /upload-artifact@v4/);
   assert.match(w, /java-version: "21"/);
   // the keystore is decoded into the runner's temp dir, never committed
-  assert.match(w, /base64 -d > "\$RUNNER_TEMP\/tasksh\.keystore"/);
+  // whitespace in a pasted secret must not corrupt the key
+  assert.match(w, /tr -d '\[:space:\]' \| base64 -d/);
 });
 
 t("no keystore is committed anywhere", () => {

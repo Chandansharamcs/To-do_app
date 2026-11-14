@@ -75,7 +75,11 @@ jobs:
       - name: decode keystore
         if: env.KS_B64 != ''
         run: |
-          printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/tasksh.keystore"
+          # A secret pasted from a viewer often carries a newline or a trailing
+          # space; both break base64 decoding. Strip all whitespace first, so a
+          # wrapped copy still produces the right key.
+          printf '%s' "$KS_B64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/tasksh.keystore"
+          echo "keystore bytes: $(wc -c < "$RUNNER_TEMP/tasksh.keystore")"
           echo "KS=$RUNNER_TEMP/tasksh.keystore" >> "$GITHUB_ENV"
 
       - name: assemble release
