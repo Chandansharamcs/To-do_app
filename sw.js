@@ -1,4 +1,4 @@
-const CACHE = "tasksh-v76";
+const CACHE = "tasksh-v77";
 const ASSETS = [
   "./",
   "./index.html",

@@ -51,9 +51,10 @@ t("the app only sees the shell through one feature-detected object", () => {
 });
 
 t("every native call is guarded, so the website degrades to what it was", () => {
-  // the two guard points: the resume listener and the alarm scheduler
+  // the guard points: the resume listener, the alarm scheduler and the share
   assert.match(SRC, /const n = nativeShell\(\);\s+if \(!n \|\| !n\.onResume\) return undefined;/);
   assert.match(SRC, /const n = nativeShell\(\);\s+if \(!n \|\| !n\.scheduleNight\) return Promise\.resolve\(null\);/);
+  assert.match(SRC, /const n = nativeShell\(\);\s+if \(!n \|\| !n\.takeSharedText\) return;/);
 });
 
 t("turning penalties off cancels the OS alarm instead of leaving it armed", () => {
@@ -86,7 +87,7 @@ t("cancelNight exists, so turning penalties off really disarms the alarm", () =>
   // kept firing for a disabled rule.
   const b = read("native/bridge.src.mjs");
   assert.match(b, /async function cancelNight\(\)/);
-  assert.match(b, /cancelNight,\n/, "cancelNight is not exported on window.taskshNative");
+  assert.match(b, /scheduleNight, cancelNight,/, "cancelNight is not exported on window.taskshNative");
   assert.match(SRC, /if \(!cfg \|\| !cfg\.on\) return \(n\.cancelNight \?/);
 });
 
@@ -122,7 +123,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5022000 + 0, `expected 5.22.0 -> 5022000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5023000, `expected 5.23.0 -> 5023000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

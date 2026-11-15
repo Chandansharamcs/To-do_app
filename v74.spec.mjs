@@ -241,6 +241,29 @@ await t("no horizontal overflow with sight open, at phone width", async () => {
   } finally { await ctx.close(); }
 });
 
+await t("a paragraph handed in from the app shell lands in sight, split and ready", async () => {
+  // v77: this is the browser half of Android share-in. The Java side is tested
+  // structurally in native.test.mjs; what is proved here is that a text handed
+  // to the page ends up in the paste box and the tool opens itself.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  await ctx.addInitScript(() => {
+    window.taskshNative = { isNative: true, platform: "android", takeSharedText: async () => "मैं रोज़ लिखता हूँ। घर शांत है।" };
+  });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "load" });
+    await page.waitForSelector(".tabs", { timeout: 15000 });
+    await page.click("#tab-tools");
+    await page.waitForSelector(".sight-area", { timeout: 8000 });
+    const value = await page.inputValue(".sight-area");
+    assert.equal(value, "मैं रोज़ लिखता हूँ। घर शांत है।", "the shared text did not reach the editor");
+    assert.match(await page.textContent(".sight-plan"), /2 sights/, "it was not split");
+    assert.equal(errors.length, 0, errors.join(" | "));
+  } finally { await ctx.close(); }
+});
+
 await browser.close();
 server.close();
 console.log(`\nv74.spec.mjs: ${pass} passed, ${fail} failed`);

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v77`** | 2026-11-15 | four bugs the first real build found, and share-in that actually works |
 | **`v76`** | 2026-11-10 | a real Android app: the 03:00 check now fires by itself |
 | **`v75`** | 2026-11-10 | sight can read the whole paragraph back when you finish |
 | **`v74`** | 2026-11-10 | sight: paste copy, write it one sight at a time — English, हिन्दी, ਪੰਜਾਬੀ |
@@ -101,6 +102,66 @@ later the *why* is the only part that still matters.
 ```
 
 ---
+
+```
+┌─ v77 ───────────────────────────────────────────────────────────┐
+│  2026-11-15 · the APK builds, and the alarm can be turned off     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The first CI run never reached our code
+
+`android-actions/setup-android@v3` installs the SDK package `tools` by default,
+and Google has removed it:
+
+```
+Warning: Failed to find package 'tools'
+Error: The process 'sdkmanager' failed with exit code 1
+```
+
+The job died at step 5 of 29. It now installs `platform-tools` only, and prints
+the SDK it found.
+
+### Three more, found by actually building it
+
+Rather than trust the config, an Android SDK (platform 34, build-tools 34.0.0,
+JDK 21) was installed here and the APK was built. That turned up two more that
+CI would have hit immediately:
+
+| bug | symptom | fix |
+|---|---|---|
+| `android/gradlew` committed `100644` | `./gradlew: Permission denied` | mode `100755` in the index |
+| two XML comments contained `--` | `The string "--" is not permitted within comments`, then a bare `Error parsing AndroidManifest.xml` | comments rewritten |
+
+`native.test.mjs` now checks every Android XML for well-formedness and for
+hyphens inside comments, so that class of mistake cannot reach the runner.
+
+### Then the ones that were real bugs in the feature itself
+
+| bug | what it did | fix |
+|---|---|---|
+| **no `cancelNight`** | `app.jsx` calls `n.cancelNight()` when penalties are switched **off**; the bridge never defined it, so the guard fell through and the 03:01 alarm kept firing for a disabled rule | `cancelNight()` added and exported |
+| **share-in was decoration** | the manifest declared `ACTION_SEND text/plain` since v76 but *nothing read the intent* — sharing a paragraph into the app did nothing | a real `SharePlugin.java` + `onNewIntent` in `MainActivity`, `registerPlugin` in the bridge, and `app.jsx` puts the text straight into `sight` and opens the tool |
+| **versionCode frozen at 1** | a build with a lower code than the installed one is refused with `App not installed` and no explanation | `build.gradle` derives both version fields from `package.json`: 5.23.0 → **5023000** |
+
+The share is **consumed** when read (the intent is cleared), so resuming the app
+cannot replay the same paragraph into the editor.
+
+### Verified by building and inspecting, not by assertion
+
+| check | result |
+|---|---|
+| `assembleDebug` | `BUILD SUCCESSFUL`, `app-debug.apk` |
+| `assembleRelease` | `BUILD SUCCESSFUL`, 3,528,736 B |
+| badging | `versionCode='5023000' versionName='5.23.0'` |
+| signature | `apksigner verify` → SHA-256 `5f9967f7…f85d92aa` (the released key) |
+| contents | 13 `assets/public` entries incl. `bridge.js`; `SharePlugin` present in `classes.dex` |
+
+### Tests
+
+**791 unit** (25 suites), `native.test.mjs` 21, `v74.spec.mjs` 13 (including a
+new "a paragraph handed in from the app shell lands in sight, split and ready"),
+`v73` 13, regress 105, gate 11, cloud 8, tools 80 — 0 failed.
 
 ```
 ┌─ v76 ───────────────────────────────────────────────────────────┐

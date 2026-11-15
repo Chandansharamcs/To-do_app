@@ -20,7 +20,7 @@ let pass = 0;
 const t = (n, f) => { try { f(); pass++; console.log("  ✓", n); } catch (e) { console.log("  ✗", n, "\n     ", e.message); process.exitCode = 1; } };
 
 const start = SRC.indexOf("const SIGHT_MAX_CHARS");
-const end = SRC.indexOf("function SightTool()");
+const end = SRC.indexOf("function SightTool(");   // v77: it takes the shared text now
 assert.ok(start > 0 && end > start, "sight engine not found in app.jsx");
 const E = new Function(`${SRC.slice(start, end)}; return { SIGHT_DEFAULTS, SIGHT_MAX_CHUNKS, sightWords, sightSentences, sightCapitalRescue, sightChunk, sightPlan, sightScript, sightClock, sightBits };`)();
 
@@ -203,7 +203,7 @@ t("the celebration is deterministic and flat", () => {
 });
 
 // ------------------------------------------------------------ structure ----
-const comp = SRC.slice(SRC.indexOf("function SightTool()"), SRC.indexOf("const TOOLS = ["));
+const comp = SRC.slice(SRC.indexOf("function SightTool("), SRC.indexOf("const TOOLS = ["));
 
 t("sight is registered as a tool with a glyph and a component", () => {
   assert.match(SRC, /id: "sight",\n\s+glyph: "▦",\n\s+name: "sight",/);
