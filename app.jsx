@@ -15479,7 +15479,7 @@ function sightBits(count = 22) {
   });
 }
 
-function SightTool() {
+function SightTool({ incoming }) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState(SIGHT_DEFAULTS.mode);
   const [words, setWords] = useState(SIGHT_DEFAULTS.words);
@@ -15495,6 +15495,14 @@ function SightTool() {
   const [inChunk, setInChunk] = useState(0);       // ms inside this sight
   const [peek, setPeek] = useState(false);
   const [peekAll, setPeekAll] = useState(false);
+
+  // v77: a paragraph shared into the app arrives here. It is put straight into
+  // the paste box and the tool re-splits, so the only step left is "start".
+  useEffect(() => {
+    if (typeof incoming !== "string" || !incoming.trim()) return;
+    setText(incoming.slice(0, SIGHT_MAX_CHARS));
+    setPhase("setup");
+  }, [incoming]);
 
   const opts = useMemo(() => ({ mode, words }), [mode, words]);
   const preview = useMemo(() => sightChunk(text, opts), [text, opts]);
@@ -15822,8 +15830,13 @@ function toolStatuses() {
   return out;
 }
 
-function ToolsView({ onReward }) {
+function ToolsView({ onReward, sharedText = null }) {
   const [open, setOpen] = useState(null);
+
+  // a share-in should land in the tool that consumes text, not on the grid
+  useEffect(() => {
+    if (sharedText) setOpen("sight");
+  }, [sharedText]);
   const tool = TOOLS.find((t) => t.id === open) || null;
   // recomputed whenever the grid is shown, so a tool used a moment ago is
   // reflected the next time you come back to the list
@@ -15839,7 +15852,7 @@ function ToolsView({ onReward }) {
           </button>
           <span>{tool.name.toUpperCase()}</span>
         </div>
-        <Body onReward={onReward} />
+        <Body onReward={onReward} incoming={tool.id === "sight" ? sharedText : undefined} />
       </div>
     );
   }
@@ -16393,6 +16406,17 @@ function TodoApp() {
       }));
     },
   }), [presetState, setRoutines]);
+
+  // v77: a paragraph shared from another app (Android only). Read once on
+  // mount; the bridge clears the intent so a resume cannot replay it.
+  const [sharedText, setSharedText] = useState(null);
+  useEffect(() => {
+    const n = nativeShell();
+    if (!n || !n.takeSharedText) return;
+    let cancelled = false;
+    n.takeSharedText().then((t) => { if (!cancelled && t) setSharedText(t); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const [penalty, setPenalty] = useState(loadPenaltyState);
   const penaltyRef = useRef(penalty);
@@ -23078,7 +23102,7 @@ pet, wallet and themes are always included.
         ) : tab === "vault" ? (
           <VaultView penaltyCtl={{ penalty, setPenalty, settleNight }} />
         ) : tab === "tools" ? (
-          <ToolsView onReward={(c) => achCtl.addCoins(c)} />
+          <ToolsView onReward={(c) => achCtl.addCoins(c)} sharedText={sharedText} />
         ) : tab === "quest" ? (
           <QuestView
             tagCtl={tagCtl}

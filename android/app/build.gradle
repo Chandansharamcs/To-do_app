@@ -7,8 +7,14 @@ android {
         applicationId "sh.tasks.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // v77: the version comes from package.json, so it can only climb.
+        // A build with a versionCode lower than the one installed is refused by
+        // Android with "App not installed" and no explanation -- this makes
+        // that impossible: 5.22.0 -> 5022000, 5.23.1 -> 5023001.
+        def pkg = new groovy.json.JsonSlurper().parseText(file("../../package.json").text)
+        def (major, minor, patch) = pkg.version.tokenize(".").collect { it.toInteger() }
+        versionCode major * 1000000 + minor * 1000 + patch
+        versionName pkg.version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

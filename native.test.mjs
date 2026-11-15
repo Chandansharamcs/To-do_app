@@ -67,7 +67,7 @@ t("the alarm is kept in step with the penalty config", () => {
 // -------------------------------------------------------------- the shell --
 t("the bridge exposes exactly the surface app.jsx expects", () => {
   const b = read("native/bridge.src.mjs");
-  for (const k of ["snapshot", "readSnapshot", "restoreSnapshot", "scheduleNight", "scheduleRoutine", "onResume", "takeSharedText"]) {
+  for (const k of ["snapshot", "readSnapshot", "restoreSnapshot", "scheduleNight", "cancelNight", "scheduleRoutine", "onResume", "takeSharedText"]) {
     assert.match(b, new RegExp(`${k}[,:]`), `bridge is missing ${k}`);
   }
   assert.match(b, /window\.taskshNative = \{/);
@@ -78,6 +78,51 @@ t("the night alarm survives Doze", () => {
   assert.match(b, /allowWhileIdle: true/);
   assert.match(b, /on: \{ hour, minute \}, allowWhileIdle: true, repeats: true/);
   assert.match(b, /silent: true/, "a 03:01 ping should not make a sound");
+});
+
+t("cancelNight exists, so turning penalties off really disarms the alarm", () => {
+  // app.jsx calls n.cancelNight() when the rules are switched off. It was not
+  // in the bridge, so the guard fell through to a no-op and the 03:01 alarm
+  // kept firing for a disabled rule.
+  const b = read("native/bridge.src.mjs");
+  assert.match(b, /async function cancelNight\(\)/);
+  assert.match(b, /cancelNight,\n/, "cancelNight is not exported on window.taskshNative");
+  assert.match(SRC, /if \(!cfg \|\| !cfg\.on\) return \(n\.cancelNight \?/);
+});
+
+t("share-in is implemented, not just declared", () => {
+  // v76 declared the intent filter but nothing read the intent, so sharing did
+  // nothing. The Java plugin is the half Capacitor does not provide.
+  const java = read("android/app/src/main/java/sh/tasks/app/SharePlugin.java");
+  assert.match(java, /@CapacitorPlugin\(name = "Share"\)/);
+  assert.match(java, /Intent\.ACTION_SEND/);
+  assert.match(java, /EXTRA_TEXT/);
+  assert.match(java, /setAction\(null\)/, "the share is not consumed, so a resume would replay it");
+  const main = read("android/app/src/main/java/sh/tasks/app/MainActivity.java");
+  assert.match(main, /registerPlugin\(SharePlugin\.class\)/);
+  assert.match(main, /public void onNewIntent/, "a second share while running is dropped");
+  assert.match(main, /setIntent\(intent\)/);
+  const b = read("native/bridge.src.mjs");
+  assert.match(b, /registerPlugin\("Share"\)/);
+  assert.match(b, /Share\.getShared\(\)/);
+});
+
+t("a shared paragraph reaches the editor and opens the right tool", () => {
+  assert.match(SRC, /<Body onReward=\{onReward\} incoming=\{tool\.id === "sight" \? sharedText : undefined\} \/>/);
+  assert.match(SRC, /if \(sharedText\) setOpen\("sight"\);/);
+  assert.match(SRC, /function SightTool\(\{ incoming \}\)/);
+  assert.match(SRC, /setText\(incoming\.slice\(0, SIGHT_MAX_CHARS\)\)/);
+  assert.match(SRC, /<ToolsView onReward=\{\(c\) => achCtl\.addCoins\(c\)\} sharedText=\{sharedText\} \/>/);
+});
+
+t("the version code can only climb, and it comes from package.json", () => {
+  const g = read("android/app/build.gradle");
+  assert.match(g, /new groovy\.json\.JsonSlurper\(\)\.parseText\(file\("\.\.\/\.\.\/package\.json"\)\.text\)/);
+  assert.match(g, /versionCode major \* 1000000 \+ minor \* 1000 \+ patch/);
+  assert.match(g, /versionName pkg\.version/);
+  // and the arithmetic is right for the current version
+  const v = JSON.parse(read("package.json")).version.split(".").map(Number);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5022000 + 0, `expected 5.22.0 -> 5022000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

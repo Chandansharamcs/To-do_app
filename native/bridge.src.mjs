@@ -21,10 +21,14 @@
 // The bridge never decides anything about XP, tags or money -- it moves data
 // and wakes the app. All the rules stay in app.jsx, where they are tested.
 
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App } from "@capacitor/app";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
+
+/** The Java plugin in android/app/src/main/java/sh/tasks/app/SharePlugin.java.
+ *  It is the half of share-in that Capacitor does not provide. */
+const Share = registerPlugin("Share");
 
 const NIGHT_ID = 7303;      // 03:0x -- one fixed id, rescheduled, never stacked
 const SNAPSHOT = "tasksh-snapshot.json";
@@ -110,6 +114,16 @@ async function scheduleNight(hour = 3, minute = 1) {
   }
 }
 
+/** Disarms the night alarm. app.jsx calls this when penalties are turned off --
+ *  without it the 03:01 notification kept firing for a rule that was disabled. */
+async function cancelNight() {
+  try {
+    await LocalNotifications.cancel({ notifications: [{ id: NIGHT_ID }] });
+    const pending = await LocalNotifications.getPending();
+    return { ok: true, pending: pending.notifications.filter((n) => n.id === NIGHT_ID).length };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
 /** A real clock for a routine time, which the web can never offer.
  *  kind: "at" (a wall-clock time) — one notification, repeating daily. */
 async function scheduleRoutine(label, time, id) {
@@ -133,15 +147,13 @@ function onResume(cb) {
   return () => App.removeAllListeners();
 }
 
-/** Text shared to tasks.sh from another app, if any. */
+/** Text shared to tasks.sh from another app, if any. Consumed once: the Java
+ *  side clears the intent so a resume cannot replay the same paragraph. */
 async function takeSharedText() {
   try {
-    const url = await App.getLaunchUrl();
-    if (!url || !url.url) return null;
-    const q = url.url.includes("?") ? url.url.slice(url.url.indexOf("?") + 1) : "";
-    const params = new URLSearchParams(q);
-    const text = params.get("text") || params.get("share") || "";
-    return text ? decodeURIComponent(text) : null;
+    const res = await Share.getShared();
+    const text = res && res.text ? String(res.text).trim() : "";
+    return text ? text : null;
   } catch { return null; }
 }
 
@@ -150,6 +162,6 @@ window.taskshNative = {
   isNative: Capacitor.isNativePlatform(),
   version: "1",
   snapshot, readSnapshot, restoreSnapshot,
-  scheduleNight, scheduleRoutine,
+  scheduleNight, cancelNight, scheduleRoutine,
   onResume, takeSharedText,
 };
