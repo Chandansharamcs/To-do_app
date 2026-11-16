@@ -116,6 +116,92 @@ t("a shared paragraph reaches the editor and opens the right tool", () => {
   assert.match(SRC, /<ToolsView onReward=\{\(c\) => achCtl\.addCoins\(c\)\} sharedText=\{sharedText\} \/>/);
 });
 
+t("the widget is declared, exported, and its tick receiver is not", () => {
+  const m = read("android/app/src/main/AndroidManifest.xml");
+  assert.match(m, /android:name="\.WidgetProvider"[\s\S]{0,120}android:exported="true"/);
+  assert.match(m, /android:name="android\.appwidget\.action\.APPWIDGET_UPDATE"/);
+  assert.match(m, /@xml\/widget_info/);
+  // only a PendingIntent we created may complete a routine
+  assert.match(m, /android:name="\.CompleteReceiver"[\s\S]{0,80}android:exported="false"/);
+});
+
+t("the widget provider info is resizable and does not pretend to self-update", () => {
+  const w = read("android/app/src/main/res/xml/widget_info.xml");
+  assert.match(w, /android:resizeMode="horizontal\|vertical"/);
+  assert.match(w, /android:minWidth="250dp"/);
+  // Android's own floor is 30 minutes, and the countdown needs one: the
+  // provider arms its own alarm instead, so this must stay 0
+  assert.match(w, /android:updatePeriodMillis="0"/);
+  assert.match(w, /android:initialLayout="@layout\/widget_routine"/);
+});
+
+t("the widget layout is RemoteViews-legal: no custom views, no nesting surprises", () => {
+  const l = read("android/app/src/main/res/layout/widget_routine.xml");
+  for (const id of ["widget_headline", "widget_label", "widget_sub", "widget_count", "widget_tick"]) {
+    assert.ok(l.includes(`@+id/${id}`), `layout is missing ${id}`);
+  }
+  // RemoteViews only supports a fixed set of views; anything else silently
+  // fails to inflate at runtime, on the home screen, where nobody sees a log
+  const allowed = new Set(["LinearLayout", "TextView", "ImageView", "Button", "ImageButton", "FrameLayout", "RelativeLayout", "ProgressBar", "Chronometer"]);
+  for (const tag of l.match(/<([A-Z][A-Za-z]+)/g) || []) {
+    const name = tag.slice(1);
+    assert.ok(allowed.has(name), `${name} is not allowed in RemoteViews`);
+  }
+});
+
+t("the provider arms and disarms its one-minute alarm", () => {
+  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
+  // one minute, stated once and reused -- and it must be a repeating alarm,
+  // because APPWIDGET_UPDATE's own floor is 30 minutes
+  assert.match(p, /TICK_MS = 60000L;/);
+  assert.match(p, /am\.setRepeating\(AlarmManager\.RTC, next\.getTimeInMillis\(\), TICK_MS, tickIntent\(context\)\)/);
+  assert.match(p, /next\.set\(Calendar\.SECOND, 0\)/, "the tick drifts with the second the widget was created");
+  assert.match(p, /public void onDisabled[\s\S]{0,400}am\.cancel\(tickIntent\(context\)\)/, "a deleted widget keeps waking the phone");
+});
+
+t("the tick queues AND redraws, so the widget never lies", () => {
+  const c = read("android/app/src/main/java/sh/tasks/app/CompleteReceiver.java");
+  assert.match(c, /WidgetStore\.queueAction\(context, id, day\);/);
+  assert.match(c, /WidgetStore\.markDoneLocally\(context, id, day\);/);
+  assert.match(c, /WidgetProvider\.refreshAll\(context\);/);
+});
+
+t("a broken or foreign model is never drawn and never overwrites a good one", () => {
+  const s2 = read("android/app/src/main/java/sh/tasks/app/WidgetStore.java");
+  assert.match(s2, /if \(o\.optInt\("v", 0\) != 1\) return;/, "an unknown model version is accepted");
+  // the cap and the trim must live in the same file, whatever the spacing
+  assert.match(s2, /QUEUE_MAX = 50;/, "no queue cap");
+  assert.match(s2, /while \(arr\.length\(\) > QUEUE_MAX\) arr\.remove\(0\);/, "the action queue is unbounded");
+});
+
+t("the widget bridge is registered like the share plugin", () => {
+  const main = read("android/app/src/main/java/sh/tasks/app/MainActivity.java");
+  assert.match(main, /registerPlugin\(WidgetPushPlugin\.class\)/);
+  const b = read("native/bridge.src.mjs");
+  assert.match(b, /registerPlugin\("WidgetBridge"\)/);
+  assert.match(b, /pushWidget, takeWidgetActions,/);
+});
+
+t("the update pill's feed cannot disagree with the app it describes", () => {
+  const vj = JSON.parse(read("version.json"));
+  const pkg = JSON.parse(read("package.json"));
+  assert.equal(vj.version, pkg.version, "version.json is stale");
+  const v = pkg.version.split(".").map(Number);
+  assert.equal(vj.versionCode, v[0] * 1000000 + v[1] * 1000 + v[2]);
+  assert.match(vj.apk, /^https:\/\/chandansharamcs\.github\.io\/To-do_app\/tasksh\.apk$/);
+});
+
+t("CI publishes the APK where the pill looks for it", () => {
+  const w = read(".github/workflows/android.yml");
+  // the fixed path the app fetches must be the path CI writes
+  assert.match(w, /cp "\$APK" tasksh\.apk/);
+  assert.match(w, /fs\.writeFileSync\("version\.json"/);
+  // only a signed build, only from main, and it must actually leave the runner
+  assert.match(w, /publish apk to pages\n\s+if: env\.KS_B64 != '' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(w, /git push/);
+  assert.match(w, /contents: write/, "the publish step cannot push without write permission");
+});
+
 t("the version code can only climb, and it comes from package.json", () => {
   const g = read("android/app/build.gradle");
   assert.match(g, /new groovy\.json\.JsonSlurper\(\)\.parseText\(file\("\.\.\/\.\.\/package\.json"\)\.text\)/);
@@ -123,7 +209,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5023000, `expected 5.23.0 -> 5023000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5024000, `expected 5.24.0 -> 5024000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

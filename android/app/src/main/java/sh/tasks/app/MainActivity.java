@@ -11,6 +11,8 @@ public class MainActivity extends BridgeActivity {
         // v77: the share plugin has to exist before the bridge renders the web
         // layer, because the app reads the shared text on first mount.
         registerPlugin(SharePlugin.class);
+        // v78: the widget bridge. Nothing draws without it.
+        registerPlugin(WidgetPushPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

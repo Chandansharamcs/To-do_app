@@ -4695,6 +4695,157 @@ function countHist(h, type) {
 function habitXP(h) { return Math.max(0, +h.xp || 0); }
 
 // ============================================================
+// v78: THE HOME-SCREEN WIDGET — the model it reads
+//
+// A widget runs in ANOTHER process (the launcher's). It cannot see the
+// WebView's localStorage, cannot run a line of this file, and is drawn with
+// RemoteViews, which supports a handful of layouts and no scripts at all.
+//
+// So the app pushes a small JSON "model" out to native storage whenever the
+// routine list changes, the widget draws that, and the widget's ✓ button
+// queues an action back that this file applies on the next open. Both
+// directions are plain data, which is also why the builder below is pure and
+// testable without a phone.
+//
+// Everything here is a no-op on the website: no bridge, no push.
+// ============================================================
+
+const WIDGET_MODEL_MAX_AGE_MS = 36 * 60 * 60 * 1000;   // a stale model is worse than none
+
+/** A "YYYY-MM-DD" IST day + "HH:MM" -> epoch ms. Pure, so it can be tested.
+ *  IST is UTC+05:30 with no daylight saving, which is the only reason this
+ *  arithmetic is allowed to be this simple. */
+function istEpochMs(day, hhmm) {
+  const [y, m, d] = String(day).split("-").map(Number);
+  const [hh, mm] = String(hhmm || "00:00").split(":").map(Number);
+  if (!y || !m || !d) return 0;
+  return Date.UTC(y, m - 1, d, (hh || 0) - 5, (mm || 0) - 30, 0, 0);
+}
+
+/** The IST day for an arbitrary instant (the 03:00 rollover, same rule as
+ *  getISTDateString, but with the clock passed in so tests are deterministic). */
+function istDayFor(nowMs) {
+  const d = new Date(nowMs - 3 * 60 * 60 * 1000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
+}
+
+/** What the widget draws. One routine, its clock, and how many are done.
+ *
+ *  `state` is what the next few minutes look like:
+ *    "now"   — you are inside this routine right now
+ *    "next"  — it starts later today
+ *    "done"  — every routine today is ticked
+ *    "empty" — no routines at all
+ */
+function widgetModel(routines, nowMs = Date.now()) {
+  const list = (routines || [])
+    .filter((r) => r && typeof r.time === "string")
+    .slice()
+    .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+  const day = istDayFor(nowMs);
+  const nowIST = new Date(nowMs + 5.5 * 3600 * 1000).toISOString().slice(11, 16);
+  const nowMin = timeToMinutes(nowIST);
+  const done = list.filter((r) => (r.history || []).includes(day)).length;
+
+  const base = { v: 1, day, nowMin, total: list.length, done, updatedAt: nowMs };
+
+  if (!list.length) return { ...base, state: "empty", next: null };
+
+  const current = list.find((r) => {
+    const s = timeToMinutes(r.time);
+    return nowMin >= s && nowMin < s + (Number(r.duration) || 0);
+  });
+  const upcoming = list.find((r) => timeToMinutes(r.time) > nowMin);
+
+  const pick = current || upcoming || null;
+  if (!pick) {
+    // nothing left to start today: report the day, not a fake next
+    return { ...base, state: done >= list.length ? "done" : "done", next: null };
+  }
+
+  const startMin = timeToMinutes(pick.time);
+  return {
+    ...base,
+    state: current ? "now" : "next",
+    next: {
+      id: String(pick.id),
+      label: String(pick.label || "").slice(0, 60),
+      time: pick.time,
+      duration: Math.max(0, Number(pick.duration) || 0),
+      startMs: istEpochMs(day, pick.time),
+      endMs: istEpochMs(day, pick.time) + (Math.max(0, Number(pick.duration) || 0) * 60000),
+      doneToday: (pick.history || []).includes(day),
+      alt: Array.isArray(pick.alternatives) && pick.alternatives.length ? String(pick.alternatives[0]).slice(0, 40) : "",
+    },
+  };
+}
+
+/** Is this model still worth drawing? A widget showing yesterday's routine is
+ *  a lie, so a model older than ~36h is treated as absent. */
+function widgetModelFresh(model, nowMs = Date.now()) {
+  if (!model || model.v !== 1) return false;
+  if (!model.updatedAt) return false;
+  return Math.abs(nowMs - model.updatedAt) < WIDGET_MODEL_MAX_AGE_MS;
+}
+
+/** The line the widget prints above the routine. One function so the wording
+ *  is testable and identical everywhere. */
+function widgetHeadline(model, nowMs = Date.now()) {
+  // Word for word with WidgetProvider.headline(). Two copies of a string is
+  // how a widget and its tests end up telling different stories, so this one
+  // exists to be tested and the Java one exists to be drawn -- same words.
+  if (!model || model.state === "empty" || !model.total) return "no routines";
+  if (!model.next) return model.done >= model.total ? "all done" : "day over";
+  if (model.next.doneToday) return "done today";
+  if (model.state === "now") {
+    const left = Math.max(0, model.next.endMs - nowMs);
+    return `now · ${Math.ceil(left / 60000)}m left`;
+  }
+  const toStart = model.next.startMs - nowMs;
+  if (toStart <= 0) return "starting now";
+  const mins = Math.max(0, Math.round(toStart / 60000));
+  if (mins < 60) return `in ${mins}m`;
+  return `in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+// ============================================================
+// v78: THE UPDATE PILL — how a sideloaded app learns it is old
+//
+// The website updates itself on reload. The APK cannot: it is a file on his
+// phone. GitHub Actions artefacts need a login and expire, which is why the
+// release APK is also published to Pages at a fixed URL and the app checks
+// version.json against its own build.
+//
+// Verify, don't assert: the build number comes from the same place the APK's
+// versionCode does (package.json), and native.test.mjs fails if APP_VERSION and
+// the package version ever drift apart.
+// ============================================================
+
+const APP_VERSION = "5.24.0";
+const APP_VERSION_CODE = 5024000;   // matches android versionCode, see native.test.mjs
+const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
+const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
+
+/** Should the pill appear? Pure, so the rule is testable without a network.
+ *  A remote that is missing, malformed, or not newer is silence. */
+function updateAvailable(local, remote) {
+  if (!remote || typeof remote !== "object") return null;
+  const code = Number(remote.versionCode);
+  if (!Number.isFinite(code) || code <= 0) return null;
+  if (code <= Number(local || 0)) return null;
+  const version = String(remote.version || "").slice(0, 16);
+  if (!version) return null;
+  return { version, versionCode: code, apk: String(remote.apk || APK_URL).slice(0, 200) };
+}
+
+/** Sends the model to the Android shell (no-op on the web). */
+function pushWidgetModel(model) {
+  const n = nativeShell();
+  if (!n || !n.pushWidget) return;
+  try { n.pushWidget(JSON.stringify(model)); } catch { /* shell gone */ }
+}
+
+// ============================================================
 // v73: ROUTINE PRESETS
 //
 // Winter is the reason: the same day, at different times. A preset is a named
@@ -7602,6 +7753,57 @@ function UndoToast() {
     <div className="undo-toast" role="status" aria-live="polite">
       <span className="undo-toast-label">{ticket.label}</span>
       <button className="undo-toast-btn" onClick={() => undoBus.fire()}>undo</button>
+    </div>
+  );
+}
+
+/** v78: "v5.24.0 is out" — the only way a sideloaded APK can tell.
+ *
+ *  Checked once per launch (and again when the app comes back to the
+ *  foreground), against a static version.json on Pages. It is dismissed for the
+ *  session, not forever: a stale app is a bug report waiting to happen, so the
+ *  reminder is cheap and repeatable.
+ */
+function UpdatePill() {
+  const [update, setUpdate] = useState(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    // Only the APK needs this. On the web the service worker already handles it.
+    if (!nativeShell()) return undefined;
+    let alive = true;
+    const check = () => {
+      fetch(`${VERSION_URL}?t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (!alive) return;
+          const next = updateAvailable(APP_VERSION_CODE, j);
+          if (next) setUpdate(next);
+        })
+        .catch(() => { /* offline is not an error worth showing */ });
+    };
+    check();
+    const n = nativeShell();
+    const stop = n && n.onResume ? n.onResume(check) : null;
+    return () => {
+      alive = false;
+      if (typeof stop === "function") stop();
+    };
+  }, []);
+
+  if (!update || dismissed) return null;
+  return (
+    <div className="update-pill" role="status">
+      <span className="update-pill-text">v{update.version} out</span>
+      <button
+        className="update-pill-btn"
+        onClick={() => {
+          // Capacitor's "_system" target hands the URL to the real browser;
+          // a plain navigation would load the APK inside the WebView and hang.
+          try { window.open(update.apk, "_system"); } catch { window.location.href = update.apk; }
+        }}
+      >get it</button>
+      <button className="update-pill-x" onClick={() => setDismissed(true)} aria-label="dismiss">×</button>
     </div>
   );
 }
@@ -16467,13 +16669,45 @@ function TodoApp() {
   inventoryRef.current = inventory;
   const tagsRef = useRef(null);
 
+  // v78: keep the home-screen widget in step with the routine list.
+  useEffect(() => {
+    pushWidgetModel(widgetModel(routines, Date.now()));
+  }, [routines]);
+
+  /** Applies any tick pressed on the widget while this tab was closed.
+   *
+   *  The widget cannot write localStorage, so it queues {id, day} in native
+   *  storage and the app drains that queue. It only ever ADDS a done day: a
+   *  widget tap can complete something, never un-complete it, so firing it
+   *  twice is harmless.
+   */
+  const drainWidgetActions = useCallback(() => {
+    const n = nativeShell();
+    if (!n || !n.takeWidgetActions) return;
+    Promise.resolve(n.takeWidgetActions()).then((raw) => {
+      let acts = [];
+      try { acts = typeof raw === "string" ? JSON.parse(raw || "[]") : (raw || []); } catch { acts = []; }
+      if (!Array.isArray(acts) || !acts.length) return;
+      setRoutines((prev) => prev.map((r) => {
+        const hit = acts.find((a) => String(a && a.id) === String(r.id));
+        if (!hit) return r;
+        const day = String(hit.day || getISTDateString(0));
+        if ((r.history || []).includes(day)) return r;
+        return { ...r, history: [...(r.history || []), day].slice(-60) };
+      }));
+      sound.check();
+    }).catch(() => {});
+  }, [setRoutines]);
+
+  useEffect(() => { drainWidgetActions(); }, [drainWidgetActions]);
+
   // v76: in the Android shell the OS wakes us instead of a timer.
   useEffect(() => {
     const n = nativeShell();
     if (!n || !n.onResume) return undefined;
-    const stop = n.onResume(() => { settleNight(); });
+    const stop = n.onResume(() => { settleNight(); drainWidgetActions(); });
     return () => { if (typeof stop === "function") stop(); };
-  }, [settleNight]);
+  }, [settleNight, drainWidgetActions]);
 
   // Keep the OS alarm in step with the rules: turning penalties off cancels it.
   useEffect(() => { nativeScheduleNight(penalty.cfg); }, [penalty.cfg]);
@@ -16958,6 +17192,7 @@ function TodoApp() {
 
   return (
     <div className="app-root">
+      <UpdatePill />
       {achCtl.current && (
         <AchievementToast id={achCtl.current} onDone={achCtl.shift} />
       )}
@@ -18789,6 +19024,31 @@ function TodoApp() {
           padding: 4px 12px;
         }
         .undo-toast-btn:active { background: rgba(94,234,212,0.12); }
+
+        /* v78: the update pill. Sits at the BOTTOM, because the top of the
+           screen already has the undo toast and the header. */
+        .update-pill {
+          position: fixed; bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+          left: 50%; transform: translateX(-50%);
+          z-index: 92; display: flex; align-items: center; gap: 8px;
+          padding: 6px 8px 6px 12px;
+          background: var(--panel); border: 1px solid var(--accent); border-radius: 999px;
+          box-shadow: 0 8px 24px -12px rgba(0,0,0,0.9);
+          font-family: var(--font-mono); font-size: 10px; color: var(--accent);
+          letter-spacing: 0.06em;
+          animation: lvlIn 260ms cubic-bezier(.16,1,.3,1);
+        }
+        .update-pill-text { white-space: nowrap; }
+        .update-pill-btn {
+          background: transparent; border: 1px solid var(--accent); border-radius: 999px;
+          color: var(--accent); cursor: pointer; font-family: var(--font-mono);
+          font-size: 10px; letter-spacing: 0.06em; padding: 3px 10px;
+        }
+        .update-pill-btn:active { background: rgba(94,234,212,0.14); }
+        .update-pill-x {
+          background: transparent; border: 0; color: var(--muted);
+          font-size: 14px; line-height: 1; padding: 0 4px; cursor: pointer;
+        }
 
         /* v64: the 14-day XP line */
         .spark-card {

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v78`** | 2026-10-20 | a real home-screen widget, and an update that is a tap rather than a login |
 | **`v77`** | 2026-11-15 | four bugs the first real build found, and share-in that actually works |
 | **`v76`** | 2026-11-10 | a real Android app: the 03:00 check now fires by itself |
 | **`v75`** | 2026-11-10 | sight can read the whole paragraph back when you finish |
@@ -1522,6 +1523,70 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v78`**
+
+A widget on the home screen, and a way for a sideloaded app to say it is old.
+
+- **The widget shows the routine you are in, or the next one, with a countdown
+  that keeps counting.** A widget runs in the launcher's process: it cannot
+  read `localStorage`, cannot execute a line of `app.jsx`, and is drawn with
+  `RemoteViews`, which is a dozen views and no scripting. So the app pushes a
+  small versioned model — `{v, day, state, next:{id,label,time,startMs,endMs,
+  doneToday,alt}, done, total, updatedAt}` — into native storage whenever the
+  routine list changes, and the widget renders that. Countdown arithmetic is
+  done from the absolute `startMs`/`endMs` rather than a baked number, so it
+  stays correct with the app closed.
+
+- **The ✓ completes the routine without opening the app.** That was the point
+  of the button, and it is the part with real consequences: the widget cannot
+  write `localStorage`, so the tap queues `{id, day}` in native storage,
+  redraws itself immediately, and the app *applies* the queue on its next open
+  or resume through the normal completion path — which is what keeps streaks,
+  XP and the 03:00 rollover honest. The drain is add-only, so a double tap and
+  a replayed intent are both harmless.
+
+- **One minute, not thirty.** `updatePeriodMillis` has a 30-minute floor,
+  which is useless for something counting down. The provider arms its own
+  `AlarmManager.setRepeating(RTC, next whole minute, 60s)` when the first
+  widget is placed and cancels it in `onDisabled` — a deleted widget must not
+  keep waking the phone.
+
+- **A stale model is refused, not drawn.** Nothing is worse than a home screen
+  confidently showing yesterday's workout, so a model older than 36 h, of an
+  unknown version, or missing a `day` renders as "open tasks.sh to sync"
+  instead. `WidgetStore.saveModel` drops a non-v1 payload rather than
+  overwriting a good model with a broken one.
+
+- **"Kinda glassmorphism", honestly.** Asked for terminal-with-glass; there is
+  no backdrop blur available to a widget, so it is the readable part of that
+  look: `#CC0B0D10` translucent plate, 1dp `#4D5EEAD4` teal hairline, 18dp
+  corners. The blur the phone's launcher would have to do behind us is not
+  ours to do.
+
+- **Updates stopped requiring a GitHub login.** Artefacts expire and need an
+  account, which made "install the new one" a chore. The release APK is now
+  committed to the site at a fixed path (`tasksh.apk`) next to a
+  `version.json`, the app compares that `versionCode` against its own build,
+  and a pill offers the download. Cost, stated plainly: ~3.5 MB of repo history
+  per release.
+
+- **Two copies of one string, and a test that holds them together.** The
+  headline wording exists once in JS (tested) and once in Java (drawn); they
+  had already drifted — `"3/3 today"` versus `"all done"` — before either
+  reached a phone. Both now print the same five strings, and
+  `widget.test.mjs` pins them.
+
+Tests: **26 suites, 823 unit** (`widget.test.mjs` is new with 23; `native`
+21 → 30 with 9 structural checks on the manifest, the RemoteViews-only view
+set, the alarm arm/disarm, the queue cap and the publish step), plus
+`boundary` 17 → 18 and the browser suite unchanged. Built APK:
+3,535,398 bytes, `5024000`/`5.24.0`, same certificate `5f9967f7…`.
+
+Honest limit: no emulator here, so the minute tick and the ✓ have been
+compiled and structurally tested but not yet seen running on a phone.
+
+---
 
 **2026-10-20 — `tasksh-v56`**
 

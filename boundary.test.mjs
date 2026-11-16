@@ -181,7 +181,10 @@ t("ticking and unticking a habit are different sounds", ()=>{
   // undoing something sound exactly like doing it.
   const checks = (SRC.match(/sound\.check\(\)/g) || []).length;
   const unticks = (SRC.match(/sound\.untick\(\)/g) || []).length;
-  assert.equal(checks, 4, `expected 4 tick cues, found ${checks}`);
+  // v78 added the fifth: a ✓ taken on the home-screen widget plays the same
+  // tick when the app drains it, otherwise a completion could arrive silently.
+  assert.equal(checks, 5, `expected 5 tick cues, found ${checks}`);
+  assert.match(SRC, /drainWidgetActions[\s\S]{0,1200}sound\.check\(\)/, "a widget tick is silent");
   assert.equal(unticks, 4, `expected 4 untick cues, found ${unticks}`);
   assert.ok(!/if \(willBeDone\) \{ sound\.success\(\)/.test(SRC), "a toggle still plays the success fanfare");
 });

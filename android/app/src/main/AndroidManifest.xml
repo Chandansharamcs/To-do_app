@@ -41,6 +41,33 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+    
+        <!-- v78: the home-screen widget. Exported because the launcher, not
+             this app, is the caller of APPWIDGET_UPDATE. -->
+        <receiver
+            android:name=".WidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_description">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="sh.tasks.app.WIDGET_TICK" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
+
+        <!-- v78: the tick button's PendingIntent. Not exported: only a
+             PendingIntent this app created may complete a routine. -->
+        <receiver
+            android:name=".CompleteReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="sh.tasks.app.WIDGET_COMPLETE" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->

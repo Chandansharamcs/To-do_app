@@ -19,8 +19,9 @@ index.html + bundle.js + bridge.js →  app-web/ → Capacitor → tasksh.apk
 | storage survives "clear site data" | ✗ best-effort | ✓ JSON snapshot in app Documents |
 | share a paragraph into `sight` | ✗ | ✓ share sheet |
 | settle on resume instead of a 30 s poll | ✗ | ✓ `appStateChange` |
+| a home-screen widget with a working ✓ | ✗ (no web widgets on iOS, none on Android web) | ✓ `RemoteViews` + one-minute alarm |
 | works offline from install | ✓ (after first visit) | ✓ (assets inside the APK) |
-| updates without a store | ✓ instant | ✗ rebuild + sideload |
+| updates without a store | ✓ instant | ✓ tap the pill → download → install over (same key, data kept) |
 
 The alarm is the reason this exists. Everything else is a bonus.
 
@@ -52,6 +53,59 @@ and its base64 at **`/home/user/keys/keystore.b64`**.
    secrets, or the release build will fail at signing.
 3. Fingerprint of this key, for the record:
    `5F:99:67:F7:38:B8:F0:21:DB:34:32:46:05:B4:86:B5:49:B9:64:B0:B5:14:4B:5B:79:D5:DF:59:F8:5D:92:AA`
+
+---
+
+## The widget (v78)
+
+A widget is a different process. It cannot read `localStorage`, cannot run
+`app.jsx`, and is drawn with `RemoteViews` — a fixed handful of views and no
+scripting. So the direction of information is one-way at rest:
+
+```
+app.jsx  ──pushWidget(json)──►  WidgetStore (SharedPreferences)
+                                    │
+                             WidgetProvider draws it
+                                    │
+   ✓ tap ──► CompleteReceiver ──► queue{id,day} + markDoneLocally
+                                    │
+app drains queue on open/resume ◄───┘
+```
+
+Why it is shaped that way:
+
+- **the countdown is computed from `startMs`/`endMs`**, not baked in, so it
+  stays right while the app is closed;
+- **the ✓ never opens the app** — it queues and the app applies it through the
+  normal completion path, which is what keeps streaks, XP and the 03:00
+  rollover honest;
+- **a stale model is refused** (36 h, or a `v` that is not 1) and renders
+  "open tasks.sh to sync" rather than a routine from two days ago;
+- **`updatePeriodMillis` is 0** because its floor is 30 minutes; the provider
+  arms its own `AlarmManager` repeating alarm on the next whole minute and
+  cancels it in `onDisabled`.
+
+`RemoteViews` has no blur, so "glass" here is a translucent `#CC0B0D10` plate
+with a 1dp `#4D5EEAD4` hairline and 18dp corners. The files:
+
+| file | role |
+|---|---|
+| `WidgetPushPlugin.java` | `pushWidget`, `takeWidgetActions` — the only JS entry point |
+| `WidgetStore.java` | the model + the action queue, both versioned |
+| `WidgetProvider.java` | draws the model, owns the minute alarm |
+| `CompleteReceiver.java` | the ✓ |
+| `res/xml/widget_info.xml` | resizable, 4x2 resting size, `updatePeriodMillis="0"` |
+| `res/layout/widget_routine.xml` | RemoteViews-legal only; enforced by `native.test.mjs` |
+
+---
+
+## Updates (v78)
+
+Sideloading used to mean a GitHub login and an expiring artifact. Now CI
+commits the signed APK to the site at **`tasksh.apk`** next to
+**`version.json`**, and the app compares that `versionCode` with its own build;
+a newer one shows a pill that opens the download. Same key every time, so it
+installs *over* the old build and the data stays.
 
 ---
 

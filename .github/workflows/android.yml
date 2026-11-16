@@ -22,7 +22,7 @@ on:
     tags: ["app-v*"]
 
 permissions:
-  contents: read
+  contents: write   # the publish step below commits the APK to Pages
 
 jobs:
   apk:
@@ -111,3 +111,37 @@ jobs:
           name: tasksh-release
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+      # v78: a fixed URL, so an update is a tap and not a login.
+      #
+      # Artefacts need a GitHub login and expire; the app cannot be expected to
+      # notice an update it cannot download. So the release APK is committed to
+      # the site it is served from, at a path that never changes, next to a
+      # version.json the app compares against its own build number.
+      - name: publish apk to pages
+        if: env.KS_B64 != '' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          cp "$APK" tasksh.apk
+          VERSION=$(node -p "require('./package.json').version")
+          CODE=$(node -p "const v=require('./package.json').version.split('.').map(Number); v[0]*1000000+v[1]*1000+v[2]")
+          BYTES=$(wc -c < tasksh.apk | tr -d ' ')
+          SHA=$(sha256sum tasksh.apk | cut -d' ' -f1)
+          echo "publishing $VERSION ($CODE): $BYTES bytes, $SHA"
+          VERSION="$VERSION" CODE="$CODE" BYTES="$BYTES" SHA="$SHA" node -e '
+            const fs = require("fs");
+            fs.writeFileSync("version.json", JSON.stringify({
+              version: process.env.VERSION,
+              versionCode: Number(process.env.CODE),
+              apk: "https://chandansharamcs.github.io/To-do_app/tasksh.apk",
+              bytes: Number(process.env.BYTES),
+              sha256: process.env.SHA,
+              builtAt: new Date().toISOString().slice(0, 10)
+            }, null, 2) + "\n");
+          '
+          cat version.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tasksh.apk version.json
+          git commit -m "release: publish ${VERSION} APK to the site"
+          git push

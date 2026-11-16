@@ -29,6 +29,9 @@ import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 /** The Java plugin in android/app/src/main/java/sh/tasks/app/SharePlugin.java.
  *  It is the half of share-in that Capacitor does not provide. */
 const Share = registerPlugin("Share");
+/** The widget bridge (WidgetPushPlugin.java): hands the model to the widget and
+ *  collects ticks pressed while the app was closed. */
+const WidgetBridge = registerPlugin("WidgetBridge");
 
 const NIGHT_ID = 7303;      // 03:0x -- one fixed id, rescheduled, never stacked
 const SNAPSHOT = "tasksh-snapshot.json";
@@ -114,6 +117,22 @@ async function scheduleNight(hour = 3, minute = 1) {
   }
 }
 
+/** Copies the widget model into native storage and redraws the widget. */
+async function pushWidget(json) {
+  try {
+    const r = await WidgetBridge.pushWidget({ json: String(json || "") });
+    return { ok: !!(r && r.ok) };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
+/** Whatever the widget queued: a JSON array string of {id, day}. */
+async function takeWidgetActions() {
+  try {
+    const r = await WidgetBridge.takeWidgetActions();
+    return (r && r.actions) || "[]";
+  } catch { return "[]"; }
+}
+
 /** Disarms the night alarm. app.jsx calls this when penalties are turned off --
  *  without it the 03:01 notification kept firing for a rule that was disabled. */
 async function cancelNight() {
@@ -163,5 +182,6 @@ window.taskshNative = {
   version: "1",
   snapshot, readSnapshot, restoreSnapshot,
   scheduleNight, cancelNight, scheduleRoutine,
+  pushWidget, takeWidgetActions,
   onResume, takeSharedText,
 };
