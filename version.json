@@ -2,6 +2,7 @@
   "version": "5.24.0",
   "versionCode": 5024000,
   "apk": "https://chandansharamcs.github.io/To-do_app/tasksh.apk",
-  "builtAt": "2026-10-20",
-  "notes": "v78: home-screen widget + update pill"
+  "bytes": 3535406,
+  "sha256": "4c83505c989c29dd38f0b0472f3decc6c0f1ee6aeb564701d624d56b03279452",
+  "builtAt": "2026-11-16"
 }
