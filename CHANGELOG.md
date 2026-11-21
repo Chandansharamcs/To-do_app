@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v79`** | 2026-10-20 | updates without reinstalling: the app itself is 1.1 MB and replaces itself |
 | **`v78`** | 2026-10-20 | a real home-screen widget, and an update that is a tap rather than a login |
 | **`v77`** | 2026-11-15 | four bugs the first real build found, and share-in that actually works |
 | **`v76`** | 2026-11-10 | a real Android app: the 03:00 check now fires by itself |
@@ -1523,6 +1524,49 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v79`**
+
+Two things he asked for: somewhere permanent to download from, and a way to
+stop reinstalling for every change.
+
+- **The app can now update itself, and the number is 1.1 MB instead of 3.5.**
+  The APK is a shell; the app is `bundle.js`. The shell now keeps a copy of
+  `bundle.js` in its own private storage and serves *that* in place of the one
+  inside the APK when it exists, through `WebViewAssetLoader` — same origin,
+  same files, same storage, only the app code differs. So a release that only
+  touches app code is: tap `update app` → 1.1 MB downloads → tap `reopen now`.
+  No install dialog, no file manager, no uninstall.
+
+- **Four guards, because a bad bundle is an app that will not start.** The
+  download is discarded unless it is HTTP 200, at least 200 KB, exactly the
+  size the feed promised, plain JavaScript at the head, and matching the
+  SHA-256 in the feed. It is written to `bundle.js.part` and renamed into place
+  only after the last byte, so a dropped connection leaves nothing behind. The
+  shipped copy is never deleted — `bundleClear()` goes back to it, and deleting
+  the file is enough to fall back.
+
+- **The APK still exists for real shell changes, and now lives on Releases.**
+  `github.com/Chandansharamcs/To-do_app/releases` gets a tagged release per
+  version with `tasksh-5.25.0.apk` attached and the changelog section as notes.
+  That link never expires, needs no login, and is the one to bookmark. The pill
+  says which of the two it is: `v5.25.0 available → update app` (bundle) versus
+  `v5.25.0 needs a reinstall → get apk` (shell).
+
+- **Ordering is deliberate.** The feed is written after the APK that shipped
+  it, because a feed that advertises a bundle no installed shell can use is
+  worse than a feed that is a release late.
+
+Tests: **26 suites / 837 unit** (`widget` 23 → 29 with the update-decision
+rules, `native` 30 → 32 with the bundle-guard and release-publish checks),
+browser **230** unchanged and green. The download path itself has been tested
+against the Java guards and the real feed format; it has not yet been run on a
+phone.
+
+Honest limit: an over-the-air bundle cannot add native code. Anything that
+touches the widget, an alarm, a plugin or the manifest still needs the APK.
+
+---
 
 **2026-10-20 — `tasksh-v78`**
 

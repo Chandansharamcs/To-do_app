@@ -21,7 +21,7 @@ index.html + bundle.js + bridge.js →  app-web/ → Capacitor → tasksh.apk
 | settle on resume instead of a 30 s poll | ✗ | ✓ `appStateChange` |
 | a home-screen widget with a working ✓ | ✗ (no web widgets on iOS, none on Android web) | ✓ `RemoteViews` + one-minute alarm |
 | works offline from install | ✓ (after first visit) | ✓ (assets inside the APK) |
-| updates without a store | ✓ instant | ✓ tap the pill → download → install over (same key, data kept) |
+| updates without a store | ✓ instant | ✓ most releases: 1.1 MB in-app bundle swap, no install. Shell changes: tap the pill → install over (same key, data kept) |
 
 The alarm is the reason this exists. Everything else is a bonus.
 
@@ -96,6 +96,47 @@ with a 1dp `#4D5EEAD4` hairline and 18dp corners. The files:
 | `CompleteReceiver.java` | the ✓ |
 | `res/xml/widget_info.xml` | resizable, 4x2 resting size, `updatePeriodMillis="0"` |
 | `res/layout/widget_routine.xml` | RemoteViews-legal only; enforced by `native.test.mjs` |
+
+---
+
+## Updates (v79)
+
+Two kinds of release, and the app says which kind it is looking at.
+
+**Bundle updates — no install, ~1.1 MB.** The APK is a shell; the app is
+`bundle.js`. The shell copies `bundle.js` into private storage and serves that
+in place of the copy inside the APK via `WebViewAssetLoader` — same origin,
+same assets, same `localStorage`, only the app code differs.
+
+```
+version.json on Pages
+   ├─ bundleVersion + bundleSha256  → newer? download 1.1 MB, verify, swap, reopen
+   └─ versionCode                   → newer? that is native: open the APK
+```
+
+A download is accepted only if it is HTTP 200, ≥ 200 KB, exactly the promised
+byte count, looks like JavaScript at the head, and matches the SHA-256 from the
+feed. It lands in `bundle.js.part` and is renamed into place after the final
+byte, so an interrupted download cannot leave a broken app. `bundleClear()`
+returns to the copy inside the APK.
+
+**Shell updates — an install, ~3.5 MB.** Anything that adds native code (a new
+plugin, widget, alarm, permission, manifest entry) cannot be delivered this way.
+Those are published as **GitHub Releases**, one per version, APK attached,
+changelog as notes:
+
+```
+https://github.com/Chandansharamcs/To-do_app/releases
+```
+
+and mirrored at `chandansharamcs.github.io/To-do_app/tasksh.apk`. Same signing
+key as every previous build, so it installs over the old one and the data stays.
+
+| file | role |
+|---|---|
+| `BundlePlugin.java` | `info`, `download`, `clear` — the only file this can touch |
+| `MainActivity.java` | serves the downloaded bundle in place of the shipped one |
+| `version.json` | the feed: apk + bundle, both with sizes and SHA-256 |
 
 ---
 

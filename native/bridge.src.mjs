@@ -32,6 +32,9 @@ const Share = registerPlugin("Share");
 /** The widget bridge (WidgetPushPlugin.java): hands the model to the widget and
  *  collects ticks pressed while the app was closed. */
 const WidgetBridge = registerPlugin("WidgetBridge");
+/** v79: updates without reinstalling (BundlePlugin.java). Reads, downloads and
+ *  removes ONE file: bundle.js. Nothing else about the app changes. */
+const Bundle = registerPlugin("Bundle");
 
 const NIGHT_ID = 7303;      // 03:0x -- one fixed id, rescheduled, never stacked
 const SNAPSHOT = "tasksh-snapshot.json";
@@ -133,6 +136,31 @@ async function takeWidgetActions() {
   } catch { return "[]"; }
 }
 
+/** v79: is a downloaded bundle active, and how big is it? */
+async function bundleInfo() {
+  try {
+    const r = await Bundle.info();
+    return { path: (r && r.path) || "", bytes: (r && r.bytes) || 0 };
+  } catch (e) { return { path: "", bytes: 0 }; }
+}
+
+/** v79: downloads a newer bundle.js and swaps it in. Verifies the size the
+ *  feed promised, then the SHA-256, before anything replaces the old file. */
+async function bundleDownload(url, sha256, bytes) {
+  try {
+    const r = await Bundle.download({ url: String(url || ""), sha256: String(sha256 || ""), bytes: String(bytes || "") });
+    return { ok: !!(r && r.ok), bytes: (r && r.bytes) || 0, error: (r && r.error) || "" };
+  } catch (e) { return { ok: false, bytes: 0, error: String(e && e.message || e) }; }
+}
+
+/** v79: back to the bundle shipped inside the APK. */
+async function bundleClear() {
+  try {
+    const r = await Bundle.clear();
+    return { ok: !!(r && r.ok) };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
 /** Disarms the night alarm. app.jsx calls this when penalties are turned off --
  *  without it the 03:01 notification kept firing for a rule that was disabled. */
 async function cancelNight() {
@@ -183,5 +211,6 @@ window.taskshNative = {
   snapshot, readSnapshot, restoreSnapshot,
   scheduleNight, cancelNight, scheduleRoutine,
   pushWidget, takeWidgetActions,
+  bundleInfo, bundleDownload, bundleClear,
   onResume, takeSharedText,
 };

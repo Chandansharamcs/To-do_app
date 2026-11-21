@@ -5,12 +5,12 @@ import android.content.Context;
 import android.content.Intent;
 
 /**
- * v78: the widget's ✓ button.
+ * v78: the widget's tick button.
  *
- * Tapping it must not open the app -- that is the whole point of the button --
- * so the completion is written to the store and the widget redraws itself. The
- * app picks the queue up on its next open or resume and applies it as a normal
- * completion, which is what makes streaks and XP correct.
+ * Tapping it must not open the app, so the completion is written to the store
+ * and the widget redraws itself. The app picks the queue up on its next open or
+ * resume and applies it as a normal completion, which is what makes streaks and
+ * XP correct.
  */
 public class CompleteReceiver extends BroadcastReceiver {
 

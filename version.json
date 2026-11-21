@@ -1,8 +1,9 @@
 {
-  "version": "5.24.0",
-  "versionCode": 5024000,
+  "version": "5.25.0",
+  "versionCode": 5025000,
   "apk": "https://chandansharamcs.github.io/To-do_app/tasksh.apk",
-  "bytes": 3535406,
-  "sha256": "4c83505c989c29dd38f0b0472f3decc6c0f1ee6aeb564701d624d56b03279452",
-  "builtAt": "2026-11-16"
+  "bundleUrl": "https://chandansharamcs.github.io/To-do_app/bundle.js",
+  "bundleVersion": "5.25.0",
+  "releases": "https://github.com/Chandansharamcs/To-do_app/releases/latest",
+  "builtAt": "2026-10-20"
 }

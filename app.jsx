@@ -4821,8 +4821,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.24.0";
-const APP_VERSION_CODE = 5024000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION = "5.25.0";
+/** v79: the version of THIS bundle, which can outrun the APK around it. The
+ *  APK was built from a bundle of some version; a downloaded bundle says what
+ *  it is, and the two can differ -- that is the point of an over-the-air
+ *  update. Compared with the feed's bundleVersion to decide "newer". */
+const BUNDLE_VERSION = "5.25.0";
+const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
+const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
+const APP_VERSION_CODE = 5025000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -4836,6 +4843,49 @@ function updateAvailable(local, remote) {
   const version = String(remote.version || "").slice(0, 16);
   if (!version) return null;
   return { version, versionCode: code, apk: String(remote.apk || APK_URL).slice(0, 200) };
+}
+
+/** v79: which update, if any, is worth doing? Pure, so the rule is testable.
+ *
+ *  Two different things can be out of date:
+ *    * the BUNDLE (the app itself, 1.1 MB) -- fixable inside the app;
+ *    * the APK (the shell around it, 3.5 MB) -- needs an install.
+ *  The bundle wins when both are available, because it is the cheaper fix and
+ *  it is usually enough: most releases only touch bundle code.
+ *
+ *  Returns {kind:"bundle"|"apk", ...} or null. */
+function updateChoice(local, feed) {
+  if (!feed || typeof feed !== "object") return null;
+
+  const bundleVersion = String(feed.bundleVersion || "");
+  const bundleSha = String(feed.bundleSha256 || "");
+  const code = Number(feed.versionCode);
+  const apkNewer = Number.isFinite(code) && code > Number(local && local.versionCode || 0);
+
+  // A bundle update is only possible where the shell can write one; callers
+  // pass canBundle=false on the website and in the first build that has no
+  // Bundle plugin.
+  if (local && local.canBundle && bundleSha && bundleVersion && bundleVersion !== String(local.bundleVersion || "")) {
+    return {
+      kind: "bundle",
+      version: bundleVersion.slice(0, 16),
+      url: String(feed.bundleUrl || BUNDLE_URL).slice(0, 200),
+      sha256: bundleSha.slice(0, 64),
+      bytes: Number(feed.bundleBytes) || 0,
+    };
+  }
+  if (apkNewer) {
+    const version = String(feed.version || "").slice(0, 16);
+    if (!version) return null;
+    return {
+      kind: "apk",
+      version,
+      versionCode: code,
+      apk: String(feed.apk || APK_URL).slice(0, 200),
+      releases: String(feed.releases || RELEASES_URL).slice(0, 200),
+    };
+  }
+  return null;
 }
 
 /** Sends the model to the Android shell (no-op on the web). */
@@ -7765,8 +7815,9 @@ function UndoToast() {
  *  reminder is cheap and repeatable.
  */
 function UpdatePill() {
-  const [update, setUpdate] = useState(null);
+  const [choice, setChoice] = useState(null);
   const [dismissed, setDismissed] = useState(false);
+  const [status, setStatus] = useState("");   // "" | "downloading" | "restart" | "failed"
 
   useEffect(() => {
     // Only the APK needs this. On the web the service worker already handles it.
@@ -7776,9 +7827,16 @@ function UpdatePill() {
       fetch(`${VERSION_URL}?t=${Date.now()}`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
         .then((j) => {
-          if (!alive) return;
-          const next = updateAvailable(APP_VERSION_CODE, j);
-          if (next) setUpdate(next);
+          if (!alive || !j) return;
+          const n = nativeShell();
+          // Whether the shell can write a bundle at all. The first build with
+          // the plugin answers; older shells have no bundleDownload.
+          const canBundle = !!(n && n.bundleDownload);
+          const next = updateChoice(
+            { versionCode: APP_VERSION_CODE, bundleVersion: BUNDLE_VERSION, canBundle },
+            j,
+          );
+          if (next) setChoice(next);
         })
         .catch(() => { /* offline is not an error worth showing */ });
     };
@@ -7791,19 +7849,57 @@ function UpdatePill() {
     };
   }, []);
 
-  if (!update || dismissed) return null;
+  if (!choice || dismissed) return null;
+
+  const getBundle = () => {
+    const n = nativeShell();
+    if (!n || !n.bundleDownload) { setStatus("failed"); return; }
+    setStatus("downloading");
+    Promise.resolve(n.bundleDownload(choice.url, choice.sha256, choice.bytes))
+      .then((r) => setStatus(r && r.ok ? "restart" : "failed"))
+      .catch(() => setStatus("failed"));
+  };
+
   return (
     <div className="update-pill" role="status">
-      <span className="update-pill-text">v{update.version} out</span>
-      <button
-        className="update-pill-btn"
-        onClick={() => {
-          // Capacitor's "_system" target hands the URL to the real browser;
-          // a plain navigation would load the APK inside the WebView and hang.
-          try { window.open(update.apk, "_system"); } catch { window.location.href = update.apk; }
-        }}
-      >get it</button>
-      <button className="update-pill-x" onClick={() => setDismissed(true)} aria-label="dismiss">×</button>
+      {status === "restart" ? (
+        <>
+          <span className="update-pill-text">updated · reopen to use it</span>
+          <button className="update-pill-btn" onClick={() => { window.location.reload(); }}>reopen now</button>
+        </>
+      ) : status === "downloading" ? (
+        <span className="update-pill-text">updating the app…</span>
+      ) : status === "failed" ? (
+        <>
+          <span className="update-pill-text">update failed · open the page</span>
+          <button
+            className="update-pill-btn"
+            onClick={() => { try { window.open(choice.kind === "apk" ? choice.apk : RELEASES_URL, "_system"); } catch { /* no shell */ } }}
+          >open</button>
+        </>
+      ) : choice.kind === "bundle" ? (
+        <>
+          <span className="update-pill-text">v{choice.version} available</span>
+          <button className="update-pill-btn" onClick={getBundle}>update app</button>
+        </>
+      ) : (
+        <>
+          <span className="update-pill-text">v{choice.version} needs a reinstall</span>
+          <button
+            className="update-pill-btn"
+            onClick={() => { try { window.open(choice.apk, "_system"); } catch { window.location.href = choice.apk; } }}
+          >get apk</button>
+          <button
+            className="update-pill-x"
+            onClick={() => { try { window.open(choice.releases, "_system"); } catch { /* no shell */ } }}
+            aria-label="release notes"
+            title="release notes"
+          >i</button>
+        </>
+      )}
+      {status !== "downloading" && status !== "restart" && (
+        <button className="update-pill-x" onClick={() => setDismissed(true)} aria-label="dismiss">×</button>
+      )}
     </div>
   );
 }

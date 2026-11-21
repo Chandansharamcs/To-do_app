@@ -195,11 +195,40 @@ t("CI publishes the APK where the pill looks for it", () => {
   const w = read(".github/workflows/android.yml");
   // the fixed path the app fetches must be the path CI writes
   assert.match(w, /cp "\$APK" tasksh\.apk/);
-  assert.match(w, /fs\.writeFileSync\("version\.json"/);
+  assert.match(w, /version\.json/);
   // only a signed build, only from main, and it must actually leave the runner
-  assert.match(w, /publish apk to pages\n\s+if: env\.KS_B64 != '' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(w, /publish feed \+ bundle to pages\n\s+if: env\.KS_B64 != '' && github\.ref == 'refs\/heads\/main'/);
   assert.match(w, /git push/);
   assert.match(w, /contents: write/, "the publish step cannot push without write permission");
+});
+
+t("the release page and the feed agree, and neither can point at nothing", () => {
+  const w = read(".github/workflows/android.yml");
+  // releases hold the APK; the site holds the feed and the bundle it names
+  assert.match(w, /gh release create "\$TAG"/);
+  assert.match(w, /gh release upload "\$TAG"/);
+  assert.match(w, /bundleVersion: process\.env\.VERSION/);
+  assert.match(w, /bundleSha256: process\.env\.BUNDLE_SHA/);
+  // the bundle the feed advertises must be the one this build produced
+  assert.match(w, /BUNDLE_BYTES=\$\(wc -c < bundle[.]js/);
+});
+
+t("the over-the-air bundle path is narrow by construction", () => {
+  const j = read("android/app/src/main/java/sh/tasks/app/BundlePlugin.java");
+  // one file only, written to .part then renamed, so a dropped download
+  // cannot leave a half-written bundle on disk
+  assert.match(j, /OTA_FILE = "bundle\.js"/);
+  assert.match(j, /OTA_FILE \+ "\.part"/);
+  assert.match(j, /renameTo\(dest\)/);
+  // and it is refused unless it is a plausible bundle of the promised size
+  assert.match(j, /MIN_BYTES = 200_000/);
+  assert.match(j, /size mismatch/);
+  assert.match(j, /checksum mismatch/);
+  assert.match(j, /not a bundle/);
+  // the shipped copy is never deleted, only shadowed
+  const main = read("android/app/src/main/java/sh/tasks/app/MainActivity.java");
+  assert.match(main, /BundlePlugin\.current\(MainActivity\.this\) == null\) return r;/);
+  assert.match(main, /endswith\("\/bundle\.js"\)|endsWith\("\/bundle\.js"\)/);
 });
 
 t("the version code can only climb, and it comes from package.json", () => {
@@ -209,7 +238,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5024000, `expected 5.24.0 -> 5024000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5025000, `expected 5.25.0 -> 5025000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

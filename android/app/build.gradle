@@ -37,6 +37,9 @@ repositories {
 }
 
 dependencies {
+    // v79: WebViewAssetLoader, so a downloaded bundle can be served from the
+    // app's private storage on the same origin as the assets inside the APK.
+    implementation 'androidx.webkit:webkit:1.11.0'
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"

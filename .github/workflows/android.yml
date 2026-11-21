@@ -22,7 +22,7 @@ on:
     tags: ["app-v*"]
 
 permissions:
-  contents: write   # the publish step below commits the APK to Pages
+  contents: write   # v79: commit the APK + feed to Pages, and create releases
 
 jobs:
   apk:
@@ -111,13 +111,14 @@ jobs:
           name: tasksh-release
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-      # v78: a fixed URL, so an update is a tap and not a login.
+
+      # v79: publish where he can actually find it.
       #
-      # Artefacts need a GitHub login and expire; the app cannot be expected to
-      # notice an update it cannot download. So the release APK is committed to
-      # the site it is served from, at a path that never changes, next to a
-      # version.json the app compares against its own build number.
-      - name: publish apk to pages
+      # GitHub Releases  the APK and its notes, at a link that never expires.
+      # the site         version.json (the feed the app polls) + bundle.js (the
+      #                  app itself, 1.1 MB, replaceable from inside the app, so
+      #                  most updates are a tap instead of a reinstall).
+      - name: publish feed + bundle to pages
         if: env.KS_B64 != '' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
@@ -125,17 +126,27 @@ jobs:
           cp "$APK" tasksh.apk
           VERSION=$(node -p "require('./package.json').version")
           CODE=$(node -p "const v=require('./package.json').version.split('.').map(Number); v[0]*1000000+v[1]*1000+v[2]")
-          BYTES=$(wc -c < tasksh.apk | tr -d ' ')
-          SHA=$(sha256sum tasksh.apk | cut -d' ' -f1)
-          echo "publishing $VERSION ($CODE): $BYTES bytes, $SHA"
-          VERSION="$VERSION" CODE="$CODE" BYTES="$BYTES" SHA="$SHA" node -e '
+          APK_BYTES=$(wc -c < tasksh.apk | tr -d ' ')
+          APK_SHA=$(sha256sum tasksh.apk | cut -d' ' -f1)
+          BUNDLE_BYTES=$(wc -c < bundle.js | tr -d ' ')
+          BUNDLE_SHA=$(sha256sum bundle.js | cut -d' ' -f1)
+          echo "apk    $VERSION ($CODE): $APK_BYTES bytes, $APK_SHA"
+          echo "bundle $VERSION: $BUNDLE_BYTES bytes, $BUNDLE_SHA"
+          VERSION="$VERSION" CODE="$CODE" APK_BYTES="$APK_BYTES" APK_SHA="$APK_SHA" \
+          BUNDLE_BYTES="$BUNDLE_BYTES" BUNDLE_SHA="$BUNDLE_SHA" node -e '
             const fs = require("fs");
+            const base = "https://chandansharamcs.github.io/To-do_app/";
             fs.writeFileSync("version.json", JSON.stringify({
               version: process.env.VERSION,
               versionCode: Number(process.env.CODE),
-              apk: "https://chandansharamcs.github.io/To-do_app/tasksh.apk",
-              bytes: Number(process.env.BYTES),
-              sha256: process.env.SHA,
+              apk: base + "tasksh.apk",
+              apkBytes: Number(process.env.APK_BYTES),
+              apkSha256: process.env.APK_SHA,
+              bundleUrl: base + "bundle.js",
+              bundleVersion: process.env.VERSION,
+              bundleBytes: Number(process.env.BUNDLE_BYTES),
+              bundleSha256: process.env.BUNDLE_SHA,
+              releases: "https://github.com/Chandansharamcs/To-do_app/releases/latest",
               builtAt: new Date().toISOString().slice(0, 10)
             }, null, 2) + "\n");
           '
@@ -143,5 +154,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tasksh.apk version.json
-          git commit -m "release: publish ${VERSION} APK to the site"
+          git diff --cached --quiet || git commit -m "release: publish ${VERSION} APK + feed to the site"
+          git pull --rebase || true
           git push
+
+      # The APK on the Releases page, with the changelog section as notes: the
+      # "somewhere I can find it later" half, and it needs no login to download.
+      - name: publish github release
+        if: env.KS_B64 != '' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ '' }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="app-v${VERSION}"
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          V="$VERSION" node -e '
+            const fs = require("fs");
+            const md = fs.readFileSync("CHANGELOG.md", "utf8");
+            const marks = ["**" + process.env.V + "**", "`" + process.env.V + "`", process.env.V];
+            let i = -1;
+            for (const m of marks) { const j = md.indexOf(m); if (j >= 0) { i = j; break; } }
+            fs.writeFileSync("notes.md", i >= 0 ? md.slice(i, i + 4000) : "tasks.sh " + process.env.V);
+          '
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK#tasksh-${VERSION}.apk" --clobber
+          else
+            gh release create "$TAG" "$APK#tasksh-${VERSION}.apk" \
+              --title "tasks.sh ${VERSION}" --notes-file notes.md
+          fi
+          gh release view "$TAG" --json url -q .url

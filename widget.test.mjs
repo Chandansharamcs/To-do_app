@@ -191,11 +191,11 @@ t("everything is a no-op on the website", () => {
 
 const uStart = SRC.indexOf("const APP_VERSION_CODE");
 const uFn = SRC.indexOf("function updateAvailable");
-const uEnd = SRC.indexOf("\n}\n", uFn) + 2;
+const uEnd = SRC.indexOf("\n}\n", SRC.indexOf("function updateChoice", uFn)) + 2;
 const consts = SRC.slice(SRC.indexOf("const APP_VERSION ="), SRC.indexOf("\n", SRC.indexOf("const VERSION_URL")) + 1);
 const U = new Function(`${consts}
 ${SRC.slice(uFn, uEnd)};
-return { updateAvailable, APP_VERSION, APP_VERSION_CODE };`)();
+return { updateAvailable, updateChoice, APP_VERSION, APP_VERSION_CODE, BUNDLE_VERSION };`)();
 
 t("a higher remote build shows the pill", () => {
   const r = U.updateAvailable(5024000, { version: "5.25.0", versionCode: 5025000 });
@@ -217,7 +217,7 @@ t("the pill is Android-only and cannot hijack navigation", () => {
   const src = slice("function UpdatePill", "/** Fourteen days of net XP");
   assert.match(src, /if \(!nativeShell\(\)\) return undefined;/, "the web does not need an update pill");
   // a plain location.href to an APK would load it inside the WebView
-  assert.match(src, /window\.open\(update\.apk, "_system"\)/);
+  assert.match(src, /window\.open\(choice\.apk, "_system"\)/);
 });
 
 t("the version constants match the thing they claim to describe", () => {
@@ -226,6 +226,53 @@ t("the version constants match the thing they claim to describe", () => {
   const gradle = readFileSync(join(here, "android/app/build.gradle"), "utf8");
   assert.ok(gradle.includes(`${U.APP_VERSION_CODE}`) || gradle.includes("rootProject.ext"),
     "APP_VERSION_CODE is not visible in build.gradle");
+});
+
+// ---- v79: which update to offer -------------------------------------
+// Two things can be stale, and they are fixed very differently: the bundle is
+// a 1.1 MB download inside the app, the APK is a 3.5 MB install. Getting this
+// decision wrong means nagging him to reinstall for a typo.
+
+const LOCAL = { versionCode: 5024000, bundleVersion: "5.24.0", canBundle: true };
+const feed = (o) => Object.assign({
+  version: "5.25.0", versionCode: 5025000,
+  bundleVersion: "5.25.0", bundleSha256: "a".repeat(64), bundleBytes: 1100000,
+}, o);
+
+t("a newer bundle wins over a newer apk, because it is the cheaper fix", () => {
+  const c = U.updateChoice(LOCAL, feed({}));
+  assert.equal(c.kind, "bundle");
+  assert.equal(c.version, "5.25.0");
+  assert.equal(c.sha256.length, 64);
+});
+
+t("an unchanged bundle with a newer shell is an apk update", () => {
+  const c = U.updateChoice(LOCAL, feed({ bundleVersion: "5.24.0" }));
+  assert.equal(c.kind, "apk");
+  assert.match(c.apk, /tasksh\.apk$/);
+  assert.match(c.releases, /releases/);
+});
+
+t("nothing new, nothing offered", () => {
+  assert.equal(U.updateChoice(LOCAL, feed({ version: "5.24.0", versionCode: 5024000, bundleVersion: "5.24.0" })), null);
+  assert.equal(U.updateChoice(LOCAL, null), null);
+  assert.equal(U.updateChoice(LOCAL, {}), null);
+});
+
+t("a shell that cannot write a bundle is never offered one", () => {
+  const old = { versionCode: 5024000, bundleVersion: "5.24.0", canBundle: false };
+  const c = U.updateChoice(old, feed({}));
+  assert.equal(c.kind, "apk", "a shell without the plugin must be told to reinstall");
+});
+
+t("a feed without a checksum is not trusted for a bundle", () => {
+  const c = U.updateChoice(LOCAL, feed({ bundleSha256: "" }));
+  assert.equal(c.kind, "apk", "an unverifiable bundle must fall back to the apk");
+});
+
+t("the bundle the feed names is the site's own bundle.js", () => {
+  const c = U.updateChoice(LOCAL, feed({}));
+  assert.match(c.url, /^https:\/\/chandansharamcs\.github\.io\/To-do_app\/bundle\.js$/);
 });
 
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

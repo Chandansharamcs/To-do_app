@@ -17,13 +17,12 @@ import java.util.Calendar;
 /**
  * v78: the home-screen widget.
  *
- * AppWidgetProvider.updatePeriodMillis has a 30-minute floor, which is useless
- * for a countdown, so the provider arms its own one-minute repeating alarm
- * while at least one widget exists and cancels it when the last one is removed.
- *
- * Nothing here computes state: the app pushes a model (see WidgetStore), this
- * class only draws it. The exception is the countdown, which is derived from
- * absolute startMs/endMs so it stays right even if the app has not run today.
+ * updatePeriodMillis has a 30-minute floor, which is useless for a countdown,
+ * so the provider arms its own one-minute repeating alarm while at least one
+ * widget exists and cancels it when the last one is removed. Nothing here
+ * computes state: the app pushes a model (see WidgetStore) and this class draws
+ * it. The countdown is derived from absolute startMs/endMs so it stays right
+ * even if the app has not run today.
  */
 public class WidgetProvider extends AppWidgetProvider {
 
@@ -150,10 +149,8 @@ public class WidgetProvider extends AppWidgetProvider {
         return Math.abs(System.currentTimeMillis() - updated) < MAX_AGE_MS;
     }
 
-    /**
-     * The line above the routine. Kept word for word in step with
-     * widgetHeadline() in app.jsx, which is the copy the tests pin down.
-     */
+    /** The line above the routine. Kept word for word in step with
+     *  widgetHeadline() in app.jsx, which is the copy the tests pin down. */
     static String headline(JSONObject m, long nowMs) {
         if (m == null || "empty".equals(m.optString("state")) || m.optInt("total", 0) == 0) {
             return "no routines";

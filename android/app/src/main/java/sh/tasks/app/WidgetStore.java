@@ -11,8 +11,8 @@ import org.json.JSONObject;
  *
  * The widget runs inside the launcher's process and cannot read localStorage,
  * so the app pushes a small JSON model here (a SharedPreferences file) and the
- * widget draws it. The ✓ button writes back to `queue`, which the app drains on
- * the next open. The queue is additive, so a double-tap on ✓ is harmless.
+ * widget draws it. The tick button writes back to `queue`, which the app drains
+ * on the next open. The queue is additive, so a double-tap is harmless.
  */
 final class WidgetStore {
 
@@ -27,11 +27,9 @@ final class WidgetStore {
         return c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /**
-     * Stores a model pushed by the app. Anything that is not a v1 model is
-     * dropped rather than saved: an app from the future writing v2 into a v1
-     * widget would otherwise make the widget draw nonsense for a day.
-     */
+    /** Stores a model pushed by the app. Anything that is not a v1 model is
+     *  dropped rather than saved: an app from the future writing v2 into a v1
+     *  widget would otherwise make the widget draw nonsense for a day. */
     static void saveModel(Context c, String json) {
         if (json == null || json.trim().isEmpty()) return;
         try {
@@ -44,7 +42,6 @@ final class WidgetStore {
         }
     }
 
-    /** The stored model, or null if there is nothing usable. */
     static String readModel(Context c) {
         String s = prefs(c).getString(KEY_MODEL, null);
         if (s == null || s.isEmpty()) return null;
@@ -74,7 +71,6 @@ final class WidgetStore {
         p.edit().putString(KEY_QUEUE, arr.toString()).apply();
     }
 
-    /** Hands the queued actions to the app and empties the queue. */
     static String takeActions(Context c) {
         SharedPreferences p = prefs(c);
         String s = p.getString(KEY_QUEUE, "[]");
@@ -82,11 +78,8 @@ final class WidgetStore {
         return s;
     }
 
-    /**
-     * Reflects a ✓ in the stored model straight away, so the widget stops
-     * offering the same routine while the app is still closed. The app remains
-     * the source of truth and will push a fresh model when it next opens.
-     */
+    /** Reflects a tick in the stored model straight away, so the widget stops
+     *  offering the same routine while the app is still closed. */
     static void markDoneLocally(Context c, String id, String day) {
         String s = readModel(c);
         if (s == null) return;
@@ -94,7 +87,7 @@ final class WidgetStore {
             JSONObject o = new JSONObject(s);
             JSONObject next = o.optJSONObject("next");
             if (next == null) return;
-            if (!id.equals(next.optString("id", ""))) return;   // a stale ✓
+            if (!id.equals(next.optString("id", ""))) return;   // a stale tap
             if (!next.optBoolean("doneToday", false)) {
                 next.put("doneToday", true);
                 o.put("done", Math.min(o.optInt("total", 1), o.optInt("done", 0) + 1));
