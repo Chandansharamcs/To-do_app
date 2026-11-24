@@ -137,7 +137,7 @@ t("the widget provider info is resizable and does not pretend to self-update", (
 
 t("the widget layout is RemoteViews-legal: no custom views, no nesting surprises", () => {
   const l = read("android/app/src/main/res/layout/widget_routine.xml");
-  for (const id of ["widget_headline", "widget_label", "widget_sub", "widget_count", "widget_tick"]) {
+  for (const id of ["widget_headline", "widget_label", "widget_sub", "widget_count", "widget_tick", "widget_progress"]) {
     assert.ok(l.includes(`@+id/${id}`), `layout is missing ${id}`);
   }
   // RemoteViews only supports a fixed set of views; anything else silently
@@ -147,6 +147,36 @@ t("the widget layout is RemoteViews-legal: no custom views, no nesting surprises
     const name = tag.slice(1);
     assert.ok(allowed.has(name), `${name} is not allowed in RemoteViews`);
   }
+});
+
+t("the tick is never hidden, and tapping the panel always opens the app", () => {
+  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
+  // v80: a button that vanishes reads as a broken widget -- that is what he hit
+  assert.ok(!/setViewVisibility\(R\.id\.widget_tick, View\.GONE\)/.test(p), "the tick can disappear again");
+  assert.match(p, /setViewVisibility\(R\.id\.widget_tick, View\.VISIBLE\)/);
+  // every branch that draws gives the panel and the tick somewhere to go
+  assert.match(p, /setOnClickPendingIntent\(R\.id\.widget_root, openApp\(context\)\)/);
+  assert.match(p, /private static PendingIntent openApp\(Context context\)/);
+});
+
+t("the widget prints 12-hour time, never 24-hour", () => {
+  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
+  assert.match(p, /static String to12h\(String hhmm\)/);
+  assert.match(p, /AM" : "PM"/);
+  // and the model carries the formatted clock, so the Java side cannot skip it
+  assert.match(read("app.jsx"), /function to12h\(hhmm\)/);
+  const l = read("android/app/src/main/res/layout/widget_routine.xml");
+  assert.ok(!/24/.test(l), "the layout should not mention a 24-hour clock");
+});
+
+t("the widget asks its launcher for exactly a 4x2 cell", () => {
+  const w = read("android/app/src/main/res/xml/widget_info.xml");
+  assert.match(w, /android:targetCellWidth="4"/);
+  assert.match(w, /android:targetCellHeight="2"/);
+  assert.match(w, /android:minWidth="250dp"/);
+  assert.match(w, /android:minHeight="110dp"/);
+  // a preview layout means the picker shows the real thing, not a blank tile
+  assert.match(w, /android:previewLayout="@layout\/widget_routine"/);
 });
 
 t("the provider arms and disarms its one-minute alarm", () => {
@@ -238,7 +268,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5025000, `expected 5.25.0 -> 5025000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5026000, `expected 5.26.0 -> 5026000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

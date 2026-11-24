@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v80`** | 2026-11-24 | the widget the first real phone found: countdown, 12-hour, a tick that works, and a face |
 | **`v79`** | 2026-10-20 | updates without reinstalling: the app itself is 1.1 MB and replaces itself |
 | **`v78`** | 2026-10-20 | a real home-screen widget, and an update that is a tap rather than a login |
 | **`v77`** | 2026-11-15 | four bugs the first real build found, and share-in that actually works |
@@ -1524,6 +1525,51 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-11-24 — `tasksh-v80`**
+
+A screenshot from his home screen, and three real bugs in it.
+
+- **The countdown was being swallowed by "done today".** `widgetHeadline`
+  tested "already ticked" *before* the state, so a routine you were standing
+  inside printed `done today` and no time at all — the widget's entire purpose,
+  gone. The state is now decided first, and "done" became an adjective rather
+  than a replacement: `done · 35m left to go` instead of `done today`, and
+  `now · 25m left` for the routine you are in.
+
+- **`18:40` was hardcoded 24-hour.** The widget now prints **12-hour, always**
+  — `6:40 PM`. The model carries a pre-formatted `time12`, AND the Java side
+  formats it independently, so neither path can regress to 24-hour without
+  `widget.test.mjs` failing on `00:00 → 12:00 AM`, `12:00 → 12:00 PM`,
+  `18:40 → 6:40 PM`.
+
+- **Clicking did nothing, because there was nothing to click.** The tick was
+  `View.GONE` whenever the routine was already ticked, and the panel itself had
+  no click handler at all. Now the tick is always visible and always tappable,
+  and the whole panel opens the app. Neither does anything destructive on a
+  repeat press: the queue is add-only and the app de-duplicates by day.
+
+- **It also stops offering work you have finished.** The "next" routine was
+  simply the next one on the clock, so a ticked routine kept being offered.
+  It is now the next one *still to do*.
+
+- **Redesigned for the cell it actually occupies — 4x2.** The countdown is the
+  biggest thing on the widget, then the routine, then clock and length, then a
+  thin day-progress bar, with a round tick button bottom-right. `widget_info`
+  now asks the launcher for exactly 4 cells wide and 2 tall
+  (`targetCellWidth=4`, `targetCellHeight=2`, `250dp x 110dp`) and ships a
+  `previewLayout` so the picker shows the real thing.
+
+- **The look, as far as a widget is allowed to have one.** A night-blue plate
+  with a soft vertical fall, a teal hairline, an inner highlight along the top
+  edge, 22dp corners, and a hand-drawn tick instead of a platform drawable that
+  changes shape on every OEM skin. There is still no blur available to a widget.
+
+Tests: **26 suites / 855 unit** (`widget` 29 → 34, `native` 32 → 35), browser
+**230** unchanged. This is the first version whose fixes came from a real
+device rather than a spec.
+
+---
 
 **2026-10-20 — `tasksh-v79`**
 

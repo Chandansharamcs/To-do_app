@@ -100,46 +100,68 @@ public class WidgetProvider extends AppWidgetProvider {
             v.setTextViewText(R.id.widget_label, "open tasks.sh to sync");
             v.setTextViewText(R.id.widget_sub, "the widget reads what the app last pushed");
             v.setTextViewText(R.id.widget_count, "");
-            v.setViewVisibility(R.id.widget_tick, View.GONE);
+            v.setProgressBar(R.id.widget_progress, 100, 0, false);
+            v.setOnClickPendingIntent(R.id.widget_root, openApp(context));
+            v.setOnClickPendingIntent(R.id.widget_tick, openApp(context));
             return v;
         }
 
         long now = System.currentTimeMillis();
         v.setTextViewText(R.id.widget_headline, headline(m, now));
-        v.setTextViewText(R.id.widget_count, m.optInt("done", 0) + "/" + m.optInt("total", 0) + " today");
+        int total = m.optInt("total", 0);
+        int doneN = m.optInt("done", 0);
+        v.setTextViewText(R.id.widget_count, doneN + "/" + total);
+        int pct = total > 0 ? Math.round(doneN * 100f / total) : 0;
+        v.setProgressBar(R.id.widget_progress, 100, pct, false);
+        // the whole panel is a shortcut into the app
+        v.setOnClickPendingIntent(R.id.widget_root, openApp(context));
 
         JSONObject next = m.optJSONObject("next");
         if (next == null) {
-            v.setTextViewText(R.id.widget_label, m.optInt("done", 0) >= m.optInt("total", 0)
-                    ? "every routine ticked" : "nothing left to start");
+            v.setTextViewText(R.id.widget_label, doneN >= total ? "every routine ticked" : "nothing left to start");
             v.setTextViewText(R.id.widget_sub, "");
-            v.setViewVisibility(R.id.widget_tick, View.GONE);
+            v.setViewVisibility(R.id.widget_tick, View.VISIBLE);
+            v.setOnClickPendingIntent(R.id.widget_tick, openApp(context));
             return v;
         }
 
         String label = next.optString("label", "");
         v.setTextViewText(R.id.widget_label, label.isEmpty() ? "routine" : label);
 
-        StringBuilder sub = new StringBuilder(next.optString("time", ""));
+        // 12-hour always, whichever side of the model produced it
+        String clock = next.optString("time12", "");
+        if (clock.isEmpty()) clock = to12h(next.optString("time", ""));
+        StringBuilder sub = new StringBuilder(clock);
         int dur = next.optInt("duration", 0);
-        if (dur > 0) sub.append(" · ").append(dur).append("m");
+        if (dur > 0) sub.append("  ·  ").append(dur).append(" min");
         String alt = next.optString("alt", "");
-        if (!alt.isEmpty()) sub.append(" · ").append(alt);
+        if (!alt.isEmpty()) sub.append("  ·  ").append(alt);
         v.setTextViewText(R.id.widget_sub, sub.toString());
 
+        // The tick stays tappable even when the routine is already done: a
+        // button that vanishes reads as a broken widget, and a tap that does
+        // nothing reads as broken too. Repeat taps are harmless -- the queue is
+        // add-only and the app de-duplicates by day.
         boolean doneToday = next.optBoolean("doneToday", false);
-        v.setViewVisibility(R.id.widget_tick, doneToday ? View.GONE : View.VISIBLE);
-        if (!doneToday) {
-            Intent ci = new Intent(context, CompleteReceiver.class);
-            ci.setAction(CompleteReceiver.ACTION_COMPLETE);
-            ci.putExtra("id", next.optString("id", ""));
-            ci.putExtra("day", m.optString("day", ""));
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-            PendingIntent pi = PendingIntent.getBroadcast(
-                    context, next.optString("id", "w").hashCode(), ci, flags);
-            v.setOnClickPendingIntent(R.id.widget_tick, pi);
-        }
+        v.setViewVisibility(R.id.widget_tick, View.VISIBLE);
+        Intent ci = new Intent(context, CompleteReceiver.class);
+        ci.setAction(CompleteReceiver.ACTION_COMPLETE);
+        ci.putExtra("id", next.optString("id", ""));
+        ci.putExtra("day", m.optString("day", ""));
+        ci.putExtra("already", doneToday);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent pi = PendingIntent.getBroadcast(
+                context, next.optString("id", "w").hashCode(), ci, flags);
+        v.setOnClickPendingIntent(R.id.widget_tick, pi);
         return v;
+    }
+
+    /** The panel tap: open tasks.sh, the same way the launcher would. */
+    private static PendingIntent openApp(Context context) {
+        Intent i = new Intent(context, MainActivity.class);
+        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getActivity(context, 42, i, flags);
     }
 
     private static boolean fresh(JSONObject m) {
@@ -149,8 +171,33 @@ public class WidgetProvider extends AppWidgetProvider {
         return Math.abs(System.currentTimeMillis() - updated) < MAX_AGE_MS;
     }
 
-    /** The line above the routine. Kept word for word in step with
-     *  widgetHeadline() in app.jsx, which is the copy the tests pin down. */
+    /** "18:40" -> "6:40 PM". Never 24-hour: the widget is a clock, and a
+     *  clock he has to convert in his head is decoration. */
+    static String to12h(String hhmm) {
+        if (hhmm == null) return "";
+        String[] parts = hhmm.split(":");
+        if (parts.length < 2) return hhmm;
+        int h, m;
+        try {
+            h = Integer.parseInt(parts[0].trim());
+            m = Integer.parseInt(parts[1].trim());
+        } catch (Exception e) {
+            return hhmm;
+        }
+        int hh = ((h % 24) + 24) % 24;
+        String suffix = hh < 12 ? "AM" : "PM";
+        int h12 = hh % 12 == 0 ? 12 : hh % 12;
+        return String.format(java.util.Locale.US, "%d:%02d %s", h12, m, suffix);
+    }
+
+    /**
+     * The line above the routine. Kept word for word in step with
+     * widgetHeadline() in app.jsx, which is the copy the tests pin down.
+     *
+     * The order is load-bearing and used to be wrong: "already ticked" was
+     * tested before the state, so a routine in progress printed "done today"
+     * and the countdown -- the reason the widget exists -- never appeared.
+     */
     static String headline(JSONObject m, long nowMs) {
         if (m == null || "empty".equals(m.optString("state")) || m.optInt("total", 0) == 0) {
             return "no routines";
@@ -159,16 +206,18 @@ public class WidgetProvider extends AppWidgetProvider {
         if (next == null) {
             return m.optInt("done", 0) >= m.optInt("total", 0) ? "all done" : "day over";
         }
-        if (next.optBoolean("doneToday", false)) return "done today";
+        boolean done = next.optBoolean("doneToday", false);
 
         if ("now".equals(m.optString("state"))) {
             long left = Math.max(0L, next.optLong("endMs", nowMs) - nowMs);
-            return "now · " + ((left + 59999L) / 60000L) + "m left";
+            long mins = (left + 59999L) / 60000L;
+            String tail = mins >= 60 ? (mins / 60) + "h " + (mins % 60) + "m left" : mins + "m left";
+            return done ? "done · " + tail + " to go" : "now · " + tail;
         }
         long toStart = next.optLong("startMs", nowMs) - nowMs;
         if (toStart <= 0) return "starting now";
         long mins = Math.max(0L, Math.round(toStart / 60000.0));
-        if (mins < 60) return "in " + mins + "m";
-        return "in " + (mins / 60) + "h " + (mins % 60) + "m";
+        String tail = mins < 60 ? mins + "m" : (mins / 60) + "h " + (mins % 60) + "m";
+        return done ? "done today · next in " + tail : "next in " + tail;
     }
 }

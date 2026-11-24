@@ -1,28 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v78: the widget body. RemoteViews supports a fixed view set; TextView,
-     LinearLayout and ImageView are inside it, anything custom is not. -->
+<!-- v80: the widget body, redesigned around what it is actually for.
+
+     Hierarchy, top to bottom: when (the big countdown), what (the routine),
+     then the detail line and a thin day-progress bar. The tick sits bottom
+     right and is ALWAYS present and always tappable, because a button that
+     vanishes reads as a broken widget, which is exactly what he hit.
+
+     RemoteViews supports a fixed view set only: TextView, LinearLayout,
+     ImageView, ProgressBar and friends. Anything custom silently fails to
+     inflate on the home screen, so native.test.mjs pins the allowed tags. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@drawable/widget_bg"
-    android:padding="14dp">
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="13dp"
+    android:paddingBottom="12dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:baselineAligned="false">
+        android:baselineAligned="true">
 
         <TextView
             android:id="@+id/widget_headline"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textSize="11sp"
-            android:letterSpacing="0.14"
+            android:textSize="13sp"
+            android:letterSpacing="0.02"
             android:maxLines="1"
+            android:ellipsize="end"
             android:textColor="#FF5EEAD4"
             android:text="tasks.sh" />
 
@@ -39,11 +51,13 @@
     <TextView
         android:id="@+id/widget_label"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textSize="19sp"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:textSize="20sp"
         android:maxLines="2"
         android:ellipsize="end"
-        android:paddingTop="6dp"
+        android:gravity="bottom"
+        android:paddingTop="4dp"
         android:textColor="#FFE8EDEB"
         android:text="—" />
 
@@ -52,20 +66,36 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:textSize="12sp"
-        android:maxLines="2"
+        android:maxLines="1"
         android:ellipsize="end"
         android:paddingTop="3dp"
         android:textColor="#B3C9D2CE"
         android:text="" />
 
-    <ImageView
-        android:id="@+id/widget_tick"
-        android:layout_width="34dp"
-        android:layout_height="34dp"
-        android:layout_gravity="end"
-        android:layout_marginTop="8dp"
-        android:padding="8dp"
-        android:background="@drawable/widget_tick_bg"
-        android:contentDescription="complete this routine"
-        android:src="@android:drawable/checkbox_on_background" />
+    <ProgressBar
+        android:id="@+id/widget_progress"
+        style="@android:style/Widget.Material.ProgressBar.Horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:layout_marginTop="9dp"
+        android:max="100"
+        android:progress="0"
+        android:progressDrawable="@drawable/widget_bar" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end"
+        android:layout_marginTop="8dp">
+
+        <ImageView
+            android:id="@+id/widget_tick"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:padding="9dp"
+            android:background="@drawable/widget_tick_bg"
+            android:contentDescription="mark this routine done"
+            android:src="@drawable/widget_check" />
+    </LinearLayout>
 </LinearLayout>

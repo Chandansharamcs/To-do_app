@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v78: the tick button, same teal hairline at lower intensity. -->
+<!-- v80: the tick, as a round button in the same hairline language. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="#1A5EEAD4" />
+    android:shape="oval">
+    <solid android:color="#265EEAD4" />
     <stroke
         android:width="1dp"
-        android:color="#665EEAD4" />
-    <corners android:radius="10dp" />
+        android:color="#8C5EEAD4" />
 </shape>

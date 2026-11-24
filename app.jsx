@@ -4729,6 +4729,17 @@ function istDayFor(nowMs) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
 }
 
+/** "18:40" -> "6:40 PM". The widget is a clock, and a clock he cannot read at
+ *  a glance is decoration. 12-hour is the only format it ever prints. */
+function to12h(hhmm) {
+  const [h, m] = String(hhmm || "0:0").split(":").map(Number);
+  if (!Number.isFinite(h)) return "";
+  const hh = ((h % 24) + 24) % 24;
+  const suffix = hh < 12 ? "AM" : "PM";
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${h12}:${String(m || 0).padStart(2, "0")} ${suffix}`;
+}
+
 /** What the widget draws. One routine, its clock, and how many are done.
  *
  *  `state` is what the next few minutes look like:
@@ -4751,19 +4762,22 @@ function widgetModel(routines, nowMs = Date.now()) {
 
   if (!list.length) return { ...base, state: "empty", next: null };
 
+  const isDone = (r) => (r.history || []).includes(day);
   const current = list.find((r) => {
     const s = timeToMinutes(r.time);
     return nowMin >= s && nowMin < s + (Number(r.duration) || 0);
   });
-  const upcoming = list.find((r) => timeToMinutes(r.time) > nowMin);
+  // The next thing still TO DO, not simply the next thing on the clock: a
+  // widget that keeps offering a routine already ticked is the bug he hit.
+  const upcoming = list.find((r) => timeToMinutes(r.time) > nowMin && !isDone(r));
 
   const pick = current || upcoming || null;
   if (!pick) {
-    // nothing left to start today: report the day, not a fake next
-    return { ...base, state: done >= list.length ? "done" : "done", next: null };
+    // Nothing running and nothing left to start today: report the day.
+    return { ...base, state: "done", next: null };
   }
 
-  const startMin = timeToMinutes(pick.time);
+  const dur = Math.max(0, Number(pick.duration) || 0);
   return {
     ...base,
     state: current ? "now" : "next",
@@ -4771,10 +4785,11 @@ function widgetModel(routines, nowMs = Date.now()) {
       id: String(pick.id),
       label: String(pick.label || "").slice(0, 60),
       time: pick.time,
-      duration: Math.max(0, Number(pick.duration) || 0),
+      time12: to12h(pick.time),
+      duration: dur,
       startMs: istEpochMs(day, pick.time),
-      endMs: istEpochMs(day, pick.time) + (Math.max(0, Number(pick.duration) || 0) * 60000),
-      doneToday: (pick.history || []).includes(day),
+      endMs: istEpochMs(day, pick.time) + (dur * 60000),
+      doneToday: isDone(pick),
       alt: Array.isArray(pick.alternatives) && pick.alternatives.length ? String(pick.alternatives[0]).slice(0, 40) : "",
     },
   };
@@ -4794,18 +4809,25 @@ function widgetHeadline(model, nowMs = Date.now()) {
   // Word for word with WidgetProvider.headline(). Two copies of a string is
   // how a widget and its tests end up telling different stories, so this one
   // exists to be tested and the Java one exists to be drawn -- same words.
+  //
+  // Order matters and it used to be wrong: "already ticked" was checked before
+  // the state, so a routine you were *inside* printed "done today" and the
+  // countdown -- the whole point of the widget -- never appeared.
   if (!model || model.state === "empty" || !model.total) return "no routines";
   if (!model.next) return model.done >= model.total ? "all done" : "day over";
-  if (model.next.doneToday) return "done today";
+
   if (model.state === "now") {
     const left = Math.max(0, model.next.endMs - nowMs);
-    return `now · ${Math.ceil(left / 60000)}m left`;
+    const mins = Math.ceil(left / 60000);
+    const tail = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m left` : `${mins}m left`;
+    return model.next.doneToday ? `done · ${tail} to go` : `now · ${tail}`;
   }
+
   const toStart = model.next.startMs - nowMs;
   if (toStart <= 0) return "starting now";
   const mins = Math.max(0, Math.round(toStart / 60000));
-  if (mins < 60) return `in ${mins}m`;
-  return `in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+  const tail = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  return model.next.doneToday ? `done today · next in ${tail}` : `next in ${tail}`;
 }
 
 // ============================================================
@@ -4821,15 +4843,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.25.0";
+const APP_VERSION = "5.26.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.25.0";
+const BUNDLE_VERSION = "5.26.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5025000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5026000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 

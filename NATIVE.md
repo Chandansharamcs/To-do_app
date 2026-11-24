@@ -94,7 +94,7 @@ with a 1dp `#4D5EEAD4` hairline and 18dp corners. The files:
 | `WidgetStore.java` | the model + the action queue, both versioned |
 | `WidgetProvider.java` | draws the model, owns the minute alarm |
 | `CompleteReceiver.java` | the ✓ |
-| `res/xml/widget_info.xml` | resizable, 4x2 resting size, `updatePeriodMillis="0"` |
+| `res/xml/widget_info.xml` | 4x2 (`targetCellWidth/Height`), `updatePeriodMillis="0"`, previewLayout |
 | `res/layout/widget_routine.xml` | RemoteViews-legal only; enforced by `native.test.mjs` |
 
 ---

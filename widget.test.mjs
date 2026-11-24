@@ -31,7 +31,7 @@ const ttmStart = SRC.indexOf("function timeToMinutes");
 const ttm = SRC.slice(ttmStart, SRC.indexOf("\n}", ttmStart) + 2);
 const W = new Function(`${ttm}
 ${engine};
-return { widgetModel, widgetModelFresh, widgetHeadline, istEpochMs, istDayFor };`)();
+return { widgetModel, widgetModelFresh, widgetHeadline, to12h, istEpochMs, istDayFor };`)();
 
 /** A fixed instant: 2026-11-15 07:10 IST. */
 const at = (h, m, day = 15) => Date.UTC(2026, 10, day, h - 5, m - 30, 0, 0);
@@ -73,7 +73,7 @@ t("before the first one: state next, pointing at 06:30", () => {
   const m = W.widgetModel(LIST, at(5, 50));
   assert.equal(m.state, "next");
   assert.equal(m.next.label, "brush + water");
-  assert.equal(W.widgetHeadline(m, at(5, 50)), "in 40m");
+  assert.equal(W.widgetHeadline(m, at(5, 50)), "next in 40m");
 });
 
 t("between two: the upcoming one wins, not the one just finished", () => {
@@ -108,21 +108,23 @@ t("the countdown counts down, and reads 'starting now' at zero", () => {
   const m = W.widgetModel(LIST, at(6, 30));
   assert.equal(W.widgetHeadline(m, at(6, 30)), "now · 20m left");
   const before = W.widgetModel(LIST, at(5, 30));
-  assert.equal(W.widgetHeadline(before, at(5, 30)), "in 1h 0m");
+  assert.equal(W.widgetHeadline(before, at(5, 30)), "next in 1h 0m");
 });
 
 t("under an hour is minutes, over an hour is h m", () => {
   const early = W.widgetModel([R(9, "09:00", "later", 30)], at(7, 0));
-  assert.equal(W.widgetHeadline(early, at(7, 0)), "in 2h 0m");
+  assert.equal(W.widgetHeadline(early, at(7, 0)), "next in 2h 0m");
   const soon = W.widgetModel([R(9, "07:25", "soon", 30)], at(7, 0));
-  assert.equal(W.widgetHeadline(soon, at(7, 0)), "in 25m");
+  assert.equal(W.widgetHeadline(soon, at(7, 0)), "next in 25m");
 });
 
-t("a routine already ticked says so instead of a countdown", () => {
+t("a routine already ticked says so, and still tells you the time left", () => {
+  // v80: this used to say only "done today", which hid the countdown on a
+  // routine in progress. Done is now an adjective, not a replacement.
   const list = [R(2, "07:00", "workout", 45, ["2026-11-15"])];
   const m = W.widgetModel(list, at(7, 10));
   assert.equal(m.next.doneToday, true);
-  assert.equal(W.widgetHeadline(m, at(7, 10)), "done today");
+  assert.equal(W.widgetHeadline(m, at(7, 10)), "done · 35m left to go");
 });
 
 // --------------------------------------------------------------- safety ----
@@ -273,6 +275,55 @@ t("a feed without a checksum is not trusted for a bundle", () => {
 t("the bundle the feed names is the site's own bundle.js", () => {
   const c = U.updateChoice(LOCAL, feed({}));
   assert.match(c.url, /^https:\/\/chandansharamcs\.github\.io\/To-do_app\/bundle\.js$/);
+});
+
+// ---- v80: the three bugs the first real phone found -------------------
+// A screenshot is worth more than the suite: the widget said "done today" at
+// 18:40 with no countdown, and tapping it did nothing.
+
+t("the clock is 12-hour, always", () => {
+  assert.equal(W.to12h("00:00"), "12:00 AM");
+  assert.equal(W.to12h("00:30"), "12:30 AM");
+  assert.equal(W.to12h("09:05"), "9:05 AM");
+  assert.equal(W.to12h("11:59"), "11:59 AM");
+  assert.equal(W.to12h("12:00"), "12:00 PM");
+  assert.equal(W.to12h("13:05"), "1:05 PM");
+  assert.equal(W.to12h("18:40"), "6:40 PM");
+  assert.equal(W.to12h("23:59"), "11:59 PM");
+});
+
+t("the routine you are inside always shows its countdown", () => {
+  // 07:10 is inside 07:00 + 45m; the old order printed "done today" instead
+  const m = W.widgetModel(LIST, at(7, 10));
+  assert.equal(m.state, "now");
+  const h = W.widgetHeadline(m, at(7, 10));
+  assert.match(h, /^now · \d+m left$/, `expected a countdown, got "${h}"`);
+  assert.equal(W.widgetHeadline(m, at(7, 40)), "now · 5m left");
+});
+
+t("a ticked routine in progress still counts down, and says it is done", () => {
+  const done = [R(1, "06:30", "brush + water", 20), R(2, "07:00", "workout", 45, ["2026-11-15"])];
+  const m = W.widgetModel(done, at(7, 10));
+  assert.equal(m.state, "now");
+  assert.equal(W.widgetHeadline(m, at(7, 10)), "done · 35m left to go");
+});
+
+t("the countdown never promises something already ticked", () => {
+  // 07:00 workout is done, so the widget must offer what is still to do,
+  // which is the 08:00 one, not the ticked one behind it
+  const list = [
+    R(1, "07:00", "workout", 45, ["2026-11-15"]),
+    R(2, "08:00", "breakfast", 30),
+  ];
+  const m = W.widgetModel(list, at(6, 50));
+  assert.equal(m.next.id, "2");
+  assert.equal(W.widgetHeadline(m, at(7, 30)), "next in 30m");
+});
+
+t("the model carries the 12-hour clock for the widget to draw", () => {
+  const m = W.widgetModel(LIST, at(5, 30));
+  assert.equal(m.next.time, "06:30");
+  assert.equal(m.next.time12, "6:30 AM");
 });
 
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);
