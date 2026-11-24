@@ -406,4 +406,58 @@ t("the bridge leaves a trace when it fails to install", () => {
   assert.match(b, /plugins: \["WidgetBridge", "Bundle", "Block", "Share"\]/);
 });
 
+// ---- v83: notifications in the app, and a picker that shows icons -------
+
+t("the bell uses the phone's own scheduler, not web push", () => {
+  const src = slice("const toggleNotify = async () => {", "const showDataMsg =");
+  // a WebView has no PushManager; the app schedules locally instead
+  assert.match(src, /const n = nativeShell\(\);/);
+  assert.match(src, /if \(n && n\.scheduleAll\)/);
+  assert.match(src, /n\.notifyPermission/);
+  assert.match(src, /const res = await n\.scheduleAll\(routines\)/);
+  // and only the browser path may reach the old code
+  assert.ok(src.indexOf("subscribeToPush") > src.indexOf("scheduleAll"),
+    "web push is still tried first in the app");
+});
+
+t("the app never shows the browser message for notifications", () => {
+  const src = slice("const toggleNotify = async () => {", "const showDataMsg =");
+  // the native branch ends before the browser fallback begins, so cutting at
+  // the fallback is what proves the app path cannot reach the old error
+  const cut = src.indexOf("await unsubscribeFromPush");
+  const nativeBranch = cut > 0 ? src.slice(0, cut) : src;
+  assert.ok(nativeBranch.length > 200, "could not find the native branch");
+  assert.ok(!/aren't supported in this browser/.test(nativeBranch));
+  assert.match(nativeBranch, /Notification permission was refused/);
+  assert.match(nativeBranch, /scheduled by the phone/);
+});
+
+t("the app picker scrolls real apps with real icons", () => {
+  const src = slice("function AppLimitsRow", "function VaultView");
+  assert.match(src, /n\.blockApps\(\)/, "the app list is never fetched");
+  assert.match(src, /className=\"limits-applist\"/);
+  assert.match(src, /<img className=\"limits-app-icon\"/);
+  // tapping an app that already has a limit removes it, rather than duplicating
+  assert.match(src, /if \(added\) \{ removeLimit\(a\.pkg\); return; \}/);
+});
+
+t("a limit can be any number of minutes, not five presets", () => {
+  const src = slice("function AppLimitsRow", "function VaultView");
+  assert.match(src, /type="number"/);
+  assert.match(src, /Math\.max\(1, Math\.min\(1440/);
+});
+
+t("the icons come from the OS, cropped small, and never break the list", () => {
+  const readf = (f) => readFileSync(join(here, f), "utf8");
+  const p = readf("android/app/src/main/java/sh/tasks/app/BlockPlugin.java");
+  assert.match(p, /getApplicationIcon\(pkg\)/);
+  assert.match(p, /Bitmap\.CompressFormat\.PNG/);
+  assert.match(p, /data:image\/png;base64,/);
+  // one broken icon is skipped, not fatal
+  assert.match(p, /catch \(Exception e\) \{ return ""; \}/);
+  const b = readFileSync(join(here, "native/bridge.src.mjs"), "utf8");
+  assert.match(b, /async function blockApps\(\)/);
+  assert.match(b, /blockStatus, blockOpen, blockSave, blockUsage, blockResolve, blockApps,/);
+});
+
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

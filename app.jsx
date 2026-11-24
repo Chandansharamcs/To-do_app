@@ -4577,7 +4577,10 @@ function AppLimitsRow({ compact = false }) {
   const [limits, setLimits] = useState([]);
   const [on, setOn] = useState(false);
   const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState([]);
+  const [apps, setApps] = useState([]);      // v83: every app, with an icon
+  const [picker, setPicker] = useState(false);
+  const [pickerQ, setPickerQ] = useState("");
+  const [custom, setCustom] = useState(null); // which package is being typed into
   const [used, setUsed] = useState({});
   const [msg, setMsg] = useState("");
   const [tries, setTries] = useState(0);
@@ -4605,7 +4608,12 @@ function AppLimitsRow({ compact = false }) {
     if (n && n.blockUsage) {
       Promise.resolve(n.blockUsage()).then((u) => setUsed((u && u.minutes) || {})).catch(() => {});
     }
-  }, [tries]);
+    // v83: the app list is loaded once and kept; it does not change while the
+    // panel is open, and icons are expensive to fetch twice.
+    if (n && n.blockApps && !apps.length) {
+      Promise.resolve(n.blockApps()).then((list) => setApps(list || [])).catch(() => {});
+    }
+  }, [tries, apps.length]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -4731,16 +4739,77 @@ function AppLimitsRow({ compact = false }) {
               <button key={m} className={"limits-chip" + (l.minutes === m ? " is-on" : "")}
                 onClick={() => setMinutes(l.pkg, m)}>{m}m</button>
             ))}
+            {custom === l.pkg ? (
+              <input
+                className="limits-chip-input"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max="1440"
+                autoFocus
+                defaultValue={l.minutes}
+                onBlur={(e) => {
+                  const v = Math.max(1, Math.min(1440, Math.round(Number(e.target.value) || l.minutes)));
+                  setMinutes(l.pkg, v);
+                  setCustom(null);
+                }}
+                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+              />
+            ) : (
+              <button className="limits-chip" onClick={() => setCustom(l.pkg)}>custom</button>
+            )}
             <button className="limits-remove" onClick={() => removeLimit(l.pkg)}>✕</button>
           </div>
         </div>
       ))}
 
-      <input className="limits-search" placeholder="add an app — type a name"
-        value={query} onChange={(e) => search(e.target.value)} />
-      {matches.map((m) => (
-        <button className="limits-match" key={m.pkg} onClick={() => addLimit(m)}>+ {m.label}</button>
-      ))}
+      <button className="limits-add" onClick={() => setPicker(true)}>
+        <span className="limits-add-plus">+</span> add an app
+      </button>
+
+      {picker && (
+        <div className="limits-picker">
+          <input
+            className="limits-search"
+            placeholder="search apps"
+            autoFocus
+            value={pickerQ}
+            onChange={(e) => setPickerQ(e.target.value)}
+          />
+          <div className="limits-applist">
+            {apps
+              .filter((a) => {
+                const q = pickerQ.trim().toLowerCase();
+                if (!q) return true;
+                return (a.label || "").toLowerCase().includes(q) || (a.pkg || "").toLowerCase().includes(q);
+              })
+              .slice(0, 120)
+              .map((a) => {
+                const added = limits.some((l) => l.pkg === a.pkg);
+                return (
+                  <button
+                    key={a.pkg}
+                    className={"limits-app" + (added ? " is-added" : "")}
+                    onClick={() => {
+                      if (added) { removeLimit(a.pkg); return; }
+                      addLimit(a);
+                      setPicker(false);
+                      setPickerQ("");
+                    }}
+                  >
+                    {a.icon ? <img className="limits-app-icon" src={a.icon} alt="" /> : <span className="limits-app-icon empty" />}
+                    <span className="limits-app-text">
+                      <span className="limits-app-name">{a.label || a.pkg}</span>
+                      <span className="limits-app-pkg">{a.pkg}</span>
+                    </span>
+                    <span className="limits-app-mark">{added ? "✓" : "+"}</span>
+                  </button>
+                );
+              })}
+          </div>
+          <button className="limits-perm" onClick={() => { setPicker(false); setPickerQ(""); }}>close</button>
+        </div>
+      )}
 
       {msg && <div className="limits-hint">{msg}</div>}
     </div>
@@ -5055,15 +5124,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.28.0";
+const APP_VERSION = "5.29.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.28.0";
+const BUNDLE_VERSION = "5.29.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5028000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5029000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -17285,6 +17354,48 @@ function TodoApp() {
 
   const toggleNotify = async () => {
     if (notifyBusy) return;
+
+    // v83: in the Android shell there is no Web Push to subscribe to, because a
+    // WebView has no PushManager. The OS itself schedules the reminder, so this
+    // asks the app's own scheduler first. Previously web push was attempted
+    // unconditionally and failed with a message about browsers, which is
+    // technically true here and useless to the person reading it.
+    const n = nativeShell();
+    if (n && n.scheduleAll) {
+      setNotifyBusy(true);
+      try {
+        if (notifyEnabled) {
+          // turning off: clear every scheduled routine
+          if (n.cancelRoutine) await Promise.resolve(n.cancelRoutine()).catch(() => {});
+          for (const r of routines) {
+            const id = Math.abs(Number(r.id) || 0) % 2147483647 || 1;
+            if (n.scheduleRoutine) {
+              try { await Promise.resolve(n.scheduleRoutine("", r.time, id, true)); } catch { /* ignore */ }
+            }
+          }
+          localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "0");
+          setNotifyEnabled(false);
+          showDataMsg("success", "Notifications turned off");
+        } else {
+          const perm = n.notifyPermission ? await n.notifyPermission() : { granted: true };
+          if (!perm || !perm.granted) {
+            showDataMsg("error", "Notification permission was refused — allow it in Android settings, then try again.");
+            setNotifyBusy(false);
+            return;
+          }
+          const res = await n.scheduleAll(routines);
+          localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "1");
+          setNotifyEnabled(true);
+          showDataMsg("success", `Notifications on — ${res.ok} routine${res.ok === 1 ? "" : "s"} scheduled by the phone`);
+        }
+      } catch (err) {
+        showDataMsg("error", err.message || "Couldn't set up notifications");
+      } finally {
+        setNotifyBusy(false);
+      }
+      return;
+    }
+
     setNotifyBusy(true);
     try {
       if (notifyEnabled) {
@@ -19408,6 +19519,42 @@ function TodoApp() {
           padding: 4px 12px;
         }
         .undo-toast-btn:active { background: rgba(94,234,212,0.12); }
+
+        /* v83: the app picker — a scrolling list of real icons, not a text box. */
+        .limits-add {
+          width: 100%; margin-top: 12px; padding: 11px 12px;
+          display: flex; align-items: center; gap: 9px;
+          background: rgba(94,234,212,0.06); border: 1px dashed rgba(94,234,212,0.35);
+          border-radius: 10px; color: var(--accent); cursor: pointer;
+          font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+        }
+        .limits-add-plus { font-size: 15px; line-height: 1; }
+        .limits-picker { margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: rgba(255,255,255,0.015); }
+        .limits-applist { max-height: 46vh; overflow-y: auto; margin-top: 8px; -webkit-overflow-scrolling: touch; }
+        .limits-app {
+          width: 100%; display: flex; align-items: center; gap: 11px;
+          padding: 8px 9px; margin-bottom: 5px;
+          background: rgba(255,255,255,0.02); border: 1px solid transparent;
+          border-radius: 10px; cursor: pointer; text-align: left;
+        }
+        .limits-app.is-added { border-color: rgba(94,234,212,0.45); background: rgba(94,234,212,0.07); }
+        .limits-app-icon { width: 32px; height: 32px; border-radius: 8px; flex: none; image-rendering: auto; }
+        .limits-app-icon.empty { background: var(--border); display: block; }
+        .limits-app-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+        .limits-app-name { font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .limits-app-pkg { font-family: var(--font-mono); font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .limits-app-mark { font-family: var(--font-mono); font-size: 13px; color: var(--accent); flex: none; }
+        .limits-chip-input {
+          width: 62px; padding: 3px 7px;
+          background: #0B0D10; border: 1px solid var(--accent); border-radius: 7px;
+          color: var(--ink); font-family: var(--font-mono); font-size: 10px;
+        }
+        /* a limit row reads as one glass card, not a form */
+        .limits-item {
+          background: rgba(94,234,212,0.035);
+          border: 1px solid rgba(94,234,212,0.18);
+          border-radius: 12px;
+        }
 
         /* v81: app limits. Terminal panel, chips for the minute presets. */
         .limits-card { padding-bottom: 12px; }

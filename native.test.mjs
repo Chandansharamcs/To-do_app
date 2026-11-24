@@ -209,6 +209,25 @@ t("a tapped quest cannot complete a routine", () => {
   assert.match(st, /a\.put\("kind", kind == null \? "routine" : kind\)/);
 });
 
+t("the notification bell uses local notifications, not a browser push manager", () => {
+  const b = read("native/bridge.src.mjs");
+  assert.match(b, /async function notifyPermission\(\)/);
+  assert.match(b, /async function scheduleAll\(list\)/);
+  assert.match(b, /async function notifyTest\(\)/);
+  // what the OS actually holds is the only proof, so it is read back
+  assert.match(b, /LocalNotifications\.getPending\(\)/);
+  assert.match(b, /notifyPermission, scheduleAll, notifyTest,/);
+});
+
+t("the app picker hands icons across the bridge as small PNGs", () => {
+  const p = read("android/app/src/main/java/sh/tasks/app/BlockPlugin.java");
+  assert.match(p, /public void apps\(PluginCall call\)/);
+  // a broken icon is skipped rather than taking the list down with it
+  assert.match(p, /catch \(Exception e\) \{ \/\* skip a broken row/);
+  // and an app that already has a limit says so
+  assert.match(p, /o\.put\("minutes", limit\)/);
+});
+
 t("the blocker tells the truth about what Android allows", () => {
   const svc = read("android/app/src/main/java/sh/tasks/app/AppBlockService.java");
   // it counts minutes and raises a wall; it never claims to force-stop
@@ -321,7 +340,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5028000, `expected 5.28.0 -> 5028000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5029000, `expected 5.29.0 -> 5029000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v83`** | 2026-11-24 | the bell stops saying "browser", and app limits get a real picker with icons |
 | **`v82`** | 2026-11-24 | app limits moved to tools, and it stops saying "browser" to an app user |
 | **`v81`** | 2026-11-24 | liquid blue glass, a scrollable quest list in the widget, and app limits that actually close things |
 | **`v80`** | 2026-11-24 | the widget the first real phone found: countdown, 12-hour, a tick that works, and a face |
@@ -1527,6 +1528,39 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-11-24 — `tasksh-v83`**
+
+His screenshot showed app limits working — usage access ✓, draw over apps ✓,
+YouTube 0/90 min, watching — and above it, a message about browsers. Two
+different bugs wearing one screenshot.
+
+- **The bell was asking the browser to do the app's job.** In the Android shell
+  there is no `PushManager`, so `subscribeToPush` threw *"Push notifications
+  aren't supported in this browser"* — technically true inside a WebView, and
+  useless, because the app can schedule notifications itself. The native path
+  now runs first: ask the OS for permission, schedule every routine with
+  `LocalNotifications`, then **read back what the OS actually holds** and report
+  that count. A number that came from the phone is worth more than a promise.
+
+- **App limits got the picker it deserved.** A text box asking you to type a
+  package name was the worst part of the feature. Now: **add an app** opens a
+  scrollable list of every installed app **with its real icon**, searchable,
+  with apps that already have a limit marked. Icons come from the OS
+  (`getApplicationIcon`), are drawn to a small PNG and cross the bridge as data
+  URIs — one call, one list, no custom URI scheme.
+
+- **Any number of minutes, not five presets.** 15/30/45/60/90 are still one tap;
+  `custom` opens a field that takes 1 to 1440.
+
+- **Adding a limit turns the watcher on**, and the panel says *watching* when it
+  is, because a saved rule with a stopped service is the worst kind of silence.
+
+Tests: **26 suites / 878 unit** (`widget` 41 → 46, `native` 39 → 41), browser
+**230**. One of the new tests failed on its first run because my own comment
+contained the phrase it was forbidding — the test was right.
+
+---
 
 **2026-11-24 — `tasksh-v82`**
 

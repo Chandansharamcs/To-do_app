@@ -203,6 +203,17 @@ async function blockUsage() {
   } catch { return { day: "", minutes: {} }; }
 }
 
+/** v83: every installed app with its icon and current limit. One call, one
+ *  list, so the picker can scroll instead of being typed into. */
+async function blockApps() {
+  try {
+    const r = await Block.apps();
+    let apps = [];
+    try { apps = JSON.parse((r && r.apps) || "[]"); } catch { apps = []; }
+    return apps;
+  } catch { return []; }
+}
+
 /** "youtube" -> [{pkg,label}] from what is actually installed. */
 async function blockResolve(q) {
   try {
@@ -225,6 +236,47 @@ async function cancelNight() {
 
 /** A real clock for a routine time, which the web can never offer.
  *  kind: "at" (a wall-clock time) — one notification, repeating daily. */
+/** v83: asks the OS for notification permission. On Android 13+ this is a
+ *  runtime dialog; before that it is granted at install. */
+async function notifyPermission() {
+  try {
+    const r = await LocalNotifications.requestPermissions();
+    return { granted: (r && r.display) === "granted" };
+  } catch (e) { return { granted: false, error: String(e && e.message || e) }; }
+}
+
+/** v83: schedules every routine natively and returns what the OS actually has
+ *  pending -- which is the only proof a notification will fire. */
+async function scheduleAll(list) {
+  const out = { ok: 0, failed: 0, pending: [] };
+  for (const r of Array.isArray(list) ? list : []) {
+    if (!r || !r.time) continue;
+    const res = await scheduleRoutine(String(r.label || "routine").slice(0, 60), r.time, Math.abs(Number(r.id) || 0) % 2147483647 || 1);
+    if (res && res.ok) out.ok++; else out.failed++;
+  }
+  try {
+    const p = await LocalNotifications.getPending();
+    out.pending = ((p && p.notifications) || []).map((n) => ({ id: n.id, title: n.title }));
+  } catch { out.pending = []; }
+  return out;
+}
+
+/** v83: a notification five seconds from now. The honest test: if this does
+ *  not appear, the problem is the permission, not the schedule. */
+async function notifyTest() {
+  try {
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: 9091,
+        title: "tasks.sh",
+        body: "notifications are working",
+        schedule: { at: new Date(Date.now() + 5000), allowWhileIdle: true },
+      }],
+    });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+
 async function scheduleRoutine(label, time, id) {
   const [h, m] = String(time || "07:00").split(":").map((x) => parseInt(x, 10) || 0);
   try {
@@ -273,8 +325,9 @@ window.taskshNative = {
   snapshot, readSnapshot, restoreSnapshot,
   scheduleNight, cancelNight, scheduleRoutine,
   pushWidget, takeWidgetActions,
+  notifyPermission, scheduleAll, notifyTest,
   bundleInfo, bundleDownload, bundleClear,
-  blockStatus, blockOpen, blockSave, blockUsage, blockResolve,
+  blockStatus, blockOpen, blockSave, blockUsage, blockResolve, blockApps,
   onResume, takeSharedText,
 };
 

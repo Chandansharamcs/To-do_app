@@ -137,6 +137,59 @@ public class BlockPlugin extends Plugin {
         call.resolve(r);
     }
 
+    /** v83: every app with an icon, as base64 PNG, plus whether it already has
+     *  a limit. Sent once per open: a dozen rows of 96px PNG is ~200 KB, which
+     *  is fine over the bridge and avoids a custom URI scheme entirely. */
+    @PluginMethod
+    public void apps(PluginCall call) {
+        PackageManager pm = getContext().getPackageManager();
+        JSONArray out = new JSONArray();
+        JSONArray limits = new JSONArray();
+        JSONObject rules = BlockStore.rules(getContext());
+        if (rules != null && rules.optJSONArray("limits") != null) limits = rules.optJSONArray("limits");
+
+        java.util.List<android.content.pm.ApplicationInfo> list = pm.getInstalledApplications(0);
+        java.util.Collections.sort(list, (a, b) -> String.valueOf(pm.getApplicationLabel(a))
+                .compareToIgnoreCase(String.valueOf(pm.getApplicationLabel(b))));
+
+        for (android.content.pm.ApplicationInfo ai : list) {
+            if (ai.packageName.equals(getContext().getPackageName())) continue;
+            if (pm.getLaunchIntentForPackage(ai.packageName) == null) continue;
+            try {
+                JSONObject o = new JSONObject();
+                o.put("pkg", ai.packageName);
+                o.put("label", String.valueOf(pm.getApplicationLabel(ai)));
+                long limit = 0;
+                for (int i = 0; i < limits.length(); i++) {
+                    JSONObject l = limits.optJSONObject(i);
+                    if (l != null && ai.packageName.equals(l.optString("pkg", ""))) limit = l.optLong("minutes", 0);
+                }
+                o.put("minutes", limit);
+                o.put("icon", iconBase64(pm, ai.packageName));
+                out.put(o);
+            } catch (Exception e) { /* skip a broken row, keep the list */ }
+        }
+        JSObject r = new JSObject();
+        r.put("apps", out.toString());
+        call.resolve(r);
+    }
+
+    /** The launcher icon as a 96px PNG data URI. Small on purpose: this crosses
+     *  the JS bridge as text, so every byte is paid for twice. */
+    private String iconBase64(PackageManager pm, String pkg) {
+        try {
+            android.graphics.drawable.Drawable d = pm.getApplicationIcon(pkg);
+            int px = (int) (48 * getContext().getResources().getDisplayMetrics().density);
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(px, px, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(bmp);
+            d.setBounds(0, 0, px, px);
+            d.draw(canvas);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, bos);
+            return "data:image/png;base64," + android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP);
+        } catch (Exception e) { return ""; }
+    }
+
     /** Fills a package name from what the user typed, so "youtube" is enough. */
     @PluginMethod
     public void resolve(PluginCall call) {
