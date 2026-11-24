@@ -321,7 +321,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5027000, `expected 5.27.0 -> 5027000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5028000, `expected 5.28.0 -> 5028000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

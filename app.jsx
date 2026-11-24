@@ -4572,7 +4572,7 @@ none of the day's 3 daily quests: −${cfg.questFine} on one random tag`
  *  and "draw over other apps" have no in-app dialog. If a permission is
  *  missing the button says so instead of pretending to work.
  */
-function AppLimitsRow() {
+function AppLimitsRow({ compact = false }) {
   const [status, setStatus] = useState(null);
   const [limits, setLimits] = useState([]);
   const [on, setOn] = useState(false);
@@ -4580,29 +4580,38 @@ function AppLimitsRow() {
   const [matches, setMatches] = useState([]);
   const [used, setUsed] = useState({});
   const [msg, setMsg] = useState("");
-  const [open, setOpen] = useState(false);
+  const [tries, setTries] = useState(0);
 
+  /** The bridge is injected before the bundle, but on a slow first frame it can
+   *  still be a microtask behind. So: retry a few times before deciding this is
+   *  not the app -- telling an app user "only in the android app" because the
+   *  bridge was one tick late is exactly the bug he hit. */
   const refresh = useCallback(() => {
     const n = nativeShell();
-    if (!n || !n.blockStatus) { setStatus({ native: false }); return; }
+    if (!n || !n.blockStatus) {
+      if (tries < 6) { setTimeout(() => setTries((t) => t + 1), 120); }
+      else setStatus({ native: false, why: n ? "bridge has no blockStatus" : "no bridge" });
+      return;
+    }
     Promise.resolve(n.blockStatus()).then((st) => {
+      if (!st) { setStatus({ native: false, why: "status returned nothing" }); return; }
       setStatus(Object.assign({ native: true }, st));
       try {
         const r = JSON.parse(st.rules || "{}");
         setOn(!!r.on);
         setLimits(Array.isArray(r.limits) ? r.limits : []);
       } catch { /* keep what is on screen */ }
-    }).catch(() => setStatus({ native: false }));
+    }).catch((e) => setStatus({ native: false, why: String((e && e.message) || e) }));
     if (n && n.blockUsage) {
       Promise.resolve(n.blockUsage()).then((u) => setUsed((u && u.minutes) || {})).catch(() => {});
     }
-  }, []);
+  }, [tries]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
   const send = useCallback((nextOn, nextLimits) => {
     const n = nativeShell();
-    if (!n || !n.blockSave) return;
+    if (!n || !n.blockSave) { setMsg("the app bridge is not answering"); return; }
     const body = JSON.stringify({ v: 1, on: nextOn, limits: nextLimits });
     Promise.resolve(n.blockSave(body)).then((r) => {
       setMsg(r && r.ok ? (nextOn ? "watching" : "paused") : "could not save");
@@ -4615,7 +4624,6 @@ function AppLimitsRow() {
     if (!n || !n.blockOpen) return;
     Promise.resolve(n.blockOpen(which)).then(() => {
       setMsg("grant it, then come back");
-      // the settings page is a different screen; the app resumes into this one
       setTimeout(refresh, 1200);
     }).catch(() => {});
   };
@@ -4624,118 +4632,118 @@ function AppLimitsRow() {
     setQuery(q);
     const n = nativeShell();
     if (!n || !n.blockResolve || q.trim().length < 2) { setMatches([]); return; }
-    Promise.resolve(n.blockResolve(q)).then((apps) => setMatches(apps || [])).catch(() => setMatches([]));
+    Promise.resolve(n.blockResolve(q)).then((a) => setMatches(a || [])).catch(() => setMatches([]));
   };
 
   const addLimit = (app) => {
     if (!app || limits.some((l) => l.pkg === app.pkg)) return;
     const next = [...limits, { pkg: app.pkg, label: app.label, minutes: 30 }];
     setLimits(next); setMatches([]); setQuery("");
-    send(on, next);
+    send(on || true, next);        // adding a limit turns the watcher on
+    setOn(true);
   };
   const setMinutes = (pkg, minutes) => {
     const next = limits.map((l) => (l.pkg === pkg ? { ...l, minutes } : l));
-    setLimits(next);
-    send(on, next);
+    setLimits(next); send(on, next);
   };
   const removeLimit = (pkg) => {
     const next = limits.filter((l) => l.pkg !== pkg);
-    setLimits(next);
-    send(on, next);
+    setLimits(next); send(next.length ? on : false, next);
+    if (!next.length) setOn(false);
   };
 
-  if (!status) return null;
-  if (!status.native) {
+  if (!status) {
     return (
-      <>
-        <div className="section-header"><span>APP-LIMITS</span></div>
-        <div className="note-card limits-card">
-          <pre className="note-body"><span className="limits-dim">only in the android app: a browser cannot close other apps.</span></pre>
+      <div className="limits-card tools-panel">
+        <div className="note-head"><span className="note-prompt">~/limits</span></div>
+        <pre className="note-body limits-dim">reading…</pre>
+      </div>
+    );
+  }
+
+  if (!status.native) {
+    const inApp = !!(window.taskshNative && window.taskshNative.isNative);
+    return (
+      <div className="limits-card tools-panel">
+        <div className="note-head">
+          <span className="note-prompt">~/limits</span>
+          <span className="note-when">unavailable</span>
         </div>
-      </>
+        <pre className="note-body limits-dim">
+{inApp
+  ? "you are in the app, but its bridge is not answering.\nclose and reopen tasks.sh once; if it still says this,\ncopy the line below and send it to me.\n(" + (status.why || "") + ")"
+  : "app limits live in the android app. a browser cannot see\nother apps or draw over them."}
+        </pre>
+        {inApp && (
+          <button className="limits-perm" onClick={() => {
+            const h = (window.taskshHealth ? window.taskshHealth() : Promise.resolve(null));
+            Promise.resolve(h).then((d) => setMsg(d ? JSON.stringify(d) : "no health check"));
+          }}>copy diagnostic</button>
+        )}
+        {msg && <pre className="note-body limits-dim">{msg}</pre>}
+      </div>
     );
   }
 
   const ready = status.usage && status.overlay;
 
   return (
-    <>
-    <div className="section-header"><span>APP-LIMITS</span></div>
-    <div className="note-card limits-card">
+    <div className="limits-card tools-panel">
       <div className="note-head">
         <span className="note-prompt">~/limits</span>
-        <span className="note-when">{ready ? (on ? "watching" : "paused") : "2 permissions needed"}</span>
+        <span className="note-when">{ready ? (on ? "watching" : "paused") : "needs permission"}</span>
       </div>
       <pre className="note-body limits-dim">
-        close an app until tomorrow once you pass its daily limit.
+        close an app until tomorrow once it passes its daily limit.
       </pre>
 
-      {!ready && (
-        <div className="limits-perms">
-          <button className={"limits-perm" + (status.usage ? " is-on" : "")} onClick={() => openPage("usage")}>
-            {status.usage ? "✓" : "○"} usage access
-          </button>
-          <button className={"limits-perm" + (status.overlay ? " is-on" : "")} onClick={() => openPage("overlay")}>
-            {status.overlay ? "✓" : "○"} draw over apps
-          </button>
-          {!status.battery && (
-            <button className="limits-perm" onClick={() => openPage("battery")}>○ battery exemption</button>
-          )}
-          <div className="limits-hint">
-            android hides these on sideloaded apps: app info → ⋮ → allow restricted settings, once.
+      <div className="limits-perms">
+        <button className={"limits-perm" + (status.usage ? " is-on" : "")} onClick={() => openPage("usage")}>
+          {status.usage ? "✓" : "○"} usage access
+        </button>
+        <button className={"limits-perm" + (status.overlay ? " is-on" : "")} onClick={() => openPage("overlay")}>
+          {status.overlay ? "✓" : "○"} draw over apps
+        </button>
+        {!status.battery && (
+          <button className="limits-perm" onClick={() => openPage("battery")}>○ battery exemption</button>
+        )}
+        <div className="limits-hint">
+          android hides these on sideloaded apps: app info → ⋮ → allow restricted settings, once.
+        </div>
+      </div>
+
+      <div className="limits-toggle-row">
+        <button
+          className={"limits-toggle" + (on ? " is-on" : "")}
+          onClick={() => { const next = !on; setOn(next); send(next, limits); }}
+        >{on ? "on" : "off"}</button>
+        <span className="limits-hint">resets at 3:00 AM, like the day does</span>
+      </div>
+
+      {limits.map((l) => (
+        <div className="limits-item" key={l.pkg}>
+          <div className="limits-item-main">
+            <span className="limits-item-name">{l.label || l.pkg}</span>
+            <span className="limits-item-used">{Math.round(used[l.pkg] || 0)} / {l.minutes} min</span>
+          </div>
+          <div className="limits-item-actions">
+            {[15, 30, 45, 60, 90].map((m) => (
+              <button key={m} className={"limits-chip" + (l.minutes === m ? " is-on" : "")}
+                onClick={() => setMinutes(l.pkg, m)}>{m}m</button>
+            ))}
+            <button className="limits-remove" onClick={() => removeLimit(l.pkg)}>✕</button>
           </div>
         </div>
-      )}
+      ))}
 
-      {ready && (
-        <>
-          <div className="limits-toggle-row">
-            <button
-              className={"limits-toggle" + (on ? " is-on" : "")}
-              onClick={() => { setOn(!on); send(!on, limits); }}
-            >{on ? "on" : "off"}</button>
-            <span className="limits-hint">resets at 3:00 AM, like the day does</span>
-          </div>
-
-          {limits.map((l) => (
-            <div className="limits-item" key={l.pkg}>
-              <div className="limits-item-main">
-                <span className="limits-item-name">{l.label || l.pkg}</span>
-                <span className="limits-item-used">
-                  {Math.round((used[l.pkg] || 0))} / {l.minutes} min
-                </span>
-              </div>
-              <div className="limits-item-actions">
-                {[15, 30, 45, 60, 90].map((m) => (
-                  <button
-                    key={m}
-                    className={"limits-chip" + (l.minutes === m ? " is-on" : "")}
-                    onClick={() => setMinutes(l.pkg, m)}
-                  >{m}m</button>
-                ))}
-                <button className="limits-remove" onClick={() => removeLimit(l.pkg)}>✕</button>
-              </div>
-            </div>
-          ))}
-
-          <input
-            className="limits-search"
-            placeholder="add an app — type a name"
-            value={query}
-            onChange={(e) => search(e.target.value)}
-            onFocus={() => setOpen(true)}
-          />
-          {matches.map((m) => (
-            <button className="limits-match" key={m.pkg} onClick={() => addLimit(m)}>
-              + {m.label}
-            </button>
-          ))}
-        </>
-      )}
+      <input className="limits-search" placeholder="add an app — type a name"
+        value={query} onChange={(e) => search(e.target.value)} />
+      {matches.map((m) => (
+        <button className="limits-match" key={m.pkg} onClick={() => addLimit(m)}>+ {m.label}</button>
+      ))}
 
       {msg && <div className="limits-hint">{msg}</div>}
     </div>
-    </>
   );
 }
 
@@ -4745,7 +4753,6 @@ function VaultView({ penaltyCtl }) {
       <CloudBackupRow />
       <PenaltyRow penaltyCtl={penaltyCtl} />
       <AppUpdateRow />
-      <AppLimitsRow />
       <LastCrashRow />
       <SoundRow />
       <StoreRow />
@@ -5048,15 +5055,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.27.0";
+const APP_VERSION = "5.28.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.27.0";
+const BUNDLE_VERSION = "5.28.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5027000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5028000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -16355,6 +16362,15 @@ function toolStatuses() {
   return out;
 }
 
+/** The one line the tools grid shows under "app limits": what it is doing
+ *  right now, so the card is never just a name. */
+function limitsStatus() {
+  const n = nativeShell();
+  if (!n) return "android app only";
+  if (!n.blockStatus) return "bridge missing";
+  return "set a limit";
+}
+
 function ToolsView({ onReward, sharedText = null }) {
   const [open, setOpen] = useState(null);
 
@@ -16366,6 +16382,18 @@ function ToolsView({ onReward, sharedText = null }) {
   // recomputed whenever the grid is shown, so a tool used a moment ago is
   // reflected the next time you come back to the list
   const statuses = useMemo(() => (open ? {} : toolStatuses()), [open]);
+
+  if (open === "limits") {
+    return (
+      <div className="task-list vault-scroll">
+        <div className="section-header tool-header">
+          <button className="tool-back" onClick={() => { setOpen(null); sound.whoosh(); }}>← tools</button>
+          <span>APP LIMITS</span>
+        </div>
+        <AppLimitsRow />
+      </div>
+    );
+  }
 
   if (tool) {
     const Body = tool.Component;
@@ -16394,6 +16422,12 @@ function ToolsView({ onReward, sharedText = null }) {
             {statuses[t.id] && <span className="tool-status">{statuses[t.id]}</span>}
           </button>
         ))}
+        <button className="tool-card" onClick={() => { setOpen("limits"); sound.click(); }}>
+          <span className="tool-glyph">◔</span>
+          <span className="tool-name">app limits</span>
+          <span className="tool-desc">close an app after its daily minutes</span>
+          <span className="tool-status">{limitsStatus()}</span>
+        </button>
         {/* An honest empty slot beats padding the grid with things that
             don't exist yet. */}
         <div className="tool-card ghost">

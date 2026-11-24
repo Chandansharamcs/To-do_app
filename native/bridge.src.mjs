@@ -256,14 +256,36 @@ async function takeSharedText() {
   } catch { return null; }
 }
 
+/** v82: if this object is ever missing, the app silently believes it is in a
+ *  browser -- which is exactly how "app limits" once told an app user that it
+ *  only works in the app. A failed bridge must leave a trace, not a shrug. */
+if (!window.taskshNative) {
+  window.taskshBridgeError = "not installed";
+}
+
 window.taskshNative = {
   platform: Capacitor.getPlatform(),
   isNative: Capacitor.isNativePlatform(),
   version: "1",
+  /** v82: what the shell actually has, so a missing plugin can be shown
+   *  instead of guessed at. */
+  plugins: ["WidgetBridge", "Bundle", "Block", "Share"],
   snapshot, readSnapshot, restoreSnapshot,
   scheduleNight, cancelNight, scheduleRoutine,
   pushWidget, takeWidgetActions,
   bundleInfo, bundleDownload, bundleClear,
   blockStatus, blockOpen, blockSave, blockUsage, blockResolve,
   onResume, takeSharedText,
+};
+
+/** v82: a one-call health check. The app shows this string verbatim when
+ *  something is missing, because "it does not work" is not a bug report. */
+window.taskshHealth = async () => {
+  const out = { platform: "unknown", bridge: true, plugins: {}, widget: false, bundle: false, block: null };
+  try {
+    out.platform = Capacitor.getPlatform();
+    out.bridge = !!window.taskshNative;
+    try { out.widget = !!(await WidgetBridge.info()); } catch { out.widget = false; }
+  } catch (e) { out.error = String((e && e.message) || e); }
+  return out;
 };

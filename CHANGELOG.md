@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v82`** | 2026-11-24 | app limits moved to tools, and it stops saying "browser" to an app user |
 | **`v81`** | 2026-11-24 | liquid blue glass, a scrollable quest list in the widget, and app limits that actually close things |
 | **`v80`** | 2026-11-24 | the widget the first real phone found: countdown, 12-hour, a tick that works, and a face |
 | **`v79`** | 2026-10-20 | updates without reinstalling: the app itself is 1.1 MB and replaces itself |
@@ -1526,6 +1527,37 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-11-24 — `tasksh-v82`**
+
+Two things from using v81 on the phone.
+
+- **App limits moved from the vault into TOOLS**, as a card in the grid with its
+  own screen and a back button, matching every other tool. The vault row is
+  gone rather than duplicated: two copies of a settings panel is two places to
+  keep in sync.
+
+- **It stopped telling an app user that it only works in a browser.** The panel
+  decided that from `nativeShell()` alone, and a bridge that was one microtask
+  late — or absent — was indistinguishable from Safari. Now it retries six
+  times before concluding anything, and when it does give up it says which of
+  the two it is: *"you are in the app, but its bridge is not answering"* versus
+  *"a browser cannot see other apps"*. There is a **copy diagnostic** button
+  that prints the bridge's own health, because "it doesn't work" is not
+  something I can debug.
+
+- **The bridge now leaves a trace when it fails to install**, and reports which
+  plugins it carries. Silence was the actual bug: `window.taskshNative` simply
+  never appearing looks exactly like the website.
+
+- **Adding a limit turns the watcher on.** Choosing an app and a number of
+  minutes used to save a rule with the service still stopped, which reads as
+  "nothing happens".
+
+Tests: **26 suites / 873 unit** (`widget` 38 → 41: the card is in tools, the
+panel retries, the bridge reports its own failure), browser **230**.
+
+---
 
 **2026-11-24 — `tasksh-v81`**
 

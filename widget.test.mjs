@@ -378,4 +378,32 @@ t("the model carries the quests through every state", () => {
   assert.equal(none.quests.length, 3);
 });
 
+// ---- v82: app limits live in tools, and never lie about where they are ---
+
+t("app limits is a tool card, not a vault row", () => {
+  const tools = slice("function ToolsView", "function loadStored");
+  assert.match(tools, /setOpen\("limits"\)/, "the card does not open the panel");
+  assert.match(tools, /open === "limits"/, "the panel is not rendered");
+  assert.match(tools, /<AppLimitsRow \/>/);
+  const vault = slice("function VaultView", "function CloudBackupRow");
+  assert.ok(!/AppLimitsRow/.test(vault), "app limits is still duplicated in the vault");
+});
+
+t("the panel retries the bridge before claiming it is a browser", () => {
+  const src = slice("function AppLimitsRow", "function VaultView");
+  // a bridge that is one microtask late must not be reported as absence
+  assert.match(src, /if \(tries < 6\)/, "no retry before giving up");
+  // and when it really is missing, say which of the two it is
+  assert.match(src, /const inApp = .*window[.]taskshNative[.]isNative/);
+  assert.match(src, /you are in the app, but its bridge is not answering/);
+  assert.match(src, /copy diagnostic/);
+});
+
+t("the bridge leaves a trace when it fails to install", () => {
+  const b = readFileSync(join(here, "native/bridge.src.mjs"), "utf8");
+  assert.match(b, /window\.taskshBridgeError = "not installed"/);
+  assert.match(b, /window\.taskshHealth = async \(\) =>/);
+  assert.match(b, /plugins: \["WidgetBridge", "Bundle", "Block", "Share"\]/);
+});
+
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);
