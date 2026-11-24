@@ -49,7 +49,11 @@ final class WidgetStore {
     }
 
     /** Queues a completion for the app to apply. Add-only, capped. */
-    static void queueAction(Context c, String id, String day) {
+    static void queueAction(Context c, String id, String day) { queueAction(c, id, day, "routine"); }
+
+    /** v81: `kind` is "routine" or "quest". The app routes on it, so a quest
+     *  tick cannot accidentally complete a routine with the same id. */
+    static void queueAction(Context c, String id, String day, String kind) {
         if (id == null || id.isEmpty() || day == null || day.isEmpty()) return;
         SharedPreferences p = prefs(c);
         JSONArray arr;
@@ -62,6 +66,7 @@ final class WidgetStore {
             JSONObject a = new JSONObject();
             a.put("id", id);
             a.put("day", day);
+            a.put("kind", kind == null ? "routine" : kind);
             a.put("at", System.currentTimeMillis());
             arr.put(a);
         } catch (Exception e) {
@@ -76,6 +81,30 @@ final class WidgetStore {
         String s = p.getString(KEY_QUEUE, "[]");
         p.edit().putString(KEY_QUEUE, "[]").apply();
         return s;
+    }
+
+    /** v81: the same idea for a quest row -- tick it in the model so the list
+     *  redraws before the app has had a chance to run. */
+    static void markQuestDoneLocally(Context c, String id) {
+        String s = readModel(c);
+        if (s == null) return;
+        try {
+            JSONObject o = new JSONObject(s);
+            JSONArray q = o.optJSONArray("quests");
+            if (q == null) return;
+            boolean changed = false;
+            for (int i = 0; i < q.length(); i++) {
+                JSONObject row = q.optJSONObject(i);
+                if (row == null) continue;
+                if (!id.equals(row.optString("id", ""))) continue;
+                if (!row.optBoolean("done", false)) { row.put("done", true); changed = true; }
+            }
+            if (!changed) return;
+            o.put("updatedAt", System.currentTimeMillis());
+            prefs(c).edit().putString(KEY_MODEL, o.toString()).apply();
+        } catch (Exception e) {
+            // the app is still the source of truth; the next push fixes it
+        }
     }
 
     /** Reflects a tick in the stored model straight away, so the widget stops

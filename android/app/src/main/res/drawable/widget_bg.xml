@@ -1,23 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v80: the panel.
-     "Glass" in a widget cannot be blur: there is no backdrop filter, and the
-     launcher owns whatever is behind us. What is achievable is depth: a
-     night-blue plate with a soft vertical fall, a teal hairline, and an inner
-     highlight so the top edge reads as an edge. -->
+<!-- v81: liquid blue glass.
+     A widget cannot blur: there is no backdrop filter and the launcher owns
+     whatever sits behind the pane. What sells "liquid glass" without blur is
+     layering: a cool blue-black base with a diagonal sheen, a bright rim where
+     light would catch the edge, and a soft inner glow at the top left. Four
+     cheap shapes read as depth at a glance. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 1. the pane itself, with a diagonal sheen across it -->
     <item>
         <shape android:shape="rectangle">
             <gradient
-                android:angle="270"
-                android:startColor="#E610171C"
-                android:centerColor="#DE0B0F13"
-                android:endColor="#E6070A0D" />
-            <stroke
-                android:width="1dp"
-                android:color="#4D5EEAD4" />
-            <corners android:radius="22dp" />
+                android:type="linear"
+                android:angle="315"
+                android:startColor="#E61B3A5C"
+                android:centerColor="#E0102038"
+                android:endColor="#E6080B14" />
+            <corners android:radius="24dp" />
         </shape>
     </item>
+
+    <!-- 2. the rim: a 1dp blue-white highlight, the whole glass illusion -->
+    <item>
+        <shape android:shape="rectangle">
+            <stroke
+                android:width="1dp"
+                android:color="#66BFE4FF" />
+            <corners android:radius="24dp" />
+        </shape>
+    </item>
+
+    <!-- 3. a second, offset rim: light catching the top edge only -->
     <item
         android:left="1dp"
         android:right="1dp"
@@ -25,8 +38,26 @@
         <shape android:shape="rectangle">
             <stroke
                 android:width="1dp"
-                android:color="#1FFFFFFF" />
-            <corners android:radius="21dp" />
+                android:color="#33FFFFFF" />
+            <corners android:radius="23dp" />
+        </shape>
+    </item>
+
+    <!-- 4. the liquid glow: a soft blue core bleeding from the top left -->
+    <item
+        android:left="8dp"
+        android:right="8dp"
+        android:top="8dp"
+        android:bottom="8dp">
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="180dp"
+                android:centerX="0.25"
+                android:centerY="0.1"
+                android:startColor="#3D5EEAD4"
+                android:endColor="#001B3A5C" />
+            <corners android:radius="18dp" />
         </shape>
     </item>
 </layer-list>

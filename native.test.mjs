@@ -142,7 +142,12 @@ t("the widget layout is RemoteViews-legal: no custom views, no nesting surprises
   }
   // RemoteViews only supports a fixed set of views; anything else silently
   // fails to inflate at runtime, on the home screen, where nobody sees a log
-  const allowed = new Set(["LinearLayout", "TextView", "ImageView", "Button", "ImageButton", "FrameLayout", "RelativeLayout", "ProgressBar", "Chronometer"]);
+  // the documented RemoteViews set, including the adapter views (API 11+),
+  // which is what makes a scrollable list inside a widget possible at all.
+  // ViewFlipper is deliberately absent: it fails to inflate in a widget.
+  const allowed = new Set(["LinearLayout", "TextView", "ImageView", "Button", "ImageButton",
+    "FrameLayout", "RelativeLayout", "ProgressBar", "Chronometer",
+    "ListView", "GridView", "StackView", "AdapterViewFlipper"]);
   for (const tag of l.match(/<([A-Z][A-Za-z]+)/g) || []) {
     const name = tag.slice(1);
     assert.ok(allowed.has(name), `${name} is not allowed in RemoteViews`);
@@ -169,14 +174,62 @@ t("the widget prints 12-hour time, never 24-hour", () => {
   assert.ok(!/24/.test(l), "the layout should not mention a 24-hour clock");
 });
 
-t("the widget asks its launcher for exactly a 4x2 cell", () => {
+t("the widget asks its launcher for exactly a 4x3 cell", () => {
   const w = read("android/app/src/main/res/xml/widget_info.xml");
   assert.match(w, /android:targetCellWidth="4"/);
-  assert.match(w, /android:targetCellHeight="2"/);
+  // v81: three rows, because the quest list needs room to be scrollable
+  assert.match(w, /android:targetCellHeight="3"/);
   assert.match(w, /android:minWidth="250dp"/);
-  assert.match(w, /android:minHeight="110dp"/);
+  assert.match(w, /android:minHeight="150dp"/);
   // a preview layout means the picker shows the real thing, not a blank tile
   assert.match(w, /android:previewLayout="@layout\/widget_routine"/);
+});
+
+t("the widget's quest list is a real RemoteViewsService, not a fake scroll", () => {
+  const svc = read("android/app/src/main/java/sh/tasks/app/WidgetQuestService.java");
+  assert.match(svc, /extends RemoteViewsService/);
+  assert.match(svc, /implements RemoteViewsFactory/);
+  assert.match(svc, /onDataSetChanged\(\) \{ load\(\); \}/);
+  // a row must carry its own tap, or tapping it does nothing
+  assert.match(svc, /setOnClickFillInIntent\(R\.id\.quest_row, fill\)/);
+  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
+  assert.match(p, /setRemoteAdapter\(R\.id\.widget_quests, svc\)/);
+  assert.match(p, /setPendingIntentTemplate\(R\.id\.widget_quests/);
+  // a fill-in intent cannot be immutable, or the launcher cannot fill it in
+  assert.match(p, /FLAG_MUTABLE/);
+  const l = read("android/app/src/main/res/layout/widget_routine.xml");
+  assert.match(l, /<ListView/);
+});
+
+t("a tapped quest cannot complete a routine", () => {
+  const r = read("android/app/src/main/java/sh/tasks/app/CompleteReceiver.java");
+  assert.match(r, /if \("quest"\.equals\(kind\)\)/);
+  assert.match(r, /WidgetStore\.markQuestDoneLocally\(context, id\)/);
+  const st = read("android/app/src/main/java/sh/tasks/app/WidgetStore.java");
+  assert.match(st, /a\.put\("kind", kind == null \? "routine" : kind\)/);
+});
+
+t("the blocker tells the truth about what Android allows", () => {
+  const svc = read("android/app/src/main/java/sh/tasks/app/AppBlockService.java");
+  // it counts minutes and raises a wall; it never claims to force-stop
+  assert.match(svc, /UsageStatsManager/);
+  assert.match(svc, /startActivity\(wall\)/);
+  assert.match(svc, /CATEGORY_HOME/);
+  assert.ok(!/killBackgroundProcesses|forceStopPackage|ActivityManager\.kill/.test(svc),
+    "the blocker cannot force-stop another app, and must not pretend to");
+  // the limit resets at the same 03:00 the app uses
+  const bs = read("android/app/src/main/java/sh/tasks/app/BlockStore.java");
+  assert.match(bs, /3 \* 3600000L/);
+});
+
+t("the blocker's permissions are declared, and its service is bound-safe", () => {
+  const m = read("android/app/src/main/AndroidManifest.xml");
+  assert.match(m, /android\.permission\.PACKAGE_USAGE_STATS/);
+  assert.match(m, /android\.permission\.SYSTEM_ALERT_WINDOW/);
+  assert.match(m, /android:name="\.BlockWallActivity"/);
+  assert.match(m, /android:name="\.AppBlockService"[\s\S]{0,120}foregroundServiceType="specialUse"/);
+  // the quest list service is exported, but only the launcher may bind it
+  assert.match(m, /android:name="\.WidgetQuestService"[\s\S]{0,160}BIND_REMOTEVIEWS/);
 });
 
 t("the provider arms and disarms its one-minute alarm", () => {
@@ -191,7 +244,7 @@ t("the provider arms and disarms its one-minute alarm", () => {
 
 t("the tick queues AND redraws, so the widget never lies", () => {
   const c = read("android/app/src/main/java/sh/tasks/app/CompleteReceiver.java");
-  assert.match(c, /WidgetStore\.queueAction\(context, id, day\);/);
+  assert.match(c, /WidgetStore\.queueAction\(context, id, day, kind\);/);
   assert.match(c, /WidgetStore\.markDoneLocally\(context, id, day\);/);
   assert.match(c, /WidgetProvider\.refreshAll\(context\);/);
 });
@@ -268,7 +321,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5026000, `expected 5.26.0 -> 5026000, got ${v.join(".")}`);
+  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5027000, `expected 5.27.0 -> 5027000, got ${v.join(".")}`);
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

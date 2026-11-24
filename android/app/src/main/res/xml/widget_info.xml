@@ -4,7 +4,8 @@
      minWidth/minHeight are what the launcher reserves, expressed in dp at the
      old formula of 70dp per cell:
        4 cells wide  = 4 * 70 - 30 = 250dp
-       2 cells tall  = 2 * 70 - 30 = 110dp
+       3 cells tall  = 3 * 70 - 30 = 180dp standing, 150dp minimum
+     because the quest list below needs room to be scrollable at all
      targetCellWidth/Height do the same job on Android 12+ and are what modern
      launchers honour; both are set so the two rules agree.
 
@@ -13,11 +14,11 @@
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:initialLayout="@layout/widget_routine"
     android:minWidth="250dp"
-    android:minHeight="110dp"
+    android:minHeight="150dp"
     android:minResizeWidth="180dp"
-    android:minResizeHeight="110dp"
+    android:minResizeHeight="150dp"
     android:targetCellWidth="4"
-    android:targetCellHeight="2"
+    android:targetCellHeight="3"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen"
     android:description="@string/widget_description"

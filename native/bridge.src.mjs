@@ -35,6 +35,9 @@ const WidgetBridge = registerPlugin("WidgetBridge");
 /** v79: updates without reinstalling (BundlePlugin.java). Reads, downloads and
  *  removes ONE file: bundle.js. Nothing else about the app changes. */
 const Bundle = registerPlugin("Bundle");
+/** v81: app limits (BlockPlugin.java). Permission checks, settings deep links,
+ *  and the rule list -- the 15-second watch itself runs in Java. */
+const Block = registerPlugin("Block");
 
 const NIGHT_ID = 7303;      // 03:0x -- one fixed id, rescheduled, never stacked
 const SNAPSHOT = "tasksh-snapshot.json";
@@ -161,6 +164,55 @@ async function bundleClear() {
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
+/** v81: are the blocker's permissions granted, and what are the rules? */
+async function blockStatus() {
+  try {
+    const r = await Block.status();
+    return {
+      usage: !!(r && r.usage), overlay: !!(r && r.overlay), battery: !!(r && r.battery),
+      notification: !!(r && r.notification),
+      rules: (r && r.rules) || "{}", today: (r && r.today) || "",
+    };
+  } catch (e) {
+    return { usage: false, overlay: false, battery: false, notification: false, rules: "{}", today: "", error: String(e && e.message || e) };
+  }
+}
+
+/** Opens the one settings page that grants `which`. There is no in-app dialog
+ *  for Usage Access or overlay, so this is the only honest route. */
+async function blockOpen(which) {
+  try { const r = await Block.open({ which: String(which || "") }); return { ok: !!(r && r.ok) }; }
+  catch { return { ok: false }; }
+}
+
+/** Saves the limits and starts or stops the watcher. */
+async function blockSave(json) {
+  try {
+    const r = await Block.save({ json: String(json || "{}") });
+    return { ok: !!(r && r.ok), on: !!(r && r.on), usage: !!(r && r.usage) };
+  } catch (e) { return { ok: false, on: false, usage: false, error: String(e && e.message || e) }; }
+}
+
+/** Minutes used today per package, so the settings screen can be honest. */
+async function blockUsage() {
+  try {
+    const r = await Block.usage();
+    let minutes = {};
+    try { minutes = JSON.parse((r && r.minutes) || "{}"); } catch { minutes = {}; }
+    return { day: (r && r.day) || "", minutes };
+  } catch { return { day: "", minutes: {} }; }
+}
+
+/** "youtube" -> [{pkg,label}] from what is actually installed. */
+async function blockResolve(q) {
+  try {
+    const r = await Block.resolve({ q: String(q || "") });
+    let apps = [];
+    try { apps = JSON.parse((r && r.apps) || "[]"); } catch { apps = []; }
+    return apps;
+  } catch { return []; }
+}
+
 /** Disarms the night alarm. app.jsx calls this when penalties are turned off --
  *  without it the 03:01 notification kept firing for a rule that was disabled. */
 async function cancelNight() {
@@ -212,5 +264,6 @@ window.taskshNative = {
   scheduleNight, cancelNight, scheduleRoutine,
   pushWidget, takeWidgetActions,
   bundleInfo, bundleDownload, bundleClear,
+  blockStatus, blockOpen, blockSave, blockUsage, blockResolve,
   onResume, takeSharedText,
 };

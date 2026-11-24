@@ -4561,12 +4561,191 @@ none of the day's 3 daily quests: −${cfg.questFine} on one random tag`
   );
 }
 
+/** v81: app limits — the honest version of "full control".
+ *
+ *  Android will not let an ordinary app force-stop another, so what this does
+ *  is: watch how long an app is in front (Usage Access), and when you pass the
+ *  limit it puts a wall over the screen and sends you home. The limit resets at
+ *  the same 03:00 the rest of the app uses.
+ *
+ *  Every toggle here opens a real Android settings page, because Usage Access
+ *  and "draw over other apps" have no in-app dialog. If a permission is
+ *  missing the button says so instead of pretending to work.
+ */
+function AppLimitsRow() {
+  const [status, setStatus] = useState(null);
+  const [limits, setLimits] = useState([]);
+  const [on, setOn] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState([]);
+  const [used, setUsed] = useState({});
+  const [msg, setMsg] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const refresh = useCallback(() => {
+    const n = nativeShell();
+    if (!n || !n.blockStatus) { setStatus({ native: false }); return; }
+    Promise.resolve(n.blockStatus()).then((st) => {
+      setStatus(Object.assign({ native: true }, st));
+      try {
+        const r = JSON.parse(st.rules || "{}");
+        setOn(!!r.on);
+        setLimits(Array.isArray(r.limits) ? r.limits : []);
+      } catch { /* keep what is on screen */ }
+    }).catch(() => setStatus({ native: false }));
+    if (n && n.blockUsage) {
+      Promise.resolve(n.blockUsage()).then((u) => setUsed((u && u.minutes) || {})).catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const send = useCallback((nextOn, nextLimits) => {
+    const n = nativeShell();
+    if (!n || !n.blockSave) return;
+    const body = JSON.stringify({ v: 1, on: nextOn, limits: nextLimits });
+    Promise.resolve(n.blockSave(body)).then((r) => {
+      setMsg(r && r.ok ? (nextOn ? "watching" : "paused") : "could not save");
+      refresh();
+    }).catch(() => setMsg("could not save"));
+  }, [refresh]);
+
+  const openPage = (which) => {
+    const n = nativeShell();
+    if (!n || !n.blockOpen) return;
+    Promise.resolve(n.blockOpen(which)).then(() => {
+      setMsg("grant it, then come back");
+      // the settings page is a different screen; the app resumes into this one
+      setTimeout(refresh, 1200);
+    }).catch(() => {});
+  };
+
+  const search = (q) => {
+    setQuery(q);
+    const n = nativeShell();
+    if (!n || !n.blockResolve || q.trim().length < 2) { setMatches([]); return; }
+    Promise.resolve(n.blockResolve(q)).then((apps) => setMatches(apps || [])).catch(() => setMatches([]));
+  };
+
+  const addLimit = (app) => {
+    if (!app || limits.some((l) => l.pkg === app.pkg)) return;
+    const next = [...limits, { pkg: app.pkg, label: app.label, minutes: 30 }];
+    setLimits(next); setMatches([]); setQuery("");
+    send(on, next);
+  };
+  const setMinutes = (pkg, minutes) => {
+    const next = limits.map((l) => (l.pkg === pkg ? { ...l, minutes } : l));
+    setLimits(next);
+    send(on, next);
+  };
+  const removeLimit = (pkg) => {
+    const next = limits.filter((l) => l.pkg !== pkg);
+    setLimits(next);
+    send(on, next);
+  };
+
+  if (!status) return null;
+  if (!status.native) {
+    return (
+      <>
+        <div className="section-header"><span>APP-LIMITS</span></div>
+        <div className="note-card limits-card">
+          <pre className="note-body"><span className="limits-dim">only in the android app: a browser cannot close other apps.</span></pre>
+        </div>
+      </>
+    );
+  }
+
+  const ready = status.usage && status.overlay;
+
+  return (
+    <>
+    <div className="section-header"><span>APP-LIMITS</span></div>
+    <div className="note-card limits-card">
+      <div className="note-head">
+        <span className="note-prompt">~/limits</span>
+        <span className="note-when">{ready ? (on ? "watching" : "paused") : "2 permissions needed"}</span>
+      </div>
+      <pre className="note-body limits-dim">
+        close an app until tomorrow once you pass its daily limit.
+      </pre>
+
+      {!ready && (
+        <div className="limits-perms">
+          <button className={"limits-perm" + (status.usage ? " is-on" : "")} onClick={() => openPage("usage")}>
+            {status.usage ? "✓" : "○"} usage access
+          </button>
+          <button className={"limits-perm" + (status.overlay ? " is-on" : "")} onClick={() => openPage("overlay")}>
+            {status.overlay ? "✓" : "○"} draw over apps
+          </button>
+          {!status.battery && (
+            <button className="limits-perm" onClick={() => openPage("battery")}>○ battery exemption</button>
+          )}
+          <div className="limits-hint">
+            android hides these on sideloaded apps: app info → ⋮ → allow restricted settings, once.
+          </div>
+        </div>
+      )}
+
+      {ready && (
+        <>
+          <div className="limits-toggle-row">
+            <button
+              className={"limits-toggle" + (on ? " is-on" : "")}
+              onClick={() => { setOn(!on); send(!on, limits); }}
+            >{on ? "on" : "off"}</button>
+            <span className="limits-hint">resets at 3:00 AM, like the day does</span>
+          </div>
+
+          {limits.map((l) => (
+            <div className="limits-item" key={l.pkg}>
+              <div className="limits-item-main">
+                <span className="limits-item-name">{l.label || l.pkg}</span>
+                <span className="limits-item-used">
+                  {Math.round((used[l.pkg] || 0))} / {l.minutes} min
+                </span>
+              </div>
+              <div className="limits-item-actions">
+                {[15, 30, 45, 60, 90].map((m) => (
+                  <button
+                    key={m}
+                    className={"limits-chip" + (l.minutes === m ? " is-on" : "")}
+                    onClick={() => setMinutes(l.pkg, m)}
+                  >{m}m</button>
+                ))}
+                <button className="limits-remove" onClick={() => removeLimit(l.pkg)}>✕</button>
+              </div>
+            </div>
+          ))}
+
+          <input
+            className="limits-search"
+            placeholder="add an app — type a name"
+            value={query}
+            onChange={(e) => search(e.target.value)}
+            onFocus={() => setOpen(true)}
+          />
+          {matches.map((m) => (
+            <button className="limits-match" key={m.pkg} onClick={() => addLimit(m)}>
+              + {m.label}
+            </button>
+          ))}
+        </>
+      )}
+
+      {msg && <div className="limits-hint">{msg}</div>}
+    </div>
+    </>
+  );
+}
+
 function VaultView({ penaltyCtl }) {
   return (
     <div className="task-list vault-scroll">
       <CloudBackupRow />
       <PenaltyRow penaltyCtl={penaltyCtl} />
       <AppUpdateRow />
+      <AppLimitsRow />
       <LastCrashRow />
       <SoundRow />
       <StoreRow />
@@ -4748,7 +4927,30 @@ function to12h(hhmm) {
  *    "done"  — every routine today is ticked
  *    "empty" — no routines at all
  */
-function widgetModel(routines, nowMs = Date.now()) {
+/** v81: today's board, flattened for a widget that scrolls.
+ *
+ *  The widget cannot read the inventory, so the three cards are resolved to
+ *  plain strings here. `done` decides the tick, `slot` is kept so a tick can be
+ *  routed back to the right difficulty when the app applies it.
+ */
+function widgetQuests(daily, inventory, day) {
+  const picks = (daily && daily.picks) || {};
+  const done = (daily && daily.done) || [];
+  return (DIFFICULTIES || []).map((d) => {
+    const id = picks[d.key];
+    const item = id ? (inventory || []).find((t) => t.id === id) : null;
+    if (!item) return null;
+    return {
+      id: String(item.id),
+      label: String(item.text || "").slice(0, 70),
+      slot: d.key,
+      coins: Number(d.coins) || 0,
+      done: done.includes(item.id),
+    };
+  }).filter(Boolean);
+}
+
+function widgetModel(routines, nowMs = Date.now(), quests) {
   const list = (routines || [])
     .filter((r) => r && typeof r.time === "string")
     .slice()
@@ -4758,7 +4960,10 @@ function widgetModel(routines, nowMs = Date.now()) {
   const nowMin = timeToMinutes(nowIST);
   const done = list.filter((r) => (r.history || []).includes(day)).length;
 
-  const base = { v: 1, day, nowMin, total: list.length, done, updatedAt: nowMs };
+  const base = {
+    v: 1, day, nowMin, total: list.length, done, updatedAt: nowMs,
+    quests: Array.isArray(quests) ? quests : [],
+  };
 
   if (!list.length) return { ...base, state: "empty", next: null };
 
@@ -4843,15 +5048,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.26.0";
+const APP_VERSION = "5.27.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.26.0";
+const BUNDLE_VERSION = "5.27.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5026000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5027000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -16787,11 +16992,6 @@ function TodoApp() {
   inventoryRef.current = inventory;
   const tagsRef = useRef(null);
 
-  // v78: keep the home-screen widget in step with the routine list.
-  useEffect(() => {
-    pushWidgetModel(widgetModel(routines, Date.now()));
-  }, [routines]);
-
   /** Applies any tick pressed on the widget while this tab was closed.
    *
    *  The widget cannot write localStorage, so it queues {id, day} in native
@@ -16806,13 +17006,36 @@ function TodoApp() {
       let acts = [];
       try { acts = typeof raw === "string" ? JSON.parse(raw || "[]") : (raw || []); } catch { acts = []; }
       if (!Array.isArray(acts) || !acts.length) return;
-      setRoutines((prev) => prev.map((r) => {
-        const hit = acts.find((a) => String(a && a.id) === String(r.id));
-        if (!hit) return r;
-        const day = String(hit.day || getISTDateString(0));
-        if ((r.history || []).includes(day)) return r;
-        return { ...r, history: [...(r.history || []), day].slice(-60) };
-      }));
+
+      // v81: the queue carries two kinds now. A row tapped in the widget's
+      // quest list is a QUEST completion and belongs on the board -- routing it
+      // to the routine list would look for a routine with the same id and find
+      // nothing.
+      const quests = acts.filter((a) => (a && a.kind) === "quest");
+      const routines = acts.filter((a) => !(a && a.kind) || a.kind === "routine");
+
+      if (routines.length) {
+        setRoutines((prev) => prev.map((r) => {
+          const hit = routines.find((a) => String(a && a.id) === String(r.id));
+          if (!hit) return r;
+          const day = String(hit.day || getISTDateString(0));
+          if ((r.history || []).includes(day)) return r;
+          return { ...r, history: [...(r.history || []), day].slice(-60) };
+        }));
+      }
+
+      if (quests.length) {
+        // Add-only, exactly like the routine path: a tap can complete a quest,
+        // never un-complete one, so a double tap is harmless.
+        setInventory((prev) => prev.map((t) => {
+          const hit = quests.find((a) => String(a && a.id) === String(t.id));
+          if (!hit) return t;
+          const day = String(hit.day || getISTDateString(0));
+          if ((t.history || []).includes(day)) return t;
+          return { ...t, history: [...(t.history || []), day].slice(-366) };
+        }));
+      }
+
       sound.check();
     }).catch(() => {});
   }, [setRoutines]);
@@ -16841,6 +17064,15 @@ function TodoApp() {
   }, [settleNight]);
 
   const [daily, setDaily] = useState(() => loadStored(STORAGE_KEY_DAILY, { day: "", picks: {}, done: [] }));
+
+  // v78/v81: keep the home-screen widget in step with the routines AND today's
+  // quest board. Declared here, after `daily`, because the dependency array is
+  // evaluated during render -- above the declaration it is a temporal dead zone
+  // crash, not a warning.
+  useEffect(() => {
+    pushWidgetModel(widgetModel(routines, Date.now(), widgetQuests(daily, inventory, getISTDateString(0))));
+  }, [routines, daily, inventory]);
+
 
   // Keep the day's drawn board so tomorrow's night can judge it. Records only
   // when the picks actually change, so this is a no-op on every other render.
@@ -19142,6 +19374,57 @@ function TodoApp() {
           padding: 4px 12px;
         }
         .undo-toast-btn:active { background: rgba(94,234,212,0.12); }
+
+        /* v81: app limits. Terminal panel, chips for the minute presets. */
+        .limits-card { padding-bottom: 12px; }
+        .limits-dim { color: var(--muted); font-size: 10px; line-height: 1.6; }
+        .limits-perms { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .limits-perm {
+          background: transparent; border: 1px solid var(--border); border-radius: 8px;
+          color: var(--muted); cursor: pointer; padding: 6px 11px;
+          font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+        }
+        .limits-perm.is-on { border-color: var(--accent); color: var(--accent); }
+        .limits-hint {
+          width: 100%; color: var(--muted); font-family: var(--font-mono);
+          font-size: 9px; line-height: 1.6; margin-top: 6px;
+        }
+        .limits-toggle-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+        .limits-toggle {
+          background: transparent; border: 1px solid var(--border); border-radius: 999px;
+          color: var(--muted); cursor: pointer; padding: 5px 16px;
+          font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em;
+        }
+        .limits-toggle.is-on { border-color: var(--accent); color: var(--accent); background: rgba(94,234,212,0.10); }
+        .limits-item {
+          margin-top: 10px; padding: 9px 10px;
+          border: 1px solid var(--border); border-radius: 9px; background: rgba(255,255,255,0.02);
+        }
+        .limits-item-main { display: flex; justify-content: space-between; gap: 8px; }
+        .limits-item-name { font-size: 12px; color: var(--ink); }
+        .limits-item-used { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+        .limits-item-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; align-items: center; }
+        .limits-chip {
+          background: transparent; border: 1px solid var(--border); border-radius: 7px;
+          color: var(--muted); cursor: pointer; padding: 3px 8px;
+          font-family: var(--font-mono); font-size: 9px;
+        }
+        .limits-chip.is-on { border-color: var(--accent); color: var(--accent); }
+        .limits-remove {
+          margin-left: auto; background: transparent; border: 0; color: #F0576B;
+          cursor: pointer; font-size: 12px; padding: 0 4px;
+        }
+        .limits-search {
+          width: 100%; margin-top: 12px; padding: 9px 11px;
+          background: #0B0D10; border: 1px solid var(--border); border-radius: 8px;
+          color: var(--ink); font-family: var(--font-mono); font-size: 11px;
+        }
+        .limits-match {
+          display: block; width: 100%; text-align: left; margin-top: 6px;
+          background: rgba(94,234,212,0.06); border: 1px solid var(--border);
+          border-radius: 8px; color: var(--ink); cursor: pointer; padding: 8px 11px;
+          font-family: var(--font-mono); font-size: 11px;
+        }
 
         /* v78: the update pill. Sits at the BOTTOM, because the top of the
            screen already has the undo toast and the header. */

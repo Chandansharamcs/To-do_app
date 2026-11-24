@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v81`** | 2026-11-24 | liquid blue glass, a scrollable quest list in the widget, and app limits that actually close things |
 | **`v80`** | 2026-11-24 | the widget the first real phone found: countdown, 12-hour, a tick that works, and a face |
 | **`v79`** | 2026-10-20 | updates without reinstalling: the app itself is 1.1 MB and replaces itself |
 | **`v78`** | 2026-10-20 | a real home-screen widget, and an update that is a tap rather than a login |
@@ -1525,6 +1526,54 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-11-24 — `tasksh-v81`**
+
+Three things he asked for, and one of them needed a correction before it could
+be built honestly.
+
+- **The widget's quest list scrolls, and ticking a row ticks the quest.** A
+  `ListView` in a widget cannot be filled by the widget: the launcher asks a
+  `RemoteViewsService` for rows whenever it likes. So `WidgetQuestService`
+  builds them from the same pushed model, each row carrying a fill-in intent,
+  and `CompleteReceiver` routes the tap back as `kind: "quest"` so a quest
+  completion can never be mistaken for a routine with the same id. The app
+  drains both kinds through one add-only queue.
+
+- **Liquid blue glass, and an honest note about the animation he asked for.**
+  `RemoteViews` has no animator and `ViewFlipper` fails to inflate inside a
+  widget — both were tried and rejected by the test that pins the view set.
+  What ships is the launcher's own update transition plus a genuine glass
+  treatment: a diagonal blue-black sheen, a blue-white rim, an offset second
+  rim for the light on the top edge, and a radial blue glow bleeding from the
+  top left. Four cheap shapes, no blur, and it reads as depth.
+
+- **App limits: "use YouTube 40 minutes and it closes until tomorrow."** This
+  needed saying plainly first — Android does not let an ordinary app
+  force-stop another one. What is possible, and now built: `UsageStats` says
+  what is in front and for how long; a foreground service polls every 15
+  seconds; when a limit is passed it raises a full-screen wall
+  (`BlockWallActivity`) and sends the phone home. The wall is dismissible only
+  by leaving, never by tapping through it. Limits reset at the same **03:00**
+  the rest of the app uses, not at midnight.
+
+- **Permissions are named, not assumed.** Usage Access and "draw over other
+  apps" have no in-app dialog, so the settings panel shows exactly which are
+  missing and opens the right settings page for each, including the Android 13
+  "allow restricted settings" path for sideloaded apps.
+
+- **The widget is 4x3 now**, not 4x2: the quest list needs room to be a list.
+
+Tests: **26 suites / 867 unit** (`widget` 34 → 38 with the board-to-rows and
+quest-routing rules, `native` 35 → 39 with the RemoteViewsService, the
+"No force-stop" assertion and the permission declarations), browser **230**.
+The two guards that caught the most this round were the XML comment scanner and
+the RemoteViews view allow-list — both flagged my own new code, not old code.
+
+Honest limits: the blocker has never run against a real Usage Access grant, and
+sideloaded apps need "allow restricted settings" before those toggles work.
+
+---
 
 **2026-11-24 — `tasksh-v80`**
 

@@ -21,6 +21,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(WidgetPushPlugin.class);
         // v79: updates without reinstalling. Downloads bundle.js, nothing else.
         registerPlugin(BundlePlugin.class);
+        // v81: app limits -- permission checks, settings links, rule saving.
+        registerPlugin(BlockPlugin.class);
         super.onCreate(savedInstanceState);
 
         // v79: the app inside the APK is a shell that loads bundle.js. If a

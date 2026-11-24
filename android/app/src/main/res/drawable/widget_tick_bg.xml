@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v80: the tick, as a round button in the same hairline language. -->
+<!-- v81: the tick, a round glass bead. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="#265EEAD4" />
+    <gradient
+        android:type="linear"
+        android:angle="315"
+        android:startColor="#4D5EEAD4"
+        android:endColor="#1A1B3A5C" />
     <stroke
         android:width="1dp"
-        android:color="#8C5EEAD4" />
+        android:color="#B3BFE4FF" />
 </shape>

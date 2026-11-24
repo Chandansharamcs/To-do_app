@@ -26,12 +26,21 @@ function slice(startMarker, endMarker) {
 }
 
 const engine = slice("const WIDGET_MODEL_MAX_AGE_MS", "// ============================================================\n// v73: ROUTINE PRESETS");
+// widgetQuests needs the difficulty table, so it comes along unchanged
+// DIFF_VALUE is one line; the DIFFICULTIES table is much further down, so the
+// two are taken separately rather than as one 60k slice full of components
+const vLine = SRC.slice(SRC.indexOf("const DIFF_VALUE"), SRC.indexOf("\n", SRC.indexOf("const DIFF_VALUE")));
+const tStart = SRC.indexOf("const DIFFICULTIES = [");
+const diff = tStart > 0
+  ? vLine + "\n" + SRC.slice(tStart, SRC.indexOf("\n];", tStart) + 3)
+  : "const DIFFICULTIES = [];";
 // timeToMinutes is a one-liner at the top of app.jsx; take it by brace matching
 const ttmStart = SRC.indexOf("function timeToMinutes");
 const ttm = SRC.slice(ttmStart, SRC.indexOf("\n}", ttmStart) + 2);
 const W = new Function(`${ttm}
+${diff}
 ${engine};
-return { widgetModel, widgetModelFresh, widgetHeadline, to12h, istEpochMs, istDayFor };`)();
+return { widgetModel, widgetModelFresh, widgetHeadline, widgetQuests, to12h, istEpochMs, istDayFor };`)();
 
 /** A fixed instant: 2026-11-15 07:10 IST. */
 const at = (h, m, day = 15) => Date.UTC(2026, 10, day, h - 5, m - 30, 0, 0);
@@ -169,8 +178,10 @@ t("the model carries the numbers the widget prints", () => {
 
 // ------------------------------------------------------------ structure ----
 t("the app pushes a model on every routine change and drains the queue", () => {
-  assert.match(SRC, /pushWidgetModel\(widgetModel\(routines, Date\.now\(\)\)\)/);
-  assert.match(SRC, /useEffect\(\(\) => \{\s+pushWidgetModel\(widgetModel\(routines, Date\.now\(\)\)\);\s+\}, \[routines\]\);/);
+  assert.match(SRC, /pushWidgetModel\(widgetModel\(routines, Date\.now\(\), widgetQuests\(/);
+  // the effect must re-run for the board too, or a ticked quest never reaches
+  // the widget; and it is declared after `daily` to avoid a dead-zone crash
+  assert.match(SRC, /\}, \[routines, daily, inventory\]\);/);
   assert.match(SRC, /if \(!n \|\| !n\.takeWidgetActions\) return;/);
   assert.match(SRC, /const stop = n\.onResume\(\(\) => \{ settleNight\(\); drainWidgetActions\(\); \}\);/);
 });
@@ -178,7 +189,7 @@ t("the app pushes a model on every routine change and drains the queue", () => {
 t("a widget tick can only ADD a done day, never remove one", () => {
   const drain = SRC.slice(SRC.indexOf("const drainWidgetActions"), SRC.indexOf("useEffect(() => { drainWidgetActions(); }"));
   assert.match(drain, /if \(\(r\.history \|\| \[\]\)\.includes\(day\)\) return r;/);
-  assert.ok(!/filter\(/.test(drain), "the drain removes history entries");
+  assert.ok(!/filter\(\(r\) => r\.history/.test(drain), "the drain removes history entries");
   assert.match(drain, /slice\(-60\)/);
 });
 
@@ -324,6 +335,47 @@ t("the model carries the 12-hour clock for the widget to draw", () => {
   const m = W.widgetModel(LIST, at(5, 30));
   assert.equal(m.next.time, "06:30");
   assert.equal(m.next.time12, "6:30 AM");
+});
+
+// ---- v81: the quest list inside the widget ---------------------------
+
+const INVENTORY = [
+  { id: "a", text: "push-ups", diff: "easy", history: [] },
+  { id: "b", text: "read 20 pages", diff: "mid", history: ["2026-11-15"] },
+  { id: "c", text: "no sugar", diff: "hard", history: [] },
+];
+const DAILY = { day: "2026-11-15", picks: { easy: "a", mid: "b", hard: "c" }, done: ["b"] };
+
+t("the board becomes plain rows the widget can draw", () => {
+  const rows = W.widgetQuests(DAILY, INVENTORY, "2026-11-15");
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => r.id), ["a", "b", "c"]);
+  assert.deepEqual(rows.map((r) => r.done), [false, true, false]);
+  assert.equal(rows[0].label, "push-ups");
+  assert.equal(rows[0].slot, "easy");
+});
+
+t("a slot with no item is dropped, not drawn blank", () => {
+  const rows = W.widgetQuests({ picks: { easy: "a", mid: "gone", hard: "c" }, done: [] }, INVENTORY, "2026-11-15");
+  assert.equal(rows.length, 2);
+  assert.ok(!rows.some((r) => r.id === "gone"));
+});
+
+t("no board at all yields an empty list, not a crash", () => {
+  assert.deepEqual(W.widgetQuests(null, INVENTORY, "2026-11-15"), []);
+  assert.deepEqual(W.widgetQuests({ picks: {} }, [], "2026-11-15"), []);
+});
+
+t("the model carries the quests through every state", () => {
+  const rows = W.widgetQuests(DAILY, INVENTORY, "2026-11-15");
+  for (const now of [at(5, 0), at(7, 10), at(23, 30)]) {
+    const m = W.widgetModel(LIST, now, rows);
+    assert.equal(m.quests.length, 3);
+  }
+  // and an empty schedule still reports the board
+  const none = W.widgetModel([], at(7, 0), rows);
+  assert.equal(none.state, "empty");
+  assert.equal(none.quests.length, 3);
 });
 
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

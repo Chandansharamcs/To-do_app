@@ -24,14 +24,23 @@ public class CompleteReceiver extends BroadcastReceiver {
 
         String id = intent.getStringExtra("id");
         String day = intent.getStringExtra("day");
+        // v81: a tapped quest row arrives through a fill-in intent, which puts
+        // its extras under different names. Both end up in the same queue.
+        String kind = intent.getStringExtra("kind");
+        if (kind == null) kind = "routine";
+        if ("quest".equals(kind)) {
+            id = intent.getStringExtra(WidgetProvider.EXTRA_QUEST_ID);
+            if (id == null) id = intent.getStringExtra("questId");
+        }
         if (id == null || id.isEmpty() || day == null || day.isEmpty()) return;
 
         // The tap is harmless when the routine is already ticked: markDoneLocally
         // is idempotent and the app de-duplicates by day. Feedback still matters
         // -- a tap that produces nothing at all reads as a broken widget -- so
         // the panel always redraws and the app is never opened from here.
-        WidgetStore.queueAction(context, id, day);
-        WidgetStore.markDoneLocally(context, id, day);
+        WidgetStore.queueAction(context, id, day, kind);
+        if ("quest".equals(kind)) WidgetStore.markQuestDoneLocally(context, id);
+        else WidgetStore.markDoneLocally(context, id, day);
         WidgetProvider.refreshAll(context);
     }
 }
