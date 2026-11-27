@@ -460,4 +460,47 @@ t("the icons come from the OS, cropped small, and never break the list", () => {
   assert.match(b, /blockStatus, blockOpen, blockSave, blockUsage, blockResolve, blockApps,/);
 });
 
+// ---- v84: storage is measured, and a restore is verified ----------------
+
+t("storage inventory counts every key in real bytes and admits the ceiling", () => {
+  const src = slice("function storageInventory", "function backupDepth");
+  assert.match(src, /k\.startsWith\("tasksh\."\)/);
+  assert.match(src, /new Blob\(\[v\]\)\.size/, "sizes must be bytes, not characters");
+  assert.match(SRC, /const STORAGE_CAP_BYTES = 5000000;/);
+});
+
+t("the backup depth counts the seven-day marks, which is what came back blank", () => {
+  const src = slice("function backupDepth", "function verifyRestore");
+  assert.match(src, /STORAGE_KEY_ROUTINES/);
+  assert.match(src, /STORAGE_KEY_INVENTORY/);
+  assert.match(src, /STORAGE_KEY_HABITS/);
+  // history is an array of day marks on each item, not a key of its own
+  assert.match(src, /Array\.isArray\(it\.history\)/);
+  assert.match(src, /routineDays/);
+  assert.match(src, /questDays/);
+});
+
+t("a restore reloads at once and never trusts itself", () => {
+  const src = slice("const applyRestore", "const now = Date.now();");
+  assert.match(src, /verifyRestore\(preview\.store\)/);
+  assert.ok(!/setTimeout\(\(\) => window\.location\.reload/.test(src),
+    "a delayed reload leaves the old state mounted, and it writes itself back");
+  assert.match(src, /window\.location\.replace\(window\.location\.href\)/);
+  assert.match(src, /if \(bad\.length\)/);
+});
+
+t("the verification compares what is really in storage", () => {
+  const src = slice("function verifyRestore", "function fmtAgo");
+  assert.match(src, /localStorage\.getItem\(k\)/);
+  assert.match(src, /got\.length !== String\(store\[k\]\)\.length/);
+  assert.match(src, /STORAGE_KEY_DEVICE_ID \|\| k === STORAGE_KEY_CLOUD/);
+});
+
+t("the vault shows both the meter and the last restore", () => {
+  assert.match(SRC, /<StorageRow cloudOn=/);
+  assert.match(SRC, /<RestoreReportRow \/>/);
+  assert.match(SRC, /<CloudBackupRow \/>/);
+  assert.match(SRC, /sessionStorage\.setItem\("tasksh\.restored\.v1"/);
+});
+
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

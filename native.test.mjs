@@ -154,10 +154,18 @@ t("the widget layout is RemoteViews-legal: no custom views, no nesting surprises
   }
 });
 
-t("the tick is never hidden, and tapping the panel always opens the app", () => {
+t("the tick is hidden only while there is no model, and every tap has a target", () => {
   const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
-  // v80: a button that vanishes reads as a broken widget -- that is what he hit
-  assert.ok(!/setViewVisibility\(R\.id\.widget_tick, View\.GONE\)/.test(p), "the tick can disappear again");
+  // v84: exactly one hide, in the stale branch. A tick shown over a model that
+  // cannot complete anything is a lie; a tick that vanishes mid-routine is what
+  // he called broken in v80.
+  const gones = (p.match(/setViewVisibility\(R\.id\.widget_tick, View\.GONE\)/g) || []).length;
+  assert.equal(gones, 1, `the tick can disappear ${gones} times, expected only the stale branch`);
+  const stale = p.slice(p.indexOf("if (m == null || !fresh(m))"), p.indexOf("long now = System.currentTimeMillis();"));
+  assert.match(stale, /setViewVisibility\(R\.id\.widget_tick, View\.GONE\)/, "the stale branch is the hidable one");
+  // and it is hidden nowhere else
+  const rest = p.slice(p.indexOf("long now = System.currentTimeMillis();"));
+  assert.ok(!/setViewVisibility\(R\.id\.widget_tick, View\.GONE\)/.test(rest), "the tick disappears mid-model");
   assert.match(p, /setViewVisibility\(R\.id\.widget_tick, View\.VISIBLE\)/);
   // every branch that draws gives the panel and the tick somewhere to go
   assert.match(p, /setOnClickPendingIntent\(R\.id\.widget_root, openApp\(context\)\)/);
@@ -185,20 +193,23 @@ t("the widget asks its launcher for exactly a 4x3 cell", () => {
   assert.match(w, /android:previewLayout="@layout\/widget_routine"/);
 });
 
-t("the widget's quest list is a real RemoteViewsService, not a fake scroll", () => {
-  const svc = read("android/app/src/main/java/sh/tasks/app/WidgetQuestService.java");
-  assert.match(svc, /extends RemoteViewsService/);
-  assert.match(svc, /implements RemoteViewsFactory/);
-  assert.match(svc, /onDataSetChanged\(\) \{ load\(\); \}/);
-  // a row must carry its own tap, or tapping it does nothing
-  assert.match(svc, /setOnClickFillInIntent\(R\.id\.quest_row, fill\)/);
-  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
-  assert.match(p, /setRemoteAdapter\(R\.id\.widget_quests, svc\)/);
-  assert.match(p, /setPendingIntentTemplate\(R\.id\.widget_quests/);
-  // a fill-in intent cannot be immutable, or the launcher cannot fill it in
-  assert.match(p, /FLAG_MUTABLE/);
+t("the widget has no list at all, because the list was the glitch", () => {
+  // v84: the ListView was filled by a RemoteViewsService -- a second refresh
+  // path, at the launcher's pace, disagreeing with the provider's redraw.
+  // Removed, service and all. Do not reintroduce scrolling here.
   const l = read("android/app/src/main/res/layout/widget_routine.xml");
-  assert.match(l, /<ListView/);
+  assert.ok(!/<ListView/.test(l), "the glitching list is back");
+  assert.ok(!/widget_quests/.test(l), "a removed list view is still in the layout");
+  const p = read("android/app/src/main/java/sh/tasks/app/WidgetProvider.java");
+  assert.ok(!/setRemoteAdapter/.test(p), "the provider still wires an adapter");
+  assert.ok(!/questTemplate/.test(p), "a fill-in intent is still built for nothing");
+  assert.ok(!/R\.id\.widget_quests/.test(p), "the provider still names a removed view");
+  // the count of what is left still rides in the corner
+  assert.match(p, /left \+ "q"/);
+  // and the service file is gone rather than orphaned
+  let gone = false;
+  try { read("android/app/src/main/java/sh/tasks/app/WidgetQuestService.java"); } catch { gone = true; }
+  assert.ok(gone, "WidgetQuestService.java is dead code and must be deleted");
 });
 
 t("a tapped quest cannot complete a routine", () => {
@@ -228,6 +239,20 @@ t("the app picker hands icons across the bridge as small PNGs", () => {
   assert.match(p, /o\.put\("minutes", limit\)/);
 });
 
+t("the notification icon is a tick with three dots in a square frame", () => {
+  const v = read("android/app/src/main/res/drawable/ic_stat_icon.xml");
+  // Android draws a small icon as a MASK: alpha only, colour ignored.
+  assert.match(v, /<vector/);
+  assert.match(v, /android:fillColor="#FFFFFFFF"/);
+  // the frame, three dots and the tick, and nothing else
+  assert.equal((v.match(/<path/g) || []).length, 5, "expected frame + 3 dots + tick");
+  // a frame is drawn as an outline: the middle of the shape is cut out with a
+  // second sub path, so the inside stays transparent
+  assert.match(v, /1\.8,1\.8 0 0 1,1\.8 1\.8/);
+  // and this is the icon notifications actually use
+  assert.match(read("native/bridge.src.mjs"), /smallIcon: "ic_stat_icon"/);
+});
+
 t("the blocker tells the truth about what Android allows", () => {
   const svc = read("android/app/src/main/java/sh/tasks/app/AppBlockService.java");
   // it counts minutes and raises a wall; it never claims to force-stop
@@ -248,7 +273,8 @@ t("the blocker's permissions are declared, and its service is bound-safe", () =>
   assert.match(m, /android:name="\.BlockWallActivity"/);
   assert.match(m, /android:name="\.AppBlockService"[\s\S]{0,120}foregroundServiceType="specialUse"/);
   // the quest list service is exported, but only the launcher may bind it
-  assert.match(m, /android:name="\.WidgetQuestService"[\s\S]{0,160}BIND_REMOTEVIEWS/);
+  assert.ok(!/WidgetQuestService/.test(m), "the list service is gone and must stay unexported");
+  assert.ok(!/BIND_REMOTEVIEWS/.test(m), "nothing is launcher-bindable in this app any more");
 });
 
 t("the provider arms and disarms its one-minute alarm", () => {
@@ -340,7 +366,10 @@ t("the version code can only climb, and it comes from package.json", () => {
   assert.match(g, /versionName pkg\.version/);
   // and the arithmetic is right for the current version
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
-  assert.equal(v[0] * 1000000 + v[1] * 1000 + v[2], 5029000, `expected 5.29.0 -> 5029000, got ${v.join(".")}`);
+  const code = v[0] * 1000000 + v[1] * 1000 + v[2];
+  // v84: 5.30.0. The arithmetic is the point; the exact number is the release's.
+  assert.equal(code, 5030000, `expected 5.30.0 -> 5030000, got ${v.join(".")}`);
+  assert.equal(JSON.parse(read("version.json")).versionCode, code, "version.json disagrees with package.json");
 });
 
 t("the snapshot is scoped to the app's own keys and nothing else", () => {

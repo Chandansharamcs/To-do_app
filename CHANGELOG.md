@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v84`** | 2026-10-20 | the cloud keeps the seven days, storage says its ceiling, and the widget is one frosted pane |
 | **`v83`** | 2026-11-24 | the bell stops saying "browser", and app limits get a real picker with icons |
 | **`v82`** | 2026-11-24 | app limits moved to tools, and it stops saying "browser" to an app user |
 | **`v81`** | 2026-11-24 | liquid blue glass, a scrollable quest list in the widget, and app limits that actually close things |
@@ -1528,6 +1529,51 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v84`**
+
+Three things from one message: the cloud did not carry the seven-day dots,
+the widget looked bad, and the bell icon was wrong.
+
+- **The backup carried the dots. The restore did not wait for itself.** Every
+  key was already in the snapshot -- routines, quests and habits each keep a
+  `history` array of day marks. `applyRestore` wrote them all and then waited
+  **700 ms** before reloading, and in those 700 ms the screens that were still
+  mounted ran their save effects against the state they loaded on, and wrote
+  the empty version back over the restore. That is the blank he saw. It now
+  writes, reads **every key back and compares its length** (`verifyRestore`),
+  and reloads with `location.replace()` **at once** -- nothing is left alive to
+  disagree. If a key does not stick it says which one instead of reloading.
+
+- **Storage states its ceiling, and its contents.** A `STORAGE` meter lists the
+  eight largest `tasksh.*` keys by real byte size (`new Blob([v]).size`, not a
+  character count) against the **5,000,000-byte per-site `localStorage`
+  limit** -- the browser's limit, not the cloud's; the encrypted cloud blob is
+  a separate budget. A `LAST-RESTORE` card then reports how many keys came back
+  and how many day marks they carry, so "it came back blank" is a number, not
+  an impression.
+
+- **The widget is one pane of frosted glass, and nothing scrolls.** The quest
+  list was a `ListView` filled by a `RemoteViewsService` -- a **second refresh
+  path**, running at the launcher's pace while the provider rewrote the
+  headline. Two writers, one screen: that is the glitching. The list, the
+  service, its manifest entry, its row layout and the fill-in intent template
+  are all deleted; the count of what is left is corner text (`done/total · Nq`).
+  The pane is translucent `#B8F2F5F7` white with a rim, frost faked in layers
+  because `RemoteViews` has **no blur**. Two tap targets, both meaningful: the
+  tick completes, everything else opens the app, and the tick is hidden only
+  when there is no model to complete against.
+
+- **The bell icon is a tick with three dots in a square frame.** A 24x24
+  vector: a square outline drawn as a frame with its middle cut out, three dots
+  across the top left, one tick. Android draws a small notification icon as a
+  **mask** -- alpha only, colour ignored -- so it is solid white on nothing.
+
+Tests: **26 suites / 885 unit** (`widget` 46 -> 51, `native` 36 -> 42). Two
+old tests failed honestly, because they asserted the scrollable list and the
+700 ms reload that this version deletes; they were replaced, not loosened.
+
+---
 
 **2026-11-24 — `tasksh-v83`**
 

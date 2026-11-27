@@ -4816,10 +4816,124 @@ function AppLimitsRow({ compact = false }) {
   );
 }
 
+/** v84: what is in storage, and what the ceiling is.
+ *
+ *  Two questions he asked in one place: "does it hold everything" and "what is
+ *  the maximum". Both are measurable, so both are measured -- sizes are taken
+ *  from the exact serialised value with a Blob, because a character count is
+ *  not a byte count and localStorage counts characters.
+ *
+ *  The ceiling is the BROWSER's, not the cloud's: about 5 MB per site for the
+ *  whole origin, all keys together. The backup blob is a different budget --
+ *  it is encrypted and lives on the worker.
+ */
+const STORAGE_CAP_BYTES = 5000000;
+const STORAGE_TOP_N = 8;
+
+function StorageRow({ cloudOn }) {
+  const [inv, setInv] = useState(() => storageInventory());
+  const [deep, setDeep] = useState(() => backupDepth(collectStore(true, [])));
+
+  useEffect(() => {
+    const onStorage = () => {
+      setInv(storageInventory());
+      setDeep(backupDepth(collectStore(true, [])));
+    };
+    // every screen writes at its own pace; re-measuring on the tab coming back
+    // is enough, and it costs one pass over a handful of keys
+    const t = setInterval(onStorage, 4000);
+    window.addEventListener("focus", onStorage);
+    document.addEventListener("visibilitychange", onStorage);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("focus", onStorage);
+      document.removeEventListener("visibilitychange", onStorage);
+    };
+  }, []);
+
+  const top = inv.rows.slice(0, STORAGE_TOP_N);
+  const rest = inv.rows.length - top.length;
+
+  return (
+    <>
+      <div className="section-header"><span>STORAGE</span></div>
+      <div className="note-card storage-card">
+        <div className="note-head">
+          <span className="note-prompt">~/local</span>
+          <span className="note-when">{inv.rows.length} keys</span>
+        </div>
+        <pre className="note-body">
+          {fmtSize(inv.bytes)} used of {fmtSize(inv.cap)} ({inv.pct}%)
+        </pre>
+        <div className="storage-bar">
+          <div className="storage-fill" style={{ width: `${Math.max(1, inv.pct)}%` }} />
+        </div>
+        <div className="storage-note">
+          the limit is the browser&apos;s — about {fmtSize(inv.cap)} per site, all
+          keys together. the cloud copy is separate and not capped by this.
+        </div>
+
+        <div className="storage-list">
+          {top.map((r) => (
+            <div className="storage-row" key={r.key}>
+              <span className="storage-key">{r.key.replace("tasksh.", "")}</span>
+              <span className="storage-size">{fmtSize(r.bytes)}</span>
+            </div>
+          ))}
+          {rest > 0 && <div className="storage-more">+{rest} smaller keys</div>}
+        </div>
+
+        <div className="storage-note storage-depth">
+          <span className="storage-depth-label">
+            {cloudOn ? "in every backup" : "would be backed up"}
+          </span>
+          {" "}{backupDepthLine(deep)}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** v84: what the last restore actually did.
+ *
+ *  The restore reloads the page, so it cannot report into its own screen --
+ *  it leaves a note in sessionStorage and this reads it on the next mount.
+ *  Without this card a restore that came back empty looks identical to one
+ *  that came back complete. */
+function RestoreReportRow() {
+  const [rep, setRep] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("tasksh.restored.v1") || "null"); } catch { return null; }
+  });
+  if (!rep) return null;
+  const d = rep.depth || {};
+  return (
+    <>
+      <div className="section-header"><span>LAST-RESTORE</span></div>
+      <div className="note-card update-card storage-card">
+        <div className="note-head">
+          <span className="note-prompt">~/restore</span>
+          <span className="note-when">{fmtAgo(rep.at, Date.now())}</span>
+        </div>
+        <pre className="note-body">
+          {rep.keys} keys written{"  ·  "}
+          {rep.bad ? `${rep.bad} did not stick` : "all verified"}
+        </pre>
+        <div className="storage-note">{backupDepthLine(d)}</div>
+        <div className="note-actions">
+          <button className="note-btn" onClick={() => { sound.click(); setRep(null); try { sessionStorage.removeItem("tasksh.restored.v1"); } catch {} }}>dismiss</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function VaultView({ penaltyCtl }) {
+  const cloudOn = !!readCloudConfig();
   return (
     <div className="task-list vault-scroll">
       <CloudBackupRow />
+      <RestoreReportRow />
+      <StorageRow cloudOn={cloudOn} />
       <PenaltyRow penaltyCtl={penaltyCtl} />
       <AppUpdateRow />
       <LastCrashRow />
@@ -5124,15 +5238,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.29.0";
+const APP_VERSION = "5.30.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.29.0";
+const BUNDLE_VERSION = "5.30.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5029000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5030000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -9559,6 +9673,89 @@ function collectStore(full, alwaysSkip) {
   return store;
 }
 
+/** v84: what storage actually holds, in real bytes.
+ *  localStorage counts characters, and UTF-16 characters are not bytes, so the
+ *  only honest measure is to weigh the exact serialised value. The ceiling is
+ *  the browser's, per site -- 5 MB -- and it is not the cloud's, which is why
+ *  a backup can be big while the store is still small, and vice versa.
+ *  (The constant lives next to StorageRow, so there is one number, not two.) */
+function storageInventory() {
+  const rows = [];
+  let bytes = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith("tasksh.")) continue;
+    const v = localStorage.getItem(k) || "";
+    let n = 0;
+    try { n = new Blob([v]).size; } catch { n = v.length * 2; }
+    bytes += n;
+    rows.push({ key: k, bytes: n });
+  }
+  rows.sort((a, b) => b.bytes - a.bytes);
+  return {
+    rows,
+    bytes,
+    cap: STORAGE_CAP_BYTES,
+    pct: Math.min(100, Math.round((bytes / STORAGE_CAP_BYTES) * 1000) / 10),
+  };
+}
+
+/** v84: how much history a backup really carries.
+ *
+ *  The seven-day dots are not a key of their own -- each routine, quest and
+ *  habit carries its own `history` array of `{d, t}` day marks. "Blank after
+ *  restore" is therefore a countable thing: count the marks and the count is
+ *  either the same as before or it is zero, and there is nothing to argue
+ *  about in between. */
+function backupDepth(store) {
+  const read = (k) => {
+    try { const v = JSON.parse(store[k]); return v; } catch { return null; }
+  };
+  const marks = (list) => {
+    if (!Array.isArray(list)) return 0;
+    let n = 0;
+    for (const it of list) {
+      if (it && Array.isArray(it.history)) n += it.history.length;
+    }
+    return n;
+  };
+  const routines = read(STORAGE_KEY_ROUTINES);
+  const quests = read(STORAGE_KEY_INVENTORY);
+  const habits = read(STORAGE_KEY_HABITS);
+  return {
+    routines: Array.isArray(routines) ? routines.length : 0,
+    routineDays: marks(routines),
+    quests: Array.isArray(quests) ? quests.length : 0,
+    questDays: marks(quests),
+    habits: Array.isArray(habits) ? habits.length : 0,
+    habitDays: marks(habits),
+  };
+}
+
+/** v84: one plain sentence for the vault, because a table of six numbers is
+ *  how a person stops reading. */
+function backupDepthLine(d) {
+  if (!d) return "";
+  const parts = [];
+  if (d.routines) parts.push(`${d.routines} routines · ${d.routineDays} marked days`);
+  if (d.quests) parts.push(`${d.quests} quests · ${d.questDays} marked days`);
+  if (d.habits) parts.push(`${d.habits} habits · ${d.habitDays} marked days`);
+  return parts.length ? parts.join("  ·  ") : "nothing to restore yet";
+}
+
+/** v84: reads every key back and compares it to what was meant to be there.
+ *  A restore that reports success without this is a restore that lies. */
+function verifyRestore(store) {
+  const bad = [];
+  for (const k of Object.keys(store || {})) {
+    if (!k.startsWith("tasksh.")) continue;
+    if (k === STORAGE_KEY_DEVICE_ID || k === STORAGE_KEY_CLOUD) continue;
+    const got = localStorage.getItem(k);
+    if (got == null || got.length !== String(store[k]).length) bad.push(k);
+  }
+  return bad;
+}
+
 /** The cloud snapshot. Always carries API keys (the point is a one-tap
  *  restore) but never the cloud config itself: a backup that contains its
  *  own decryption key is not encrypted. */
@@ -9789,9 +9986,10 @@ function CloudBackupRow() {
 
   const applyRestore = () => {
     if (!preview) return;
-    const written = applyRestoredStore(preview.store);
-    // Adopt the code that was just used, so this device keeps the same
-    // backup line instead of silently starting a second one.
+
+    // Adopt the code that was just used FIRST, so this device keeps the same
+    // backup line instead of silently starting a second one. The old order
+    // wrote it after the store, which a reload could beat.
     writeCloudConfig({
       id: preview.parsed.id,
       secret: preview.parsed.secret,
@@ -9799,8 +9997,30 @@ function CloudBackupRow() {
       lastSize: preview.rec.size || 0,
       lastError: null,
     });
-    setMsg({ type: "ok", text: `restored ${written} keys — reloading` });
-    setTimeout(() => window.location.reload(), 700);
+
+    const written = applyRestoredStore(preview.store);
+    const bad = verifyRestore(preview.store);
+
+    // Leave a note the next mount can read, because the screen is about to be
+    // replaced -- there is no state left to show a message in.
+    const depth = backupDepth(preview.store);
+    try {
+      sessionStorage.setItem("tasksh.restored.v1", JSON.stringify({
+        at: Date.now(), keys: written, bad: bad.length, depth,
+      }));
+    } catch {}
+
+    if (bad.length) {
+      // The one case worth not reloading for: say which keys did not stick.
+      setMsg({ type: "err", text: `${bad.length} of ${written} keys did not save: ${bad.slice(0, 3).join(", ")}` });
+      return;
+    }
+
+    // v84: no delay. The 700ms that used to sit here is exactly the window in
+    // which the still-mounted screens ran their save effects against the old
+    // state and wrote the empty version back over the restore -- that is why
+    // the seven-day dots came back blank. Replace, do not reload: no history.
+    window.location.replace(window.location.href);
   };
 
   const now = Date.now();
@@ -19519,6 +19739,21 @@ function TodoApp() {
           padding: 4px 12px;
         }
         .undo-toast-btn:active { background: rgba(94,234,212,0.12); }
+
+        /* v84: storage meter. Flat terminal colour, no glass -- the app is
+           dark terminal, and the widget is the only place glass is allowed. */
+        .storage-card .note-body { margin-bottom: 4px; }
+        .storage-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.10); margin: 8px 0 9px; overflow: hidden; }
+        .storage-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 240ms ease; }
+        .storage-note { color: var(--muted); font-size: 10px; line-height: 1.65; }
+        .storage-list { margin: 10px 0 8px; }
+        .storage-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .storage-row:last-child { border-bottom: none; }
+        .storage-key { font-family: var(--font-mono); font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .storage-size { font-family: var(--font-mono); font-size: 10px; color: var(--ink); flex: none; }
+        .storage-more { font-family: var(--font-mono); font-size: 9px; color: var(--muted); padding-top: 5px; opacity: 0.75; }
+        .storage-depth { margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .storage-depth-label { color: var(--accent); }
 
         /* v83: the app picker — a scrolling list of real icons, not a text box. */
         .limits-add {

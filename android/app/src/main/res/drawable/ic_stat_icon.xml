@@ -1,9 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v76: the small icon on the 03:01 notification. Android draws this as a
-     mask, so it must be a solid shape on transparency. Colour is ignored. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="24dp"
-    android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2A10,10 0,1 0,22 12A10,10 0,0 0,12 2M11,7h2v6h-2zM11,15h2v2h-2z"/>
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.8,3.4h14.4a1.8,1.8 0 0 1,1.8 1.8v14.4a1.8,1.8 0 0 1,-1.8 1.8h-14.4a1.8,1.8 0 0 1,-1.8 -1.8v-14.4a1.8,1.8 0 0 1,1.8 -1.8zM4.8,5.2a0.4,0.4 0 0 0,-0.4 0.4v14.4a0.4,0.4 0 0 0,0.4 0.4h14.4a0.4,0.4 0 0 0,0.4 -0.4v-14.4a0.4,0.4 0 0 0,-0.4 -0.4z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6.6,6.6a1.05,1.05 0 1 1,2.1 0a1.05,1.05 0 1 1,-2.1 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9.9,6.6a1.05,1.05 0 1 1,2.1 0a1.05,1.05 0 1 1,-2.1 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13.2,6.6a1.05,1.05 0 1 1,2.1 0a1.05,1.05 0 1 1,-2.1 0z" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9.9,15.6 L6.9,12.6 L5.6,13.9 L9.9,18.2 L18.2,9.9 L16.9,8.6 Z" />
 </vector>

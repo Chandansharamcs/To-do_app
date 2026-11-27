@@ -75,13 +75,6 @@
 
         <!-- v78: the tick button's PendingIntent. Not exported: only a
              PendingIntent this app created may complete a routine. -->
-        <!-- v81: fills the widget's scrollable quest list. Bound by the
-             launcher, so it is exported; it only reads what the app pushed. -->
-        <service
-            android:name=".WidgetQuestService"
-            android:exported="true"
-            android:permission="android.permission.BIND_REMOTEVIEWS" />
-
         <receiver
             android:name=".CompleteReceiver"
             android:exported="false">

@@ -1,20 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v81: the day-progress bar. Flat, blue, thin: a status line, not a chart. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@android:id/background">
         <shape android:shape="rectangle">
-            <solid android:color="#26FFFFFF" />
+            <solid android:color="#331E2A33" />
             <corners android:radius="2dp" />
         </shape>
     </item>
     <item android:id="@android:id/progress">
         <clip>
             <shape android:shape="rectangle">
-                <gradient
-                    android:type="linear"
-                    android:angle="0"
-                    android:startColor="#FF5EEAD4"
-                    android:endColor="#FF8FD8FF" />
+                <solid android:color="#FF1E2A33" />
                 <corners android:radius="2dp" />
             </shape>
         </clip>

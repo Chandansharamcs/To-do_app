@@ -1,12 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v81: the widget body.
-
-     Two halves in one pane: the routine above, a scrollable quest list below.
-     No ViewFlipper and no animator: neither is available to a widget, so the
-     movement he sees when the tick fires is the launcher's own update
-     transition, not something this layout can drive.
-
-     RemoteViews supports a fixed view set only; native.test.mjs pins the tags. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
@@ -15,10 +7,9 @@
     android:background="@drawable/widget_bg"
     android:paddingStart="16dp"
     android:paddingEnd="16dp"
-    android:paddingTop="12dp"
-    android:paddingBottom="10dp">
+    android:paddingTop="13dp"
+    android:paddingBottom="11dp">
 
-    <!-- when + progress counter -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -30,10 +21,10 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:maxLines="1"
             android:ellipsize="end"
-            android:textColor="#FF9BE7FF"
+            android:textColor="#99113A4A"
             android:text="tasks.sh" />
 
         <TextView
@@ -42,18 +33,15 @@
             android:layout_height="wrap_content"
             android:textSize="11sp"
             android:maxLines="1"
-            android:textColor="#99CFE8F5"
+            android:textColor="#801E2A33"
             android:text="" />
     </LinearLayout>
 
-    <!-- the routine. A ViewFlipper would have been the way to animate a state
-         change, but it is not in the RemoteViews view set and fails to inflate
-         on the home screen, so this stays a plain stack. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingTop="6dp">
+        android:paddingTop="7dp">
 
         <TextView
             android:id="@+id/widget_label"
@@ -62,8 +50,8 @@
             android:textSize="21sp"
             android:maxLines="2"
             android:ellipsize="end"
-            android:textColor="#FFF2FAFF"
-            android:text="—" />
+            android:textColor="#FF1E2A33"
+            android:text="-" />
 
         <TextView
             android:id="@+id/widget_sub"
@@ -72,8 +60,8 @@
             android:textSize="12sp"
             android:maxLines="1"
             android:ellipsize="end"
-            android:paddingTop="2dp"
-            android:textColor="#B3C8DCE8"
+            android:paddingTop="3dp"
+            android:textColor="#B3263A46"
             android:text="" />
     </LinearLayout>
 
@@ -82,39 +70,17 @@
         style="@android:style/Widget.Material.ProgressBar.Horizontal"
         android:layout_width="match_parent"
         android:layout_height="4dp"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="9dp"
         android:max="100"
         android:progress="0"
         android:progressDrawable="@drawable/widget_bar" />
-
-    <!-- today's board, scrollable -->
-    <TextView
-        android:id="@+id/widget_quest_head"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:textSize="9sp"
-        android:letterSpacing="0.18"
-        android:maxLines="1"
-        android:textColor="#8ABFE4FF"
-        android:text="QUESTS" />
-
-    <ListView
-        android:id="@+id/widget_quests"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="5dp"
-        android:divider="@null"
-        android:dividerHeight="0dp"
-        android:scrollbars="none" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="end"
-        android:layout_marginTop="6dp">
+        android:layout_marginTop="7dp">
 
         <ImageView
             android:id="@+id/widget_tick"
@@ -125,15 +91,4 @@
             android:contentDescription="mark this routine done"
             android:src="@drawable/widget_check" />
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/widget_quests_empty"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="5dp"
-        android:textSize="11sp"
-        android:maxLines="2"
-        android:textColor="#99C8DCE8"
-        android:text="no quests drawn today" />
 </LinearLayout>

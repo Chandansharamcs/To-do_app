@@ -38,7 +38,7 @@ public class WidgetProvider extends AppWidgetProvider {
 
     @Override
     public void onUpdate(Context context, AppWidgetManager mgr, int[] ids) {
-        for (int id : ids) mgr.updateAppWidget(id, build(context, id));
+        for (int id : ids) mgr.updateAppWidget(id, build(context));
     }
 
     @Override
@@ -68,7 +68,7 @@ public class WidgetProvider extends AppWidgetProvider {
         ComponentName me = new ComponentName(context, WidgetProvider.class);
         int[] ids = mgr.getAppWidgetIds(me);
         if (ids == null || ids.length == 0) return;
-        for (int id : ids) mgr.updateAppWidget(id, build(context, id));
+        for (int id : ids) mgr.updateAppWidget(id, build(context));
     }
 
     private static PendingIntent tickIntent(Context context) {
@@ -92,7 +92,7 @@ public class WidgetProvider extends AppWidgetProvider {
 
     // ---- drawing -------------------------------------------------------
 
-    static RemoteViews build(Context context, int widgetId) {
+    static RemoteViews build(Context context) {
         RemoteViews v = new RemoteViews(context.getPackageName(), R.layout.widget_routine);
         String raw = WidgetStore.readModel(context);
         JSONObject m = null;
@@ -105,12 +105,10 @@ public class WidgetProvider extends AppWidgetProvider {
             v.setTextViewText(R.id.widget_sub, "the widget reads what the app last pushed");
             v.setTextViewText(R.id.widget_count, "");
             v.setProgressBar(R.id.widget_progress, 100, 0, false);
+            // exactly one tap target while stale: the panel. a tick that
+            // cannot complete anything is a lie, so it is not shown at all.
             v.setOnClickPendingIntent(R.id.widget_root, openApp(context));
-            v.setOnClickPendingIntent(R.id.widget_tick, openApp(context));
-            v.setViewVisibility(R.id.widget_quests, View.GONE);
-            v.setViewVisibility(R.id.widget_quests_empty, View.VISIBLE);
-            v.setTextViewText(R.id.widget_quests_empty, "open tasks.sh to sync");
-            v.setTextViewText(R.id.widget_quest_head, "QUESTS");
+            v.setViewVisibility(R.id.widget_tick, View.GONE);
             return v;
         }
 
@@ -130,7 +128,7 @@ public class WidgetProvider extends AppWidgetProvider {
             v.setTextViewText(R.id.widget_sub, "");
             v.setViewVisibility(R.id.widget_tick, View.VISIBLE);
             v.setOnClickPendingIntent(R.id.widget_tick, openApp(context));
-            attachQuests(context, v, widgetId, m);
+            attachQuests(v, m);
             return v;
         }
 
@@ -163,45 +161,31 @@ public class WidgetProvider extends AppWidgetProvider {
                 context, next.optString("id", "w").hashCode(), ci, flags);
         v.setOnClickPendingIntent(R.id.widget_tick, pi);
 
-        attachQuests(context, v, widgetId, m);
+        attachQuests(v, m);
         return v;
     }
 
-    /** v81: hands the quest list to the launcher. A ListView in a widget is
-     *  filled by a RemoteViewsService at the launcher's pace, never by us. */
-    private static void attachQuests(Context context, RemoteViews v, int widgetId, JSONObject m) {
+    /** v84: the corner readout, and nothing else.
+     *
+     *  There used to be a ListView here, filled by a RemoteViewsService. That
+     *  is a SECOND refresh path -- the launcher asks the service for rows at
+     *  its own pace while this class rewrites the headline, and the two can
+     *  disagree in the middle of a redraw. That is what glitched. One writer,
+     *  one redraw: the count of what is left rides in the corner instead. */
+    private static void attachQuests(RemoteViews v, JSONObject m) {
         JSONArray q = m.optJSONArray("quests");
-        boolean any = q != null && q.length() > 0;
-        v.setViewVisibility(R.id.widget_quests, any ? View.VISIBLE : View.GONE);
-        v.setViewVisibility(R.id.widget_quests_empty, any ? View.GONE : View.VISIBLE);
-        if (!any) {
-            v.setTextViewText(R.id.widget_quests_empty, "no quests drawn today");
-            return;
-        }
         int left = 0;
-        for (int i = 0; i < q.length(); i++) {
-            JSONObject o = q.optJSONObject(i);
-            if (o != null && !o.optBoolean("done", false)) left++;
+        if (q != null) {
+            for (int i = 0; i < q.length(); i++) {
+                JSONObject o = q.optJSONObject(i);
+                if (o != null && !o.optBoolean("done", false)) left++;
+            }
         }
-        v.setTextViewText(R.id.widget_quest_head, left > 0 ? "QUESTS · " + left + " LEFT" : "QUESTS · ALL DONE");
-
-        Intent svc = new Intent(context, WidgetQuestService.class);
-        svc.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId);
-        svc.setData(android.net.Uri.parse(svc.toUri(Intent.URI_INTENT_SCHEME)));
-        v.setRemoteAdapter(R.id.widget_quests, svc);
-        // the rows carry their own tap, so the list itself needs no intent
-        v.setPendingIntentTemplate(R.id.widget_quests, questTemplate(context, m.optString("day", "")));
-    }
-
-    /** What a tapped quest row does: the fill-in intent supplies id + name. */
-    static PendingIntent questTemplate(Context context, String day) {
-        Intent i = new Intent(context, CompleteReceiver.class);
-        i.setAction(CompleteReceiver.ACTION_COMPLETE);
-        i.putExtra("day", day);
-        i.putExtra("kind", "quest");
-        // FLAG_MUTABLE is required: the launcher fills in the row's extras.
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE;
-        return PendingIntent.getBroadcast(context, 913, i, flags);
+        int doneN = m.optInt("done", 0);
+        int total = m.optInt("total", 0);
+        String corner = total > 0 ? doneN + "/" + total : "";
+        if (left > 0) corner = corner.isEmpty() ? left + "q" : corner + "  ·  " + left + "q";
+        v.setTextViewText(R.id.widget_count, corner);
     }
 
     /** The panel tap: open tasks.sh, the same way the launcher would. */
