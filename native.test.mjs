@@ -370,7 +370,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
   const code = v[0] * 1000000 + v[1] * 1000 + v[2];
   // v84: 5.30.0. The arithmetic is the point; the exact number is the release's.
-  assert.equal(code, 5031000, `expected 5.31.0 -> 5031000, got ${v.join(".")}`);
+  assert.equal(code, 5032000, `expected 5.32.0 -> 5032000, got ${v.join(".")}`);
   assert.equal(JSON.parse(read("version.json")).versionCode, code, "version.json disagrees with package.json");
 });
 

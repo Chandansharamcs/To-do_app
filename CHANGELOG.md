@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v86`** | 2026-10-20 | an update log in settings, because "did that update land" should not be a guess |
 | **`v85`** | 2026-10-20 | a glass dock, a widget that reads the clock, and the bell that rang for a routine he never had |
 | **`v84`** | 2026-10-20 | the cloud keeps the seven days, storage says its ceiling, and the widget is one frosted pane |
 | **`v83`** | 2026-11-24 | the bell stops saying "browser", and app limits get a real picker with icons |
@@ -1530,6 +1531,34 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v86`**
+
+He could not tell whether an update had gone through, which is a fair thing to
+be unsure about in an app that updates itself in the background.
+
+- **Settings now lists every shipped version**, newest first, with the date,
+  a one-line title and the full list of what changed -- tappable to expand.
+
+- **It also says what this phone knows.** The running version is marked
+  "you are here". Anything this device has genuinely run gets a "first ran
+  4h ago" stamp, written once, on first launch of that version, and never
+  overwritten -- so it is a fact about the phone, not about the release.
+
+- **"Not installed" is only said when it is true.** Versions older than the
+  running build read "ran before logging", because they did run; there simply
+  was no log yet to write the time down. A naive version of this card printed
+  "not on this phone" against builds he had been using for days, which is
+  worse than showing nothing.
+
+- The card also shows the build the service worker cache actually reports, so
+  a bundle that failed to replace itself cannot hide behind its own constant.
+
+Tests: **26 suites / 897 unit** (`widget` 52 -> 55). The log has a test that
+fails if its entries ever stop being newest-first, and one that fails if
+"ran before logging" is replaced by a false negative.
+
+---
 
 **2026-10-20 — `tasksh-v85`**
 

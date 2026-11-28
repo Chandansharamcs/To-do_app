@@ -520,4 +520,42 @@ t("the nav bar is a floating glass dock, not a footer strip", () => {
   assert.match(css, /\.tab-sweep \{ display: none; \}/);
 });
 
+t("the update log says what shipped, and when this phone ran it", () => {
+  // v86: he could not tell whether an update had landed
+  assert.match(SRC, /const UPDATE_LOG = \[/);
+  const src = slice("const UPDATE_LOG = [", "const UPDATE_SEEN_KEY");
+  // every entry has a version, a date, a title and at least one item
+  const versions = src.match(/version: "\d+\.\d+\.\d+"/g) || [];
+  assert.ok(versions.length >= 5, "the log lost its history");
+  assert.match(src, /date: "20\d\d-\d\d-\d\d"/);
+  assert.match(src, /items: \[/);
+  // newest first, or "newest" is a lie
+  const nums = versions.map((v) => v.match(/\d+\.\d+\.\d+/)[0]);
+  const sorted = nums.slice().sort((a, b) => cmpify(b) - cmpify(a));
+  assert.deepEqual(nums, sorted, "entries must be newest first");
+});
+
+function cmpify(v) {
+  const [a, b, c] = v.split(".").map(Number);
+  return a * 1000000 + b * 1000 + c;
+}
+
+t("the phone records when it first ran a version, once", () => {
+  const src = slice("function recordUpdateSeen", "function readUpdateSeen");
+  assert.match(src, /if \(map\[version\]\) return;/);       // first answer wins
+  assert.match(src, /map\[version\] = Date\.now\(\)/);
+  // and it is called at boot, or nothing is ever recorded
+  assert.match(SRC, /recordUpdateSeen\(APP_VERSION\)/);
+});
+
+t("an older version is not called missing just because logging is new", () => {
+  assert.match(SRC, /function cmpVersion\(x, y\)/);
+  const src = slice("function UpdateLogRow", "function AppUpdateRow");
+  assert.match(src, /ran before logging/);
+  assert.match(src, /not on this phone yet/);
+  assert.match(src, /you are here/);
+  // the running version is decided by cmpVersion, not by position in the list
+  assert.match(src, /cmpVersion\(u\.version, runningFull\) < 0/);
+});
+
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

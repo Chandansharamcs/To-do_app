@@ -2824,6 +2824,116 @@ const seedRoutines = [
   { id: 9, time: "23:00", label: "Sleep", duration: 450, history: [] },
 ];
 
+
+// ============================================================
+// v86: THE UPDATE LOG
+//
+// He asked for this because he could not tell whether an update had actually
+// landed. That is a fair question to ask of an app that updates itself: the
+// only evidence was a version number he had to remember.
+//
+// So this records three things for every version, and they answer three
+// different questions:
+//
+//   version + date  -- "is what I am reading the one that shipped?"
+//   summary         -- "what did that update actually change?"
+//   seenAt          -- "when did THIS phone first run it?"
+//
+// The third is the one that settles an argument. A version whose note says
+// "first ran here: 2 minutes ago" cannot also be the build that has been
+// sitting there for a week, and a version that is listed but has no seenAt
+// is an update that has NOT arrived yet.
+// ============================================================
+
+const UPDATE_LOG = [
+  {
+    version: "5.32.0",
+    date: "2026-10-20",
+    title: "an update log in settings",
+    items: [
+      "settings lists every version, what it changed, and the time this phone first ran it",
+      "a build that is listed but has no time has not reached you yet",
+      "versions older than the running one read \u201cran before logging\u201d rather than a false \u201cnot installed\u201d",
+    ],
+  },
+  {
+    version: "5.31.0",
+    date: "2026-10-20",
+    title: "a widget that reads the clock",
+    items: [
+      "the widget recomputes which routine is current every minute instead of trusting a frozen snapshot",
+      "deleting a routine now cancels its notification; so does the off switch",
+      "the bell icon is redrawn for the size Android actually shows it at",
+      "the nav bar is a floating glass dock",
+    ],
+  },
+  {
+    version: "5.30.0",
+    date: "2026-10-20",
+    title: "the cloud keeps the seven days",
+    items: [
+      "a restore verifies every key before reloading, so the seven-day dots survive it",
+      "storage shows its 5 MB ceiling and the eight largest keys",
+      "the widget became one frosted pane with no scrolling list",
+    ],
+  },
+  {
+    version: "5.29.0",
+    date: "2026-11-24",
+    title: "app limits get a real picker",
+    items: [
+      "app limits open a searchable list of installed apps with their real icons",
+      "notifications stopped telling an app user that it only works in a browser",
+    ],
+  },
+  {
+    version: "5.28.0",
+    date: "2026-11-24",
+    title: "app limits move to tools",
+    items: ["app limits left the vault for the tools grid, with a back button like every other tool"],
+  },
+  {
+    version: "5.27.0",
+    date: "2026-11-24",
+    title: "liquid blue glass",
+    items: [
+      "the widget gained a countdown, a 12-hour clock and a tick that works",
+      "app limits started actually closing apps",
+    ],
+  },
+];
+
+const UPDATE_SEEN_KEY = "tasksh.updateseen.v1";
+
+/** v86: compares "5.31.0" to "5.30.0". Needed because "not on this phone"
+ *  was a lie for every version that shipped before this log existed -- the
+ *  phone simply never wrote a time for them. Anything older than the running
+ *  build therefore reads "ran before logging", which is true. */
+function cmpVersion(x, y) {
+  const a = String(x || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  const b = String(y || "0").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/** Records the first time this device ran each version. Idempotent: the first
+ *  answer wins, so "when did I get this" cannot drift on every launch. */
+function recordUpdateSeen(version) {
+  if (!version) return;
+  let map = {};
+  try { map = JSON.parse(localStorage.getItem(UPDATE_SEEN_KEY) || "{}") || {}; } catch { map = {}; }
+  if (map[version]) return;
+  map[version] = Date.now();
+  try { localStorage.setItem(UPDATE_SEEN_KEY, JSON.stringify(map)); } catch { /* full */ }
+}
+
+function readUpdateSeen() {
+  try { return JSON.parse(localStorage.getItem(UPDATE_SEEN_KEY) || "{}") || {}; } catch { return {}; }
+}
+
 // Reports which build is ACTUALLY running, read from the live service worker
 // cache rather than a constant compiled into this bundle.
 //
@@ -4936,6 +5046,7 @@ function VaultView({ penaltyCtl }) {
       <StorageRow cloudOn={cloudOn} />
       <PenaltyRow penaltyCtl={penaltyCtl} />
       <AppUpdateRow />
+      <UpdateLogRow />
       <LastCrashRow />
       <SoundRow />
       <StoreRow />
@@ -5264,15 +5375,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.31.0";
+const APP_VERSION = "5.32.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.31.0";
+const BUNDLE_VERSION = "5.32.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5031000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5032000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -10272,6 +10383,88 @@ function useAppUpdate() {
   }, []);
 
   return { pending, apply, check };
+}
+
+/** v86: what shipped, when, and when this phone first ran it.
+ *
+ *  Three columns of truth on purpose. The version is what is running now
+ *  (read from the live cache, not a constant), the date is when it shipped,
+ *  and the "first ran" line is when THIS device saw it -- which is the only
+ *  fact that answers "did my update go through".
+ */
+function UpdateLogRow() {
+  const version = useRunningVersion();          // e.g. "v85", from the live cache
+  const seen = useMemo(() => readUpdateSeen(), []);
+  const [open, setOpen] = useState(null);
+
+  // the running build's full version, so the top row can say "you are here"
+  const runningFull = APP_VERSION;
+
+  return (
+    <>
+      <div className="section-header"><span>UPDATE-LOG</span></div>
+      <div className="note-card update-card upd-card">
+        <div className="note-head">
+          <span className="note-prompt">~/whats-new</span>
+          <span className="note-when">{runningFull}</span>
+        </div>
+        <pre className="note-body">
+          every version this app has shipped, newest first. the phone writes the
+          time it first ran one, so a build that is listed but has no time has
+          not reached you yet.
+        </pre>
+
+        <div className="upd-list">
+          {UPDATE_LOG.map((u) => {
+            const isYours = u.version === runningFull;
+            const at = seen[u.version];
+            const isOpen = open === u.version;
+            return (
+              <div className={`upd-row ${isYours ? "is-now" : ""}`} key={u.version}>
+                <button
+                  className="upd-head"
+                  onClick={() => { sound.click(); setOpen(isOpen ? null : u.version); }}
+                  aria-expanded={isOpen}
+                >
+                  <span className="upd-dot" aria-hidden="true" />
+                  <span className="upd-ver">{u.version}</span>
+                  <span className="upd-title">{u.title}</span>
+                  <span className="upd-date">{u.date.slice(5)}</span>
+                </button>
+
+                <div className="upd-meta">
+                  {isYours ? (
+                    <span className="upd-tag you">you are here</span>
+                  ) : at ? (
+                    <span className="upd-tag had">first ran {fmtAgo(at, Date.now())}</span>
+                  ) : cmpVersion(u.version, runningFull) < 0 ? (
+                    // older than what is running: it ran, but before this log
+                    // existed to write the time down
+                    <span className="upd-tag had">ran before logging</span>
+                  ) : (
+                    <span className="upd-tag not">not on this phone yet</span>
+                  )}
+                  {u.version === UPDATE_LOG[0].version && !at && (
+                    <span className="upd-tag new">newest</span>
+                  )}
+                </div>
+
+                {isOpen && (
+                  <ul className="upd-items">
+                    {u.items.map((it, i) => <li key={i}>{it}</li>)}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="note-actions">
+          <span className="upd-cache">build in use: {version || "unknown"}</span>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function AppUpdateRow() {
@@ -17184,6 +17377,11 @@ function TodoApp() {
       el && el.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
     } catch { /* jsdom / old webview */ }
   };
+  // v86: "did my update go through" answered by this device, once per version.
+  // Written on the first render of a version and never overwritten, so the
+  // time in settings is the truth about THIS phone, not about the release.
+  useEffect(() => { recordUpdateSeen(APP_VERSION); }, []);
+
   const [tasks, setTasks] = useState(() => loadStored(STORAGE_KEY_TASKS, seedTasks));
   const [routines, setRoutines] = useState(() => loadStored(STORAGE_KEY_ROUTINES, seedRoutines));
   const [vaultHabits, setVaultHabits] = useState(() => loadStored(STORAGE_KEY_VAULT_HABITS, seedVaultHabits));
@@ -24186,6 +24384,117 @@ function TodoApp() {
 
         @media (prefers-reduced-motion: reduce) {
           .task-row:active, .note-card:active, .tool-card:active, .reward-card:active { transform: none; }
+        }
+
+
+        /* ============================================================
+           v86: THE UPDATE LOG — settings
+           A list of versions reads as a table, not as prose, so this is a
+           table: version, one-line title, date, and the phone's own verdict
+           on whether it has run. The running version is the only row with a
+           filled dot, so "am I on the new one" is answered without reading.
+           ============================================================ */
+        .upd-list { margin: 12px 0 4px; display: flex; flex-direction: column; gap: 2px; }
+
+        .upd-row {
+          border-radius: 10px;
+          padding: 2px 8px 6px;
+          border: 1px solid transparent;
+          transition: background 140ms ease, border-color 140ms ease;
+        }
+        .upd-row.is-now {
+          background: rgba(94,234,212,0.06);
+          border-color: rgba(94,234,212,0.28);
+        }
+
+        .upd-head {
+          width: 100%;
+          display: flex;
+          align-items: baseline;
+          gap: 8px;
+          background: transparent;
+          border: none;
+          padding: 7px 0 2px;
+          cursor: pointer;
+          text-align: left;
+          color: var(--text);
+        }
+
+        .upd-dot {
+          flex: none;
+          width: 6px; height: 6px; border-radius: 50%;
+          background: var(--track);
+          transform: translateY(-2px);
+        }
+        .upd-row.is-now .upd-dot {
+          background: var(--accent);
+          box-shadow: 0 0 7px rgba(94,234,212,0.75);
+        }
+
+        .upd-ver {
+          flex: none;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--text);
+          font-variant-numeric: tabular-nums;
+        }
+        .upd-row.is-now .upd-ver { color: var(--accent); }
+
+        .upd-title {
+          flex: 1;
+          min-width: 0;
+          font-family: var(--font-mono);
+          font-size: 10px;
+          color: var(--muted);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .upd-date {
+          flex: none;
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          color: var(--muted);
+          opacity: 0.8;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .upd-meta { display: flex; gap: 6px; padding-left: 14px; flex-wrap: wrap; }
+        .upd-tag {
+          font-family: var(--font-mono);
+          font-size: 8.5px;
+          letter-spacing: 0.04em;
+          padding: 1px 6px;
+          border-radius: 999px;
+          border: 1px solid var(--track);
+          color: var(--muted);
+        }
+        .upd-tag.you { color: var(--accent); border-color: rgba(94,234,212,0.45); }
+        .upd-tag.had { color: var(--text); border-color: var(--border); }
+        .upd-tag.not { opacity: 0.6; }
+        .upd-tag.new { color: var(--accent2); border-color: rgba(245,166,35,0.45); }
+
+        .upd-items {
+          margin: 6px 0 2px;
+          padding-left: 26px;
+          list-style: disc;
+        }
+        .upd-items li {
+          font-family: var(--font-mono);
+          font-size: 10px;
+          line-height: 1.65;
+          color: var(--muted);
+          margin-bottom: 3px;
+        }
+
+        .upd-cache {
+          font-family: var(--font-mono);
+          font-size: 9px;
+          color: var(--muted);
+          opacity: 0.8;
+          margin-left: auto;
+          align-self: center;
         }
 
       `}</style>
