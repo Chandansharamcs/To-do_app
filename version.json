@@ -2,8 +2,12 @@
   "version": "5.32.0",
   "versionCode": 5032000,
   "apk": "https://chandansharamcs.github.io/To-do_app/tasksh.apk",
+  "apkBytes": 3563717,
+  "apkSha256": "d3c5a269ccbcf221431ca15e50ddf02a10d87ba0a877920351979310be22b311",
   "bundleUrl": "https://chandansharamcs.github.io/To-do_app/bundle.js",
   "bundleVersion": "5.32.0",
+  "bundleBytes": 1148234,
+  "bundleSha256": "4ec63e14d194a859f53d55d9ace10feddb12f2d41a17d01bcae1203eec1a16c9",
   "releases": "https://github.com/Chandansharamcs/To-do_app/releases/latest",
-  "builtAt": "2026-10-20"
+  "builtAt": "2026-11-28"
 }
