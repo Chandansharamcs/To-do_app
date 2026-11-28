@@ -261,6 +261,46 @@ async function scheduleAll(list) {
   return out;
 }
 
+/** v85: cancels every scheduled notification that is not the night check and
+ *  not the test ping.
+ *
+ *  Why a sweep rather than a list: the old code cancelled by routine id, so a
+ *  routine that was DELETED kept its daily alarm forever -- that is the
+ *  "Anime / wind down" notification he got for a routine he does not have. The
+ *  ids that only exist in a list the app no longer has cannot be named, but the
+ *  OS still knows them, so it is asked what it holds.
+ */
+async function clearRoutineAlarms() {
+  try {
+    const p = await LocalNotifications.getPending();
+    const all = ((p && p.notifications) || []).map((n) => n.id);
+    const kills = all.filter((id) => id !== NIGHT_ID && id !== 9091);
+    if (kills.length) {
+      await LocalNotifications.cancel({ notifications: kills.map((id) => ({ id })) });
+    }
+    return { cleared: kills.length };
+  } catch (e) {
+    return { cleared: 0, error: String((e && e.message) || e) };
+  }
+}
+
+/** v85: the only way routines may be scheduled.
+ *
+ *  Sweep first, then schedule what is actually in the list. Running this on
+ *  every change to the routine list means an alarm can only exist for a routine
+ *  that exists -- deleting one silences it on the very next edit.
+ */
+async function resyncRoutines(list) {
+  const before = await clearRoutineAlarms();
+  let out = { ok: 0, failed: 0, pending: [] };
+  try {
+    out = await scheduleAll(list);
+  } catch (e) {
+    out.error = String((e && e.message) || e);
+  }
+  return { ...out, cleared: before.cleared };
+}
+
 /** v83: a notification five seconds from now. The honest test: if this does
  *  not appear, the problem is the permission, not the schedule. */
 async function notifyTest() {
@@ -325,7 +365,7 @@ window.taskshNative = {
   snapshot, readSnapshot, restoreSnapshot,
   scheduleNight, cancelNight, scheduleRoutine,
   pushWidget, takeWidgetActions,
-  notifyPermission, scheduleAll, notifyTest,
+  notifyPermission, scheduleAll, notifyTest, resyncRoutines, clearRoutineAlarms,
   bundleInfo, bundleDownload, bundleClear,
   blockStatus, blockOpen, blockSave, blockUsage, blockResolve, blockApps,
   onResume, takeSharedText,

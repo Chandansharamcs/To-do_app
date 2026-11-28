@@ -24,6 +24,7 @@ later the *why* is the only part that still matters.
 
 | Ver | Date | Headline |
 |---|---|---|
+| **`v85`** | 2026-10-20 | a glass dock, a widget that reads the clock, and the bell that rang for a routine he never had |
 | **`v84`** | 2026-10-20 | the cloud keeps the seven days, storage says its ceiling, and the widget is one frosted pane |
 | **`v83`** | 2026-11-24 | the bell stops saying "browser", and app limits get a real picker with icons |
 | **`v82`** | 2026-11-24 | app limits moved to tools, and it stops saying "browser" to an app user |
@@ -1529,6 +1530,52 @@ a successful completion.
 ---
 
 ## Changelog
+
+**2026-10-20 — `tasksh-v85`**
+
+Three complaints, and two of them were real defects rather than looks.
+
+- **The widget was hours behind because nothing ever recomputed the clock.**
+  The app pushed ONE chosen routine with absolute start and end times. The
+  widget's alarm redrew every minute but re-read that frozen snapshot, so
+  "2h 10m left" only moved when the app was opened again -- the five-hour lag.
+  Now the whole day is pushed as a schedule, and the phone derives the state
+  itself on every redraw: a window that has passed stops being "now", the next
+  unchecked routine becomes it, and a model pushed today stays usable all day
+  instead of being thrown away 36 hours later mid-afternoon.
+
+- **The bell rang for "Anime / wind down", a routine he does not have.** That
+  is seed data, and it was scheduled because turning notifications on
+  scheduled whatever the list held at that moment -- then never reconciled
+  again. Two bugs underneath: deleting a routine never cancelled its alarm,
+  and the off switch called `n.cancelRoutine`, which the bridge has never
+  exposed, so "off" left everything armed. Now `resyncRoutines` sweeps what
+  the OS actually holds and schedules only what the list holds, on every edit,
+  and the off switch talks to the sweep.
+
+- **The bell icon is drawn for the size it is shown at.** It is masked to about
+  18dp, so a 2dp frame and three small dots became mush. Rebuilt centred, with
+  a 1.5dp frame and a stroked tick, and rendered at 18dp to check it reads
+  before shipping.
+
+- **The navigation is a floating glass dock.** It was a flush, square, opaque
+  footer -- the most web-page thing on the screen. It now floats 10px clear of
+  the edges with a 22px radius, a translucent pane, a 1px rim, a top sheen and
+  a shadow so it sits above the content. The selected tab is a raised glass
+  pill; the old underline puck and the sweeping tick are retired. Blur is
+  layered rather than relied on, because WebView support for `backdrop-filter`
+  is inconsistent and a dock that only looks like glass on some phones is
+  worse than one that never claims to.
+
+- **App-wide polish:** one card radius (12px), one gutter (16px), section
+  headers that close their group with a rule, a press state on every tappable
+  row, and equal-height tool tiles so the grid cannot leave a ragged hole.
+
+Tests: **26 suites / 891 unit** (`widget` 51 -> 52, `native` 42), browser
+**230**. The widget lag and the phantom alarm each have a test that fails if
+the old behaviour returns.
+
+---
 
 **2026-10-20 — `tasksh-v84`**
 

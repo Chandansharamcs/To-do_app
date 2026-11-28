@@ -414,7 +414,9 @@ t("the bell uses the phone's own scheduler, not web push", () => {
   assert.match(src, /const n = nativeShell\(\);/);
   assert.match(src, /if \(n && n\.scheduleAll\)/);
   assert.match(src, /n\.notifyPermission/);
-  assert.match(src, /const res = await n\.scheduleAll\(routines\)/);
+  // v85: sweep, then schedule -- an alarm may only exist for a routine that exists
+  assert.match(src, /n\.resyncRoutines \? await n\.resyncRoutines\(routines\)/);
+  assert.match(src, /n\.scheduleAll\(routines\)/);
   // and only the browser path may reach the old code
   assert.ok(src.indexOf("subscribeToPush") > src.indexOf("scheduleAll"),
     "web push is still tried first in the app");
@@ -501,6 +503,21 @@ t("the vault shows both the meter and the last restore", () => {
   assert.match(SRC, /<RestoreReportRow \/>/);
   assert.match(SRC, /<CloudBackupRow \/>/);
   assert.match(SRC, /sessionStorage\.setItem\("tasksh\.restored\.v1"/);
+});
+
+t("the nav bar is a floating glass dock, not a footer strip", () => {
+  const app = SRC;
+  // v85: he said the app did not look built. A flush full-width bar was the
+  // most page-like thing on the screen.
+  assert.match(app, /v85: LIQUID GLASS NAV BAR/);
+  const css = slice("v85: LIQUID GLASS NAV BAR", "v85: APP POLISH");
+  assert.match(css, /\.tabs \{[\s\S]{0,400}border-radius: 22px/, "the dock has no rounding");
+  assert.match(css, /\.tabs \{[\s\S]{0,400}margin: 0 10px/, "the dock is still flush");
+  // a glass pane is layers, because RemoteViews and WebViews disagree on blur
+  assert.match(css, /backdrop-filter: blur\(22px\)/);
+  assert.match(css, /inset 0 1px 0 rgba\(255,255,255,0\.20\)/, "no rim means no glass");
+  // the old sweeping tick belonged to the strip and must stay retired
+  assert.match(css, /\.tab-sweep \{ display: none; \}/);
 });
 
 console.log(`\nwidget.test.mjs — ${pass} passed${process.exitCode ? ", FAILURES above" : ""}`);

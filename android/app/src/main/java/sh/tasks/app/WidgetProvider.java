@@ -92,6 +92,58 @@ public class WidgetProvider extends AppWidgetProvider {
 
     // ---- drawing -------------------------------------------------------
 
+    /** v85: what the model means RIGHT NOW.
+     *
+     *  The push carries absolute times and one "next" routine, frozen at the
+     *  moment the app pushed. The alarm redrew every minute but re-read that
+     *  same snapshot, so the countdown only moved when the app was opened --
+     *  the "always about five hours behind" he saw. This recomputes the state
+     *  against the real clock on every redraw: a window that has passed stops
+     *  being "now", the next unchecked routine becomes it, and the day ends
+     *  when nothing is left.
+     */
+    static JSONObject liveState(JSONObject m, long nowMs) {
+        if (m == null) return null;
+        JSONObject sched = m.optJSONObject("schedule");
+        if (sched == null) return m;              // an older push, nothing to redo
+        JSONArray items = sched.optJSONArray("items");
+        JSONObject out = new JSONObject();
+        if (items == null || items.length() == 0) {
+            try {
+                out.put("state", "empty");
+                out.put("next", JSONObject.NULL);
+                out.put("total", m.optInt("total", 0));
+                out.put("done", m.optInt("done", 0));
+                out.put("day", m.optString("day", ""));
+                out.put("quests", m.optJSONArray("quests") == null ? new JSONArray() : m.optJSONArray("quests"));
+            } catch (Exception e) { return m; }
+            return out;
+        }
+        JSONObject current = null, upcoming = null;
+        int done = 0;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject it = items.optJSONObject(i);
+            if (it == null) continue;
+            boolean isDone = it.optBoolean("done", false);
+            if (isDone) done++;
+            long start = it.optLong("startMs", 0L);
+            long end = it.optLong("endMs", 0L);
+            if (current == null && start <= nowMs && nowMs < end) current = it;
+            // the next thing still TO DO: a routine already ticked is not next
+            if (upcoming == null && start > nowMs && !isDone) upcoming = it;
+        }
+        JSONObject pick = current != null ? current : upcoming;
+        try {
+            out.put("total", m.optInt("total", items.length()));
+            out.put("done", done);
+            out.put("state", pick == null ? "done" : (pick == current ? "now" : "next"));
+            out.put("next", pick == null ? JSONObject.NULL : pick);
+            out.put("day", m.optString("day", ""));
+            out.put("quests", m.optJSONArray("quests") == null ? new JSONArray() : m.optJSONArray("quests"));
+        } catch (Exception e) { return m; }
+        return out;
+    }
+
     static RemoteViews build(Context context) {
         RemoteViews v = new RemoteViews(context.getPackageName(), R.layout.widget_routine);
         String raw = WidgetStore.readModel(context);
@@ -113,6 +165,9 @@ public class WidgetProvider extends AppWidgetProvider {
         }
 
         long now = System.currentTimeMillis();
+        // v85: recompute against the clock before drawing anything
+        JSONObject live = liveState(m, now);
+        if (live != null) m = live;
         v.setTextViewText(R.id.widget_headline, headline(m, now));
         int total = m.optInt("total", 0);
         int doneN = m.optInt("done", 0);
@@ -196,10 +251,24 @@ public class WidgetProvider extends AppWidgetProvider {
         return PendingIntent.getActivity(context, 42, i, flags);
     }
 
+    /** "YYYY-MM-DD" in IST, the same calendar day the app uses. */
+    static String istDay(long nowMs) {
+        java.util.TimeZone tz = java.util.TimeZone.getTimeZone("Asia/Kolkata");
+        java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+        f.setTimeZone(tz);
+        return f.format(new java.util.Date(nowMs));
+    }
+
     private static boolean fresh(JSONObject m) {
         if (m.optInt("v", 0) != 1) return false;
         long updated = m.optLong("updatedAt", 0L);
         if (updated <= 0) return false;
+        // v85: a schedule for today stays usable all day. MAX_AGE_MS used to be the
+        // only test, so a model pushed yesterday evening was discarded at noon
+        // and the widget fell back to "open tasks.sh to sync".
+        String day = m.optString("day", "");
+        String today = istDay(System.currentTimeMillis());
+        if (!day.isEmpty() && day.equals(today)) return true;
         return Math.abs(System.currentTimeMillis() - updated) < MAX_AGE_MS;
     }
 

@@ -5150,14 +5150,40 @@ function widgetModel(routines, nowMs = Date.now(), quests) {
   const nowMin = timeToMinutes(nowIST);
   const done = list.filter((r) => (r.history || []).includes(day)).length;
 
+  // v85: the whole day is sent, not just one chosen routine.
+  //
+  // The widget used to receive a single frozen "next" whose start and end times
+  // were absolute, and it kept drawing them until the app was opened again --
+  // which is the "always about five hours behind" he saw. A phone that holds
+  // the full schedule can work out which routine is current on any minute by
+  // itself, with no network and no battery cost.
+  const isDoneAny = (r) => (r.history || []).includes(day);
+  const schedule = {
+    items: list.map((r) => {
+      const dur = Math.max(0, Number(r.duration) || 0);
+      return {
+        id: String(r.id),
+        label: String(r.label || "").slice(0, 60),
+        time: r.time,
+        time12: to12h(r.time),
+        duration: dur,
+        startMs: istEpochMs(day, r.time),
+        endMs: istEpochMs(day, r.time) + dur * 60000,
+        done: isDoneAny(r),
+        alt: Array.isArray(r.alternatives) && r.alternatives.length ? String(r.alternatives[0]).slice(0, 40) : "",
+      };
+    }),
+  };
+
   const base = {
     v: 1, day, nowMin, total: list.length, done, updatedAt: nowMs,
     quests: Array.isArray(quests) ? quests : [],
+    schedule,
   };
 
   if (!list.length) return { ...base, state: "empty", next: null };
 
-  const isDone = (r) => (r.history || []).includes(day);
+  const isDone = isDoneAny;
   const current = list.find((r) => {
     const s = timeToMinutes(r.time);
     return nowMin >= s && nowMin < s + (Number(r.duration) || 0);
@@ -5238,15 +5264,15 @@ function widgetHeadline(model, nowMs = Date.now()) {
 // the package version ever drift apart.
 // ============================================================
 
-const APP_VERSION = "5.30.0";
+const APP_VERSION = "5.31.0";
 /** v79: the version of THIS bundle, which can outrun the APK around it. The
  *  APK was built from a bundle of some version; a downloaded bundle says what
  *  it is, and the two can differ -- that is the point of an over-the-air
  *  update. Compared with the feed's bundleVersion to decide "newer". */
-const BUNDLE_VERSION = "5.30.0";
+const BUNDLE_VERSION = "5.31.0";
 const RELEASES_URL = "https://github.com/Chandansharamcs/To-do_app/releases/latest";
 const BUNDLE_URL = "https://chandansharamcs.github.io/To-do_app/bundle.js";
-const APP_VERSION_CODE = 5030000;   // matches android versionCode, see native.test.mjs
+const APP_VERSION_CODE = 5031000;   // matches android versionCode, see native.test.mjs
 const APK_URL = "https://chandansharamcs.github.io/To-do_app/tasksh.apk";
 const VERSION_URL = "https://chandansharamcs.github.io/To-do_app/version.json";
 
@@ -17572,6 +17598,28 @@ function TodoApp() {
     syncRoutinesToWorker(routines);
   }, [routines]);
 
+  // v85: the phone's alarms are rebuilt from the routine list, every time that
+  // list changes while notifications are on.
+  //
+  // Before this, turning notifications on scheduled whatever the list held at
+  // that moment and nothing reconciled it again -- delete a routine and its
+  // daily alarm kept firing forever. That is the "Anime / wind down" bell for a
+  // routine he does not have. Sweep, then schedule: an alarm can only exist for
+  // a routine that exists.
+  useEffect(() => {
+    if (!notifyEnabled) return;
+    const n = nativeShell();
+    if (!n || !n.resyncRoutines) return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      try { n.resyncRoutines(routines); } catch { /* shell gone */ }
+    };
+    // debounce: every edit of the list would otherwise cancel and re-add all
+    const t = setTimeout(run, 1200);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [routines, notifyEnabled]);
+
   const toggleNotify = async () => {
     if (notifyBusy) return;
 
@@ -17585,29 +17633,28 @@ function TodoApp() {
       setNotifyBusy(true);
       try {
         if (notifyEnabled) {
-          // turning off: clear every scheduled routine
-          if (n.cancelRoutine) await Promise.resolve(n.cancelRoutine()).catch(() => {});
-          for (const r of routines) {
-            const id = Math.abs(Number(r.id) || 0) % 2147483647 || 1;
-            if (n.scheduleRoutine) {
-              try { await Promise.resolve(n.scheduleRoutine("", r.time, id, true)); } catch { /* ignore */ }
-            }
-          }
+          // v85: turning off used to call n.cancelRoutine, which the bridge has
+          // never exposed -- so the switch said "off" and every alarm stayed
+          // armed. It sweeps what the OS actually holds instead.
+          const swept = n.clearRoutineAlarms ? await n.clearRoutineAlarms() : { cleared: 0 };
           localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "0");
           setNotifyEnabled(false);
-          showDataMsg("success", "Notifications turned off");
-        } else {
-          const perm = n.notifyPermission ? await n.notifyPermission() : { granted: true };
-          if (!perm || !perm.granted) {
-            showDataMsg("error", "Notification permission was refused — allow it in Android settings, then try again.");
-            setNotifyBusy(false);
-            return;
-          }
-          const res = await n.scheduleAll(routines);
-          localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "1");
-          setNotifyEnabled(true);
-          showDataMsg("success", `Notifications on — ${res.ok} routine${res.ok === 1 ? "" : "s"} scheduled by the phone`);
+          showDataMsg("success", `Notifications off — ${swept.cleared || 0} alarm${(swept.cleared || 0) === 1 ? "" : "s"} removed`);
+          setNotifyBusy(false);
+          return;
         }
+        const perm = n.notifyPermission ? await n.notifyPermission() : { granted: true };
+        if (!perm || !perm.granted) {
+          showDataMsg("error", "Notification permission was refused — allow it in Android settings, then try again.");
+          setNotifyBusy(false);
+          return;
+        }
+        // v85: sweep then schedule. Turning this on is also the moment to clear
+        // whatever armed itself under an older version of the list.
+        const res = n.resyncRoutines ? await n.resyncRoutines(routines) : await n.scheduleAll(routines);
+        localStorage.setItem(STORAGE_KEY_NOTIFY_ENABLED, "1");
+        setNotifyEnabled(true);
+        showDataMsg("success", `Notifications on — ${res.ok} routine${res.ok === 1 ? "" : "s"} scheduled by the phone${res.cleared ? ` · ${res.cleared} stale alarm${res.cleared === 1 ? "" : "s"} removed` : ""}`);
       } catch (err) {
         showDataMsg("error", err.message || "Couldn't set up notifications");
       } finally {
@@ -23967,6 +24014,179 @@ function TodoApp() {
         }
         .edge.done, .edge.slipped { box-shadow: 0 0 0 1px var(--edge) inset; }
         .routine-row.done.edge, .quest-habit-card.done.edge { opacity: 0.8; }
+
+
+        /* ============================================================
+           v85: LIQUID GLASS NAV BAR
+           ------------------------------------------------------------
+           What was wrong: the bar was a flush footer strip -- full width,
+           square, opaque -- which is the single most "website" looking thing
+           on the screen. A launched app floats its navigation.
+
+           The glass is built from layers, because a real backdrop blur is
+           expensive on a mid-range Android WebView and unreliable inside one
+           (backdrop-filter is ignored by several WebView versions). A cheap
+           blur is attempted where it works and the pane still reads as glass
+           without it: translucent fill, a bright 1px rim, an inner top sheen
+           for the light catching the edge, and a drop shadow so the dock sits
+           ABOVE the content instead of being a divider under it.
+           ============================================================ */
+        .tabs {
+          margin: 0 10px calc(8px + env(safe-area-inset-bottom, 0px)) 10px;
+          padding: 3px 4px;
+          border: none;
+          border-radius: 22px;
+          background:
+            linear-gradient(180deg, rgba(255,255,255,0.13) 0%, rgba(255,255,255,0.05) 46%, rgba(255,255,255,0.02) 100%),
+            rgba(16, 19, 24, 0.78);
+          -webkit-backdrop-filter: blur(22px) saturate(1.7);
+          backdrop-filter: blur(22px) saturate(1.7);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.20),
+            inset 0 -1px 0 rgba(0,0,0,0.35),
+            0 10px 30px -10px rgba(0,0,0,0.75),
+            0 2px 8px rgba(0,0,0,0.35);
+          position: relative;
+          z-index: 2;
+          overflow: hidden;
+        }
+
+        /* the rim: one crisp line, which is what sells "glass" over "panel" */
+        .tabs::before {
+          content: "";
+          position: absolute;
+          inset: 0;
+          border-radius: 22px;
+          padding: 1px;
+          background: linear-gradient(180deg, rgba(255,255,255,0.32), rgba(255,255,255,0.06) 42%, rgba(255,255,255,0.14));
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+          mask-composite: exclude;
+          pointer-events: none;
+        }
+
+        /* the sheen: one soft highlight across the top third */
+        .tabs::after {
+          content: "";
+          position: absolute;
+          left: 8%;
+          right: 8%;
+          top: 0;
+          height: 40%;
+          border-radius: 22px 22px 60% 60%;
+          background: radial-gradient(70% 100% at 50% 0%, rgba(255,255,255,0.13), rgba(255,255,255,0) 70%);
+          pointer-events: none;
+        }
+
+        .tabs button {
+          border-radius: 18px;
+          padding: 6px 2px 4px;
+          min-height: 48px;
+          z-index: 1;
+        }
+        .tabs button.active { color: #FFFFFF; }
+        .tabs button.active .tab-inner { filter: drop-shadow(0 0 8px rgba(94,234,212,0.35)); }
+
+        /* the selection is a raised glass pill on the selected tab itself.
+           The travelling puck could not be both full-height and aligned to a
+           dock that has margins, so it is retired: one element, one job. */
+        .tab-puck { display: none; }
+        .tabs button.active {
+          background: linear-gradient(180deg, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.12) 55%, rgba(255,255,255,0.07) 100%);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.65),
+            inset 0 -1px 0 rgba(255,255,255,0.10),
+            0 4px 16px -6px rgba(94,234,212,0.9);
+        }
+        .tabs button.active::before {
+          content: "";
+          position: absolute;
+          inset: 0;
+          border-radius: 18px;
+          background: radial-gradient(70% 120% at 50% 110%, rgba(94,234,212,0.20), rgba(94,234,212,0) 70%);
+          pointer-events: none;
+        }
+
+        /* the sweeping tick and the diodes belong to the old strip */
+        .tab-sweep { display: none; }
+        .tab-dot { top: 2px; opacity: 0; }
+        .tabs button.active .tab-dot { opacity: 0; animation: none; }
+
+        /* content must not run under the floating dock */
+        .task-list, .vault-scroll { padding-bottom: 22px; }
+        .toast-stack, .ach-toast, .lvl-toast { bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important; }
+
+        @media (max-width: 640px) {
+          /* on a phone the dock floats over the panel, so the panel's own
+             bottom edge is not the bar any more */
+          .tabs { margin: 0 12px calc(10px + env(safe-area-inset-bottom, 0px)) 12px; }
+        }
+
+
+        /* ============================================================
+           v85: APP POLISH — the difference between a web page and an app
+           ------------------------------------------------------------
+           Four things, each measured on a 390x844 screenshot rather than
+           guessed at:
+             1. rows had no surface, so lists read as text on a void
+             2. corner radii disagreed between cards, chips and inputs
+             3. gutters were 10px in some screens and 16-18px in others
+             4. section headers floated with no rule, so groups had no edges
+           ============================================================ */
+
+        /* 1 + 2: one card surface, one radius, one border weight */
+        :root { --r-card: 12px; --r-btn: 10px; --pad-x: 16px; }
+
+        .task-row, .note-card, .hero-card, .update-card, .routine-card,
+        .vault-card, .quest-card, .tool-card, .reward-card {
+          background: color-mix(in srgb, var(--panel) 88%, #FFFFFF 4%);
+          border: 1px solid var(--border);
+          border-radius: var(--r-card);
+        }
+
+        /* 3: one gutter, everywhere */
+        .task-list, .vault-scroll { padding-left: var(--pad-x); padding-right: var(--pad-x); }
+
+        /* 4: a section header that closes its group */
+        .section-header {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin: 20px 0 8px;
+          padding: 0;
+        }
+        .section-header > span {
+          flex: none;
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          letter-spacing: 0.16em;
+          color: var(--muted);
+        }
+        .section-header::after {
+          content: "";
+          flex: 1;
+          height: 1px;
+          background: linear-gradient(90deg, var(--track), rgba(0,0,0,0));
+        }
+
+        /* every tappable row gets a real press state, which is most of what
+           "native" feels like on touch */
+        .task-row:active, .note-card:active, .tool-card:active, .reward-card:active {
+          transform: scale(0.988);
+          transition: transform 90ms ease;
+        }
+
+        /* the tools grid: equal tiles, so the last row cannot leave a ragged
+           hole next to content of a different height */
+        .tools-grid, .tool-grid { align-items: stretch; }
+        .tool-card { display: flex; flex-direction: column; min-height: 132px; }
+
+        /* inputs and buttons share the radius, so nothing looks borrowed */
+        button, input, select, textarea { border-radius: var(--r-btn); }
+
+        @media (prefers-reduced-motion: reduce) {
+          .task-row:active, .note-card:active, .tool-card:active, .reward-card:active { transform: none; }
+        }
 
       `}</style>
 

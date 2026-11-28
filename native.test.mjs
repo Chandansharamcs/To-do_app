@@ -239,17 +239,19 @@ t("the app picker hands icons across the bridge as small PNGs", () => {
   assert.match(p, /o\.put\("minutes", limit\)/);
 });
 
-t("the notification icon is a tick with three dots in a square frame", () => {
+t("the notification icon is a tick in a square frame with three dots", () => {
   const v = read("android/app/src/main/res/drawable/ic_stat_icon.xml");
   // Android draws a small icon as a MASK: alpha only, colour ignored.
   assert.match(v, /<vector/);
   assert.match(v, /android:fillColor="#FFFFFFFF"/);
-  // the frame, three dots and the tick, and nothing else
-  assert.equal((v.match(/<path/g) || []).length, 5, "expected frame + 3 dots + tick");
-  // a frame is drawn as an outline: the middle of the shape is cut out with a
-  // second sub path, so the inside stays transparent
-  assert.match(v, /1\.8,1\.8 0 0 1,1\.8 1\.8/);
-  // and this is the icon notifications actually use
+  // v85: drawn at the size it is actually shown (about 18dp), so the frame is
+  // centred and the tick is a thick stroke rather than a thin polygon
+  assert.equal((v.match(/<path/g) || []).length, 5, "frame, three dots, tick");
+  // the frame is one path with the middle cut out
+  assert.match(v, /android:fillType="evenOdd"/);
+  // the tick is stroked: a filled tick at this size turned to mush
+  assert.match(v, /android:strokeWidth="2.5"/);
+  assert.match(v, /android:strokeLineCap="round"/);
   assert.match(read("native/bridge.src.mjs"), /smallIcon: "ic_stat_icon"/);
 });
 
@@ -368,7 +370,7 @@ t("the version code can only climb, and it comes from package.json", () => {
   const v = JSON.parse(read("package.json")).version.split(".").map(Number);
   const code = v[0] * 1000000 + v[1] * 1000 + v[2];
   // v84: 5.30.0. The arithmetic is the point; the exact number is the release's.
-  assert.equal(code, 5030000, `expected 5.30.0 -> 5030000, got ${v.join(".")}`);
+  assert.equal(code, 5031000, `expected 5.31.0 -> 5031000, got ${v.join(".")}`);
   assert.equal(JSON.parse(read("version.json")).versionCode, code, "version.json disagrees with package.json");
 });
 
